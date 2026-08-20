@@ -1,0 +1,28 @@
+# lode 配置示例。
+#
+# 用法：
+#   1. 复制为 .lode/config.toml（默认加载路径，相对当前工作目录）；
+#      或通过 CLI 显式指定路径（--config <path>，待实现）。
+#   2. 所有字段可省略，省略的字段使用内置默认值。
+#
+# 覆盖优先级（低 -> 高）：
+#   内置默认值 < 本文件 < 环境变量（LODE_ 前缀，分段用双下划线，
+#   如 LODE_EMBEDDING__MODEL）< 代码中显式传入的构造参数。
+
+[embedding]
+provider = "openai_compat"          # 目前仅此实现；未来可加 sentence-transformers 等
+base_url = "http://localhost:8080"  # 任意 OpenAI-compatible 端点：TEI / Ollama / vLLM / llama.cpp / 托管 API
+# model = "BAAI/bge-small-zh-v1.5"  # 留空则启动时从 GET /v1/models 自动探测
+# dimension = 512                   # 留空则用一次探针请求自动探测
+batch_size = 32                     # 不超过 TEI 的 max_client_batch_size
+timeout = 60.0                      # 单次请求超时（秒）
+retries = 3                         # 幂等请求（429/5xx）的重试次数
+normalize = true                    # 客户端 L2 归一化，保证 cosine == dot
+
+[retrieval]  # 预留：M2 混合检索（稠密 + BM25）权重
+dense_weight = 0.6
+sparse_weight = 0.4
+top_k = 10
+
+[ignore]  # 预留：M2 文件发现忽略规则（glob 模式）
+patterns = [".git/**", "*.tmp", ".lode/**"]

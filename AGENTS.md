@@ -4,7 +4,7 @@ Guidelines for AI coding agents working in this repository.
 
 ## Project
 
-`local-knowledge` — a local knowledge base semantic search tool exposed over MCP.
+`lode` — a local knowledge base semantic search tool exposed over MCP.
 Currently in **early development**: only the embedding layer is implemented
 (OpenAI-compatible HTTP client). The full vision and roadmap live in
 [`.vscode/docs/PLAN.md`](.vscode/docs/PLAN.md) — read it before large changes,
@@ -29,15 +29,20 @@ uv run pyright          # strict type checking
 Dependency inversion is the core pattern: business logic depends on
 interfaces, never on concrete implementations.
 
-- `src/knowledge/embeddings/base.py` — `Embedder` ABC (the interface: `model_id`,
+- `src/lode/embeddings/base.py` — `Embedder` ABC (the interface: `model_id`,
   `dimension`, `embed_documents`, `embed_query`) plus the shared `l2_normalize`
   helper that implementations use to honour the "cosine == dot" contract.
-- `src/knowledge/embeddings/openai_compat.py` — `OpenAICompatibleEmbedder`,
+- `src/lode/embeddings/openai_compat.py` — `OpenAICompatibleEmbedder`,
   a client for any OpenAI-compatible embeddings API (`GET /v1/models`,
   `POST /v1/embeddings`). Construction is side-effect free;
   `model_id`/`dimension` are resolved lazily on first access.
-- `src/knowledge/config.py` — the **composition root**: `EmbeddingConfig`
-  (pydantic) selects the implementation via `build_embedder()`.
+- `src/lode/config.py` — the **composition root**: `EmbeddingConfig` /
+  `RetrievalConfig` / `IgnoreConfig` (pydantic models) are selected via
+  `build_embedder()`. Layered settings: `Settings` (pydantic-settings) loads
+  from `.lode/config.toml` + `LODE_*` env vars (precedence:
+  defaults < TOML < env < constructor kwargs). `load_settings()` is the entry
+  point; the TOML source is pluggable via `settings_customise_sources` for
+  future YAML/JSON.
 
 Adding a new embedding backend means: implement `Embedder`, then register it
 in `build_embedder()`. Never let concrete providers leak into core modules.
