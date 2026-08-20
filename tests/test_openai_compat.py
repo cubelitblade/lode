@@ -14,7 +14,7 @@ from typing import Any
 import httpx
 import pytest
 
-from knowledge.embeddings.openai_compat import OpenAICompatibleEmbedder
+from lode.embeddings.openai_compat import OpenAICompatibleEmbedder
 
 DIM = 512
 MODEL_ID = "BAAI/bge-small-zh-v1.5"
@@ -145,9 +145,7 @@ def test_l2_normalize_is_idempotent() -> None:
     emb = _make_embedder(_FakeServer(), dimension=DIM)
     vecs = emb.embed_documents(["x"])
     again = emb.embed_documents(["x"])
-    assert all(
-        math.isclose(a, b, rel_tol=1e-6) for a, b in zip(vecs[0], again[0], strict=True)
-    )
+    assert all(math.isclose(a, b, rel_tol=1e-6) for a, b in zip(vecs[0], again[0], strict=True))
 
 
 def test_vectors_reordered_by_index() -> None:
