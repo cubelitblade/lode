@@ -1,5 +1,5 @@
 def main():
-    print("Hello from local-knowledge!")
+    print("Hello from lode!")
 
 
 if __name__ == "__main__":

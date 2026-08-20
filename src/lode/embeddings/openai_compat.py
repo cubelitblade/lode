@@ -25,7 +25,7 @@ from typing import Any, cast
 
 import httpx
 
-from knowledge.embeddings.base import Embedder, l2_normalize
+from lode.embeddings.base import Embedder, l2_normalize
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +84,11 @@ class OpenAICompatibleEmbedder(Embedder):
     def dimension(self) -> int:
         if self._dimension is None:
             self._dimension = len(self._embed([PROBE_TEXT])[0])
+            logger.info(
+                "Struck a lode: model=%s, dimension=%d",
+                self.model_id,
+                self._dimension,
+            )
         return self._dimension
 
     # -- public API ---------------------------------------------------------
@@ -111,7 +116,9 @@ class OpenAICompatibleEmbedder(Embedder):
         model_id = models[0].get("id")
         if not model_id:
             raise ValueError("GET /v1/models returned a model without an id")
-        return str(model_id)
+        model_id = str(model_id)
+        logger.info("Struck a lode: model=%s", model_id)
+        return model_id
 
     def _embed(self, texts: list[str]) -> list[list[float]]:
         payload: dict[str, Any] = {"model": self.model_id, "input": texts}

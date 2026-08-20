@@ -9,6 +9,9 @@ wheels/
 # Virtual environments
 .venv
 
+# Runtime-generated data (index store + config)
+.lode/
+
 # IDE
 .vscode/
 
