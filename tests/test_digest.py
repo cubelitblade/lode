@@ -6,7 +6,7 @@ every previously stored digest, so these tests lock it down.
 
 from __future__ import annotations
 
-from lode.ingestion.digest import chunk_id, normalize
+from lode.ingestion.digest import chunk_id, file_digest, normalize
 
 
 def test_normalize_strips_leading_and_trailing_whitespace() -> None:
@@ -68,3 +68,12 @@ def test_normalize_and_chunk_id_agree() -> None:
 def test_normalize_is_reversible_in_place() -> None:
     # Normalizing twice yields the same result (idempotent).
     assert normalize(normalize("  a \t b  ")) == normalize("  a \t b  ")
+
+
+def test_file_digest_is_prefixed_blake3() -> None:
+    assert file_digest(b"hello").startswith("blake3:")
+
+
+def test_file_digest_is_stable_and_content_sensitive() -> None:
+    assert file_digest(b"a") == file_digest(b"a")
+    assert file_digest(b"a") != file_digest(b"b")

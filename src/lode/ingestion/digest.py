@@ -37,3 +37,12 @@ def chunk_id(text: str) -> str:
     """Content address: ``blake3:<hex>`` of the normalized text."""
     digest = blake3.blake3(normalize(text).encode("utf-8")).hexdigest()
     return f"{_DIGEST_PREFIX}{digest}"
+
+
+def file_digest(data: bytes) -> str:
+    """File-level content address: ``blake3:<hex>`` of the raw bytes.
+
+    Used for rename detection and change attribution (PLAN D6); unlike
+    ``chunk_id`` it hashes the raw bytes, not a normalized form.
+    """
+    return f"{_DIGEST_PREFIX}{blake3.blake3(data).hexdigest()}"
