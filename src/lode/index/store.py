@@ -123,6 +123,17 @@ class FileRecord:
     status: FileStatus = FileStatus.CURRENT
 
 
+@dataclass(frozen=True, slots=True)
+class ChunkWithPath:
+    """Chunk content joined with its file metadata (search-layer payload)."""
+
+    chunk_id: str
+    text: str
+    heading: str
+    path: str
+    file_status: FileStatus
+
+
 class Store:
     """SQLite index store: single connection, WAL, lock-protected.
 
@@ -134,6 +145,9 @@ class Store:
     """
 
     def __init__(self, db_path: Path, embedder: Embedder) -> None:
+        # The workspace may not have a `.lode/` directory yet; the store
+        # creates it so the first `lode mine` works on a bare workspace.
+        db_path.parent.mkdir(parents=True, exist_ok=True)
         self._db_path = db_path
         self._embedder = embedder
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
@@ -275,6 +289,63 @@ class Store:
             file_id = int(row[0])
             self._delete_chunks(file_id)
             self._conn.execute("DELETE FROM files WHERE id = ?", (file_id,))
+
+    def mark_stale(self, path: str) -> None:
+        """Mark a file's index data as outdated (content changed, sync pending)."""
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE files SET status = ? WHERE path = ?",
+                (FileStatus.STALE.value, path),
+            )
+
+    # -- query primitives (consumed by the search layer) ---------------------
+
+    def dense_search(self, vector: list[float], k: int) -> list[tuple[int, float]]:
+        """``(chunk rowid, distance)`` of the k nearest neighbors, ascending."""
+        if k <= 0:
+            return []
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT rowid, distance FROM chunk_vectors WHERE embedding MATCH ? AND k = {int(k)} ORDER BY distance",
+                (json.dumps(vector),),
+            ).fetchall()
+        return [(int(row[0]), float(row[1])) for row in rows]
+
+    def sparse_search(self, query: str, k: int) -> list[tuple[int, float]]:
+        """``(chunk rowid, bm25 score)`` of the k best FTS5 matches.
+
+        BM25 scores are negative in SQLite (closer to zero = better), so
+        callers should rank by descending score.
+        """
+        if k <= 0:
+            return []
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT rowid, bm25(chunks_fts) FROM chunks_fts "
+                "WHERE chunks_fts MATCH ? "
+                "ORDER BY bm25(chunks_fts) DESC LIMIT ?",
+                (query, k),
+            ).fetchall()
+        return [(int(row[0]), float(row[1])) for row in rows]
+
+    def get_chunks(self, rowids: list[int]) -> dict[int, ChunkWithPath]:
+        """Chunk contents for the given rowids, keyed by rowid."""
+        if not rowids:
+            return {}
+        placeholders = ",".join("?" for _ in rowids)
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT c.id, c.chunk_id, c.text, c.heading, f.path, f.status "
+                "FROM chunks c JOIN files f ON f.id = c.file_id "
+                f"WHERE c.id IN ({placeholders})",
+                [int(r) for r in rowids],
+            ).fetchall()
+        return {
+            int(row[0]): ChunkWithPath(
+                chunk_id=row[1], text=row[2], heading=row[3], path=row[4], file_status=FileStatus(row[5])
+            )
+            for row in rows
+        }
 
     def list_files(self) -> list[FileRecord]:
         """All indexed files, sorted by path."""
