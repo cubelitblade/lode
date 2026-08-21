@@ -66,9 +66,15 @@ class RetrievalConfig(BaseModel):
 
 
 class IgnoreConfig(BaseModel):
-    """Settings for file-discovery ignore rules. Reserved for M2 — not read yet."""
+    """Settings for file-discovery ignore rules.
 
-    patterns: list[str] = Field(default_factory=list)
+    Rather than listing patterns inline, config names ignore-like files to
+    load (gitignore semantics). ``.lodeignore`` is always loaded when present
+    at the workspace root; ``files`` adds extra sources such as ``.gitignore``.
+    Reserved for M2 — not read yet.
+    """
+
+    files: list[str] = Field(default_factory=list)
 
 
 def _init_kwargs(source: PydanticBaseSettingsSource) -> dict[str, Any]:

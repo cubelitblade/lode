@@ -29,7 +29,8 @@ def _write_toml(path: Path, body: str) -> None:
     path.write_text(body)
 
 
-def test_defaults_without_file_or_env() -> None:
+def test_defaults_without_file_or_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
     settings = config.load_settings()
     assert settings.embedding == config.EmbeddingConfig()
     assert settings.retrieval == config.RetrievalConfig()

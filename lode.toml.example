@@ -24,5 +24,6 @@ dense_weight = 0.6
 sparse_weight = 0.4
 top_k = 10
 
-[ignore]  # 预留：M2 文件发现忽略规则（glob 模式）
-patterns = [".git/**", "*.tmp", ".lode/**"]
+[ignore]  # 文件发现忽略规则：不写具体 patterns，而是列出要并入忽略清单的 ignore-like 文件（gitignore 语义）
+# .lodeignore 始终作为一等公民自动加载（无需在此列出）。
+files = [".gitignore"]

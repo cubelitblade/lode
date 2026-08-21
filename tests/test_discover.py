@@ -25,15 +25,25 @@ def test_always_ignores_lode_data_directory(tmp_path: Path) -> None:
     assert discover(tmp_path) == [Path("keep.txt")]
 
 
-def test_applies_custom_glob_patterns(tmp_path: Path) -> None:
+def test_lodeignore_is_first_class(tmp_path: Path) -> None:
+    (tmp_path / "keep.txt").write_text("k")
+    (tmp_path / "drop.log").write_text("l")
+    (tmp_path / ".lodeignore").write_text("*.log\n")
+
+    assert discover(tmp_path) == [Path("keep.txt")]
+
+
+def test_loads_configured_ignore_files(tmp_path: Path) -> None:
     (tmp_path / "keep.txt").write_text("k")
     (tmp_path / "drop.tmp").write_text("t")
     (tmp_path / "sub").mkdir()
     (tmp_path / "sub" / "also.tmp").write_text("t")
     (tmp_path / ".git").mkdir()
     (tmp_path / ".git" / "config").write_text("c")
+    (tmp_path / ".gitignore").write_text(".git/**\n*.tmp\n")
 
-    result = discover(tmp_path, patterns=[".git/**", "*.tmp"])
+    result = discover(tmp_path, ignore_files=[".gitignore"])
+
     assert result == [Path("keep.txt")]
 
 
@@ -43,8 +53,27 @@ def test_bare_directory_pattern_ignores_subtree(tmp_path: Path) -> None:
     (tmp_path / "vendor" / "deep").mkdir()
     (tmp_path / "vendor" / "deep" / "y.txt").write_text("y")
     (tmp_path / "main.txt").write_text("m")
+    (tmp_path / ".lodeignore").write_text("vendor\n")
 
-    assert discover(tmp_path, patterns=["vendor"]) == [Path("main.txt")]
+    assert discover(tmp_path) == [Path("main.txt")]
+
+
+def test_gitignore_negation(tmp_path: Path) -> None:
+    (tmp_path / "drop.log").write_text("l")
+    (tmp_path / "keep.log").write_text("k")
+    (tmp_path / ".lodeignore").write_text("*.log\n!keep.log\n")
+
+    assert discover(tmp_path) == [Path("keep.log")]
+
+
+def test_ignore_files_themselves_are_excluded(tmp_path: Path) -> None:
+    (tmp_path / ".lodeignore").write_text("*.tmp\n")
+    (tmp_path / ".gitignore").write_text("*.log\n")
+    (tmp_path / "a.txt").write_text("a")
+
+    result = discover(tmp_path, ignore_files=[".gitignore"])
+
+    assert result == [Path("a.txt")]
 
 
 def test_missing_root_raises(tmp_path: Path) -> None:

@@ -60,14 +60,14 @@ class SyncSummary:
 def survey_workspace(
     store: Store,
     root: Path,
-    patterns: Sequence[str] = (),
+    ignore_files: Sequence[str] = (),
 ) -> SurveySummary:
     """Detect workspace changes against the index and mark stale files.
 
     Read-mostly: only ``files.status`` is written (to STALE). No content is
     embedded or replaced here — that is ``sync``'s job.
     """
-    discovered = discover(root, patterns)
+    discovered = discover(root, ignore_files)
     indexed = {file.path: file for file in store.list_files()}
     on_disk = {rel.as_posix() for rel in discovered}
 
@@ -106,7 +106,7 @@ def sync(
     root: Path,
     embedder: Embedder,
     splitter: Splitter,
-    patterns: Sequence[str] = (),
+    ignore_files: Sequence[str] = (),
 ) -> SyncSummary:
     """Update the index to match the workspace: embed what changed, prune the rest.
 
@@ -114,7 +114,7 @@ def sync(
     still stale from a previous failed run — stale-but-unchanged files must
     be retried so a transient failure does not leave them stale forever.
     """
-    discovered = discover(root, patterns)
+    discovered = discover(root, ignore_files)
     indexed = {file.path: file for file in store.list_files()}
     on_disk = {rel.as_posix() for rel in discovered}
 

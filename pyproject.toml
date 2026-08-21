@@ -7,6 +7,7 @@ requires-python = ">=3.13"
 dependencies = [
     "blake3>=1.0.9",
     "httpx>=0.28.1",
+    "pathspec>=0.11.0",
     "pydantic>=2.13.4",
     "pydantic-settings>=2.15.0",
     "sqlite-vec>=0.1.9",

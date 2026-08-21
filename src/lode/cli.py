@@ -76,7 +76,7 @@ def survey(
         typer.echo(f"Index needs a rebuild: {exc}")
         raise typer.Exit(code=1) from exc
     with store:
-        result = survey_workspace(store, workspace, settings.ignore.patterns)
+        result = survey_workspace(store, workspace, settings.ignore.files)
         typer.echo(
             f"Surveyed {workspace}: {result.unchanged} unchanged, {result.new} new, "
             f"{result.changed} changed, {result.stale} stale, {result.missing} missing, "
@@ -118,7 +118,7 @@ def mine(
                 workspace,
                 embedder,
                 RecursiveTextSplitter(),
-                settings.ignore.patterns,
+                settings.ignore.files,
             )
             typer.echo(
                 f"Mined {workspace}: {result.added} added, {result.updated} updated, "
