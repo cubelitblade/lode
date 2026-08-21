@@ -10,7 +10,11 @@ dependencies = [
     "pydantic>=2.13.4",
     "pydantic-settings>=2.15.0",
     "sqlite-vec>=0.1.9",
+    "typer>=0.27.1",
 ]
+
+[project.scripts]
+lode = "lode.cli:app"
 
 [build-system]
 requires = ["hatchling"]
