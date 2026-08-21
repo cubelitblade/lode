@@ -5,6 +5,7 @@ description = "lode: local knowledge base semantic search exposed over MCP"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "blake3>=1.0.9",
     "httpx>=0.28.1",
     "pydantic>=2.13.4",
     "pydantic-settings>=2.15.0",
