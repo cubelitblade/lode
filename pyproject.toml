@@ -9,6 +9,7 @@ dependencies = [
     "httpx>=0.28.1",
     "pydantic>=2.13.4",
     "pydantic-settings>=2.15.0",
+    "sqlite-vec>=0.1.9",
 ]
 
 [build-system]
