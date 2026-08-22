@@ -56,8 +56,11 @@ class FailingEmbedder(FakeEmbedder):
         raise RuntimeError("embedding endpoint is down")
 
 
-def make_chunks(texts: list[str]) -> tuple[list[Chunk], list[list[float]]]:
-    chunks = [Chunk(id=chunk_id(text), text=text, seq=seq) for seq, text in enumerate(texts)]
+def make_chunks(texts: list[str], *, pages: list[int | None] | None = None) -> tuple[list[Chunk], list[list[float]]]:
+    chunks = [
+        Chunk(id=chunk_id(text), text=text, seq=seq, page=pages[seq] if pages else None)
+        for seq, text in enumerate(texts)
+    ]
     vectors = [[0.1 * (seq + 1), 0.2, 0.3, 0.4] for seq in range(len(texts))]
     return chunks, vectors
 

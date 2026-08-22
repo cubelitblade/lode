@@ -14,8 +14,8 @@ from typing import Annotated
 import typer
 
 from lode.config import build_embedder, load_settings
-from lode.index import EmbedderUnavailableError, ModelStatus, SchemaVersionError, Store
-from lode.index.search import search
+from lode.index import EmbedderUnavailableError, FileStatus, ModelStatus, SchemaVersionError, Store
+from lode.index.search import SearchHit, search
 from lode.ingestion.pipeline import survey_workspace, sync
 from lode.ingestion.split import RecursiveSegmentSplitter
 
@@ -44,6 +44,27 @@ def _model_gate(store: Store, *, rebuild_requested: bool = False) -> None:
             "Run `lode mine --rebuild` to rebuild, or switch back to that model."
         )
         raise typer.Exit(code=1)
+
+
+def _warn_stale(store: Store, hits: list[SearchHit]) -> None:
+    """Warn when the index holds files that `lode survey` marked stale.
+
+    Two distinct cases keep the message honest about where the risk sits:
+
+    * no stale file shows up in this result set — stale data is lurking
+      elsewhere; refresh keeps the library current;
+    * a stale file does show up — those entries may not reflect the
+      on-disk content, so verify before trusting them.
+    """
+    if not any(file.status is FileStatus.STALE for file in store.list_files()):
+        return
+    if any(hit.stale for hit in hits):
+        typer.echo(
+            "\nWarning: results include stale files; verify them before relying on them. "
+            "Run `lode mine` to update the index."
+        )
+    else:
+        typer.echo("\nWarning: the index holds stale files outside these results. Run `lode mine` to update the index.")
 
 
 # Shared workspace argument shape; used by all three commands. The default
@@ -183,15 +204,17 @@ def prospect(
         )
         if not hits:
             typer.echo("Dry hole: nothing matched.")
-            return
-        for index, hit in enumerate(hits, start=1):
-            stale_tag = " [stale]" if hit.stale else ""
-            heading = f" > {hit.heading}" if hit.heading else ""
-            typer.echo(f"{index}. [{hit.score:.3f}] {hit.path}{heading}{stale_tag}")
-            snippet = hit.text.strip().replace("\n", " ")
-            if len(snippet) > 160:
-                snippet = snippet[:157] + "..."
-            typer.echo(f"   {snippet}")
+        else:
+            for index, hit in enumerate(hits, start=1):
+                stale_tag = " [stale]" if hit.stale else ""
+                heading = f" > {hit.heading}" if hit.heading else ""
+                page = f" (p.{hit.page})" if hit.page is not None else ""
+                typer.echo(f"{index}. [{hit.score:.3f}] {hit.path}{heading}{page}{stale_tag}")
+                snippet = hit.text.strip().replace("\n", " ")
+                if len(snippet) > 160:
+                    snippet = snippet[:157] + "..."
+                typer.echo(f"   {snippet}")
+        _warn_stale(store, hits)
 
 
 if __name__ == "__main__":

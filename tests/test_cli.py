@@ -101,3 +101,37 @@ def test_search_alias_is_hidden_and_works(tmp_path: Path, monkeypatch: pytest.Mo
     assert "│ survey " in help_out
     assert "│ mine " in help_out
     assert "│ prospect " in help_out
+
+
+def test_prospect_warns_stale_files_outside_results(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
+    (tmp_path / "a.txt").write_text("hello world")
+    (tmp_path / "b.txt").write_text("quantum entanglement")
+    runner.invoke(app, ["mine", str(tmp_path)])
+
+    # Change a.txt so survey marks it stale; b.txt stays current.
+    (tmp_path / "a.txt").write_text("hello world changed")
+    runner.invoke(app, ["survey", str(tmp_path)])
+
+    # top-k 1 keeps only the current hit (b.txt), so the stale file is not
+    # in the result set.
+    prospect = runner.invoke(app, ["prospect", "entanglement", str(tmp_path), "--top-k", "1"])
+    assert prospect.exit_code == 0, prospect.output
+    assert "stale files outside these results" in prospect.output
+    assert "Run `lode mine`" in prospect.output
+
+
+def test_prospect_warns_stale_files_in_results(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
+    (tmp_path / "a.txt").write_text("hello world")
+    (tmp_path / "b.txt").write_text("quantum entanglement")
+    runner.invoke(app, ["mine", str(tmp_path)])
+
+    (tmp_path / "a.txt").write_text("hello world changed")
+    runner.invoke(app, ["survey", str(tmp_path)])
+
+    prospect = runner.invoke(app, ["prospect", "hello", str(tmp_path)])
+    assert prospect.exit_code == 0, prospect.output
+    assert "results include stale files" in prospect.output
+    assert "verify them before relying on them" in prospect.output
+    assert "Run `lode mine`" in prospect.output

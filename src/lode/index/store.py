@@ -132,6 +132,7 @@ class ChunkWithPath:
     heading: str
     path: str
     file_status: FileStatus
+    page: int | None = None
 
 
 class Store:
@@ -335,14 +336,19 @@ class Store:
         placeholders = ",".join("?" for _ in rowids)
         with self._lock:
             rows = self._conn.execute(
-                "SELECT c.id, c.chunk_id, c.text, c.heading, f.path, f.status "
+                "SELECT c.id, c.chunk_id, c.text, c.heading, f.path, f.status, c.page "
                 "FROM chunks c JOIN files f ON f.id = c.file_id "
                 f"WHERE c.id IN ({placeholders})",
                 [int(r) for r in rowids],
             ).fetchall()
         return {
             int(row[0]): ChunkWithPath(
-                chunk_id=row[1], text=row[2], heading=row[3], path=row[4], file_status=FileStatus(row[5])
+                chunk_id=row[1],
+                text=row[2],
+                heading=row[3],
+                path=row[4],
+                file_status=FileStatus(row[5]),
+                page=row[6],
             )
             for row in rows
         }

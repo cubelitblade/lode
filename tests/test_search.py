@@ -43,6 +43,26 @@ def test_search_returns_hits_with_provenance(seeded_store: Store) -> None:
     assert hit.score > 0
 
 
+def test_search_exposes_page_metadata(seeded_store: Store) -> None:
+    seeded_store.replace_file(
+        file_record("report.pdf", digest="blake3:cc", size=3),
+        *make_chunks(["page one content", "page two content"], pages=[1, 2]),
+    )
+
+    hits = search(
+        seeded_store,
+        FakeEmbedder(),
+        "page",
+        dense_weight=0.6,
+        sparse_weight=0.4,
+        top_k=5,
+    )
+
+    pdf_hits = [hit for hit in hits if hit.path == "report.pdf"]
+    assert pdf_hits
+    assert {hit.page for hit in pdf_hits} == {1, 2}
+
+
 def test_sparse_only_weight_uses_bm25(seeded_store: Store) -> None:
     hits = search(
         seeded_store,

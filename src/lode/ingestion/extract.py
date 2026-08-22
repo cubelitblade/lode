@@ -4,13 +4,15 @@ The extractor owns the supported-format table. Unsupported files return
 None and are skipped by the pipeline. Plain formats (txt/md) decode to a
 single unstructured segment; docx is parsed into structured segments that
 carry a heading chain (the ``Title`` style as root, plus Word ``Heading N``
-styles), which the chunker propagates to chunks so retrieval can cite
-provenance (small-to-big).
+styles); pdf is parsed into page-level segments that carry a page number
+and, when the document has an outline, a heading chain mapped from it.
+The chunker propagates heading/page so retrieval can cite provenance
+(small-to-big).
 
 Decoding is best-effort with a safe fallback chain: UTF-8 (with BOM) first,
 then UTF-16, then Latin-1 — which never fails, so extraction always yields
-some text rather than raising on an exotic encoding. (docx is binary, so it
-is never routed through the free-text decoder.)
+some text rather than raising on an exotic encoding. (docx and pdf are
+binary, so they are never routed through the free-text decoder.)
 """
 
 from __future__ import annotations
@@ -20,14 +22,15 @@ from dataclasses import dataclass
 from io import BytesIO
 from typing import Any, cast
 
+import pymupdf
 from docx import Document
 from docx.oxml.ns import qn
 from docx.table import Table
 from docx.text.paragraph import Paragraph
 
-# Plain-text formats decode directly; docx is parsed structurally.
+# Plain-text formats decode directly; docx and pdf are parsed structurally.
 PLAIN_EXTENSIONS = frozenset({".txt", ".md", ".markdown"})
-SUPPORTED_EXTENSIONS = PLAIN_EXTENSIONS | {".docx"}
+SUPPORTED_EXTENSIONS = PLAIN_EXTENSIONS | {".docx", ".pdf"}
 
 # Decoding fallback chain, most specific first. UTF-16 is only attempted
 # when a BOM is present: Python's utf-16 codec happily decodes arbitrary
@@ -71,13 +74,17 @@ def extract_document(data: bytes, suffix: str) -> list[Segment] | None:
 
     Plain formats yield a single segment carrying the whole text (no heading),
     so the recursive chunker's behaviour is unchanged. docx yields one segment
-    per heading section, each tagged with its heading chain.
+    per heading section, each tagged with its heading chain. pdf yields one
+    segment per page, tagged with the page number and (when the document has
+    an outline) the heading chain in effect on that page.
     """
     suffix = suffix.lower()
     if suffix in PLAIN_EXTENSIONS:
         return [Segment(text=decode_text(data))]
     if suffix == ".docx":
         return _extract_docx(data)
+    if suffix == ".pdf":
+        return _extract_pdf(data)
     return None
 
 
@@ -105,6 +112,51 @@ def decode_text(data: bytes) -> str:
             continue
     # latin-1 never raises; unreachable in practice, kept for exhaustiveness.
     return data.decode("latin-1", errors="replace")
+
+
+def _extract_pdf(data: bytes) -> list[Segment]:
+    """Parse a pdf into page-level segments.
+
+    Each page becomes one segment carrying its 1-based page number. When the
+    document has an outline (bookmarks), the heading chain in effect on each
+    page is derived from it: outline entries are applied to the page they
+    start on, and stay in effect until the next entry. Pages with no text are
+    skipped, but page numbers keep their real values so citations stay
+    accurate. No layout reconstruction, no block/paragraph extraction — the
+    page is the unit, and finer structure is left to a future need.
+    """
+    document = pymupdf.open(stream=data, filetype="pdf")
+    try:
+        # Outline entries: [level, title, page], level 1-based, page 1-based.
+        # PyMuPDF's stubs are partially unknown; cast to the documented shape.
+        toc: list[tuple[int, str, int]] = document.get_toc(simple=True)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+        outline = toc
+        # Map each page to the heading chain in effect on it. Outline levels
+        # are 1-based; the chain stack mirrors docx (level 1 resets to root).
+        chain_by_page: dict[int, str] = {}
+        stack: list[str] = []
+        for level, title, page in outline:
+            stack = [title] if level == 1 else [*stack[: level - 1], title]
+            chain_by_page[page] = _HEADING_SEP.join(stack)
+
+        segments: list[Segment] = []
+        page_count = cast(int, document.page_count)  # pyright: ignore[reportUnknownMemberType]
+        for page_index in range(page_count):
+            page = document[page_index]
+            text = cast(str, page.get_text("text")).strip()  # pyright: ignore[reportUnknownMemberType]
+            if not text:
+                continue
+            page_number = page_index + 1
+            segments.append(
+                Segment(
+                    text=text,
+                    heading=chain_by_page.get(page_number, ""),
+                    page=page_number,
+                )
+            )
+        return segments
+    finally:
+        document.close()
 
 
 def _extract_docx(data: bytes) -> list[Segment]:

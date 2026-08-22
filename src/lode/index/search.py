@@ -34,6 +34,7 @@ class SearchHit:
     heading: str
     score: float
     stale: bool
+    page: int | None = None
 
 
 def search(
@@ -84,6 +85,7 @@ def search(
                 heading=chunk.heading,
                 score=score,
                 stale=chunk.file_status is FileStatus.STALE,
+                page=chunk.page,
             )
         )
     return hits
