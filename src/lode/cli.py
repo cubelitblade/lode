@@ -8,13 +8,21 @@ the same functions — CLI first, MCP later (PLAN M1).
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Annotated
 
 import typer
 
 from lode.config import build_embedder, load_settings
-from lode.index import EmbedderUnavailableError, FileStatus, ModelStatus, SchemaVersionError, Store
+from lode.index import (
+    ChunkWithPath,
+    EmbedderUnavailableError,
+    FileStatus,
+    ModelStatus,
+    SchemaVersionError,
+    Store,
+)
 from lode.index.search import SearchHit, search
 from lode.ingestion.pipeline import survey_workspace, sync
 from lode.ingestion.split import RecursiveSegmentSplitter
@@ -221,6 +229,82 @@ def prospect(
                     snippet = snippet[:157] + "..."
                 typer.echo(f"   {snippet}")
         _warn_stale(store, hits)
+
+
+@app.command("dig")
+@app.command("get", hidden=True)
+def dig(
+    digest: Annotated[
+        str,
+        typer.Argument(help="Chunk digest: full `blake3:<hex>` or a short prefix (as shown by `prospect`)."),
+    ],
+    workspace: WorkspaceArg = Path("."),
+) -> None:
+    """Fetch a chunk's full text by its digest (content address)."""
+    db_path = workspace / INDEX_DB_RELATIVE
+    if not db_path.exists():
+        typer.echo(f"Dry hole: no index at {db_path}; run `lode mine` first.")
+        raise typer.Exit(code=1)
+    settings = load_settings()
+    embedder = build_embedder(settings.embedding)
+    try:
+        store = Store(db_path, embedder)
+    except SchemaVersionError as exc:
+        typer.echo(f"Index needs a rebuild: {exc}")
+        raise typer.Exit(code=1) from exc
+    with store:
+        _dig(store, digest)
+
+
+# Hex hexdigest bodies (BLAKE3 produces lowercase hex); accept uppercase too.
+_DIGEST_PATTERN = re.compile(r"[0-9a-f]+", re.IGNORECASE)
+
+
+def _normalize_digest(digest: str) -> str:
+    """Strip cosmetics that carry no addressing value.
+
+    Accepts the full ``blake3:<hex>``, the bare hex, or the short prefix
+    ``prospect`` prints (including a leading ``#``). Any uppercase hex is
+    folded to lowercase so it matches stored content addresses.
+    """
+    token = digest.strip()
+    if token.startswith("#"):
+        token = token[1:]
+    return token.removeprefix("blake3:").lower()
+
+
+def _dig(store: Store, digest: str) -> None:
+    token = _normalize_digest(digest)
+    if not _DIGEST_PATTERN.fullmatch(token):
+        typer.echo(f"Dry hole: not a valid digest: {digest!r}.")
+        raise typer.Exit(code=1)
+    matches = store.find_chunks_by_digest(token)
+    if not matches:
+        typer.echo(f"Dry hole: no chunk with digest {digest!r}.")
+        raise typer.Exit(code=1)
+    if len(matches) > 1:
+        typer.echo(f"Digest {digest!r} is ambiguous ({len(matches)} chunks); use a longer prefix:")
+        for chunk in matches:
+            _echo_provenance(chunk)
+        raise typer.Exit(code=1)
+    _print_chunk(matches[0])
+
+
+def _echo_provenance(chunk: ChunkWithPath) -> None:
+    short_id = chunk.chunk_id.removeprefix("blake3:")[:12]
+    heading = f" > {chunk.heading}" if chunk.heading else ""
+    page = f" (p.{chunk.page})" if chunk.page is not None else ""
+    typer.echo(f"  #{short_id} {chunk.path}{heading}{page}")
+
+
+def _print_chunk(chunk: ChunkWithPath) -> None:
+    short_id = chunk.chunk_id.removeprefix("blake3:")[:12]
+    heading = f" > {chunk.heading}" if chunk.heading else ""
+    page = f" (p.{chunk.page})" if chunk.page is not None else ""
+    stale = " [stale]" if chunk.file_status is FileStatus.STALE else ""
+    typer.echo(f"{chunk.path}{heading}{page}{stale} #{short_id}")
+    typer.echo()
+    typer.echo(chunk.text)
 
 
 if __name__ == "__main__":

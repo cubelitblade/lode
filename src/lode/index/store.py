@@ -341,17 +341,25 @@ class Store:
                 f"WHERE c.id IN ({placeholders})",
                 [int(r) for r in rowids],
             ).fetchall()
-        return {
-            int(row[0]): ChunkWithPath(
-                chunk_id=row[1],
-                text=row[2],
-                heading=row[3],
-                path=row[4],
-                file_status=FileStatus(row[5]),
-                page=row[6],
-            )
-            for row in rows
-        }
+        return {int(row[0]): _row_to_chunk_path(row) for row in rows}
+
+    def find_chunks_by_digest(self, prefix: str) -> list[ChunkWithPath]:
+        """Chunks whose ``chunk_id`` starts with ``prefix``.
+
+        The prefix is the hex part of a content address (``blake3:`` already
+        stripped). ``dig`` uses this to resolve either a full digest or the
+        short prefix ``prospect`` prints; results are ordered deterministically
+        (path, then sequence) so an ambiguous match can be listed readably.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT c.id, c.chunk_id, c.text, c.heading, f.path, f.status, c.page "
+                "FROM chunks c JOIN files f ON f.id = c.file_id "
+                "WHERE c.chunk_id LIKE ? "
+                "ORDER BY f.path, c.seq",
+                (f"blake3:{prefix}%",),
+            ).fetchall()
+        return [_row_to_chunk_path(row) for row in rows]
 
     def list_files(self) -> list[FileRecord]:
         """All indexed files, sorted by path."""
@@ -527,4 +535,15 @@ def _row_to_file(row: sqlite3.Row) -> FileRecord:
         mtime=row[2],
         size=row[3],
         status=FileStatus(row[4]),
+    )
+
+
+def _row_to_chunk_path(row: sqlite3.Row) -> ChunkWithPath:
+    return ChunkWithPath(
+        chunk_id=row[1],
+        text=row[2],
+        heading=row[3],
+        path=row[4],
+        file_status=FileStatus(row[5]),
+        page=row[6],
     )

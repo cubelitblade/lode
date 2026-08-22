@@ -20,6 +20,7 @@ from lode.embeddings.base import Embedder
 from lode.index import (
     EmbedderUnavailableError,
     FileRecord,
+    FileStatus,
     ModelStatus,
     SchemaVersionError,
     Store,
@@ -242,6 +243,45 @@ def test_remove_missing_file_is_a_noop(db_path: Path) -> None:
     with Store(db_path, FakeEmbedder()) as store:
         store.remove_file("nope.txt")
         assert store.list_files() == []
+
+
+# -- find_chunks_by_digest ---------------------------------------------------
+
+
+def test_find_chunks_by_digest_prefix_matches(db_path: Path) -> None:
+    chunks = [
+        Chunk(id="blake3:aaaa1111bbbb", text="first", seq=0),
+        Chunk(id="blake3:aaaa2222cccc", text="second", seq=1),
+        Chunk(id="blake3:bbbbeeeeffff", text="third", seq=2),
+    ]
+    vectors = [[0.1, 0.2, 0.3, 0.4] for _ in chunks]
+    with Store(db_path, FakeEmbedder()) as store:
+        store.replace_file(file_record("a.txt", digest="blake3:aa", size=1), chunks, vectors)
+
+        # A shared prefix resolves to both, ordered by sequence.
+        assert [c.text for c in store.find_chunks_by_digest("aaaa")] == ["first", "second"]
+        assert [c.text for c in store.find_chunks_by_digest("bbbb")] == ["third"]
+        # A full digest resolves to exactly one.
+        assert [c.text for c in store.find_chunks_by_digest("aaaa1111bbbb")] == ["first"]
+        # No match -> empty list.
+        assert store.find_chunks_by_digest("ffff") == []
+
+
+def test_find_chunks_by_digest_returns_provenance(db_path: Path) -> None:
+    chunks = [Chunk(id="blake3:cccc1111", text="content", seq=0, heading="Section 1", page=2)]
+    vectors = [[0.1, 0.2, 0.3, 0.4]]
+    with Store(db_path, FakeEmbedder()) as store:
+        store.replace_file(file_record("report.pdf", digest="blake3:cc", size=3), chunks, vectors)
+        found = store.find_chunks_by_digest("cccc")
+
+    assert len(found) == 1
+    chunk = found[0]
+    assert chunk.chunk_id == "blake3:cccc1111"
+    assert chunk.text == "content"
+    assert chunk.path == "report.pdf"
+    assert chunk.heading == "Section 1"
+    assert chunk.page == 2
+    assert chunk.file_status is FileStatus.CURRENT
 
 
 # -- rebuild ----------------------------------------------------------------

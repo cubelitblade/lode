@@ -14,6 +14,7 @@ from typer.testing import CliRunner
 
 from lode.cli import app
 from lode.config import EmbeddingConfig
+from lode.ingestion import chunk_id
 from tests.fakes import FakeEmbedder
 
 runner = CliRunner()
@@ -162,3 +163,91 @@ def test_prospect_warns_stale_files_in_results(tmp_path: Path, monkeypatch: pyte
     assert "results include stale files" in prospect.output
     assert "verify them before relying on them" in prospect.output
     assert "Run `lode mine`" in prospect.output
+
+
+def test_dig_returns_full_chunk_text(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
+    text = "The experiment showed strong quantum entanglement in the third group."
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "report.txt").write_text(text)
+    runner.invoke(app, ["mine", str(tmp_path)])
+
+    digest = chunk_id(text)
+    dig = runner.invoke(app, ["dig", digest, str(tmp_path)])
+    assert dig.exit_code == 0, dig.output
+    assert "docs/report.txt" in dig.output
+    assert text in dig.output
+    # Only the short stub is shown, never the full blake3 prefix.
+    assert "blake3:" not in dig.output
+
+
+def test_dig_accepts_short_prefix(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
+    text = "quantum entanglement in the lab"
+    (tmp_path / "a.txt").write_text(text)
+    runner.invoke(app, ["mine", str(tmp_path)])
+
+    short = chunk_id(text).removeprefix("blake3:")[:12]
+    dig = runner.invoke(app, ["dig", short, str(tmp_path)])
+    assert dig.exit_code == 0, dig.output
+    assert text in dig.output
+    assert "a.txt" in dig.output
+
+
+def test_dig_accepts_bare_hex(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
+    text = "quantum entanglement in the lab"
+    (tmp_path / "a.txt").write_text(text)
+    runner.invoke(app, ["mine", str(tmp_path)])
+
+    hex_digest = chunk_id(text).removeprefix("blake3:")
+    dig = runner.invoke(app, ["dig", hex_digest, str(tmp_path)])
+    assert dig.exit_code == 0, dig.output
+    assert text in dig.output
+
+
+def test_dig_missing_digest_reports_dry_hole(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
+    (tmp_path / "a.txt").write_text("hello world")
+    runner.invoke(app, ["mine", str(tmp_path)])
+
+    absent = chunk_id("this text is not indexed")
+    dig = runner.invoke(app, ["dig", absent, str(tmp_path)])
+    assert dig.exit_code != 0
+    assert "Dry hole" in dig.output
+
+
+def test_dig_without_index_reports_dry_hole(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
+    (tmp_path / "a.txt").write_text("hello world")  # never mined
+
+    dig = runner.invoke(app, ["dig", "deadbeef", str(tmp_path)])
+    assert dig.exit_code != 0
+    assert "Dry hole" in dig.output
+    assert "run `lode mine`" in dig.output
+
+
+def test_dig_invalid_digest_reports_dry_hole(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
+    text = "quantum entanglement"
+    (tmp_path / "a.txt").write_text(text)
+    runner.invoke(app, ["mine", str(tmp_path)])
+
+    dig = runner.invoke(app, ["dig", "not-a-digest!", str(tmp_path)])
+    assert dig.exit_code != 0
+    assert "not a valid digest" in dig.output
+
+
+def test_get_alias_is_hidden_and_works(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
+    text = "quantum entanglement"
+    (tmp_path / "a.txt").write_text(text)
+    runner.invoke(app, ["mine", str(tmp_path)])
+
+    result = runner.invoke(app, ["get", chunk_id(text), str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert text in result.output
+
+    help_out = runner.invoke(app, ["--help"]).output
+    assert "│ get " not in help_out
+    assert "│ dig " in help_out
