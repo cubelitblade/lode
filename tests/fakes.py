@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from io import BytesIO
+
+from docx import Document
+
 from lode.embeddings.base import Embedder
 from lode.index.store import FileRecord
 from lode.ingestion import Chunk, chunk_id
@@ -60,3 +64,15 @@ def make_chunks(texts: list[str]) -> tuple[list[Chunk], list[list[float]]]:
 
 def file_record(path: str = "a.txt", *, digest: str = "blake3:aa", size: int = 1) -> FileRecord:
     return FileRecord(path=path, digest=digest, mtime=1.0, size=size)
+
+
+def make_docx_bytes() -> bytes:
+    """A small docx with a Title and a Heading 1 section, as raw bytes."""
+    doc = Document()
+    doc.add_heading("总体报告", level=0)  # Title (root)
+    doc.add_paragraph("前言")
+    doc.add_heading("第三章", level=1)
+    doc.add_paragraph("高温耐久性内容")
+    buf = BytesIO()
+    doc.save(buf)
+    return buf.getvalue()

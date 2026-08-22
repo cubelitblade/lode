@@ -21,23 +21,44 @@ from lode.embeddings.base import Embedder
 from lode.index.store import FileRecord, FileStatus, Store
 from lode.ingestion.digest import file_digest
 from lode.ingestion.discover import discover
-from lode.ingestion.extract import extract_text, is_supported
-from lode.ingestion.split import Splitter
+from lode.ingestion.extract import extract_document, is_supported
+from lode.ingestion.split import SegmentSplitter
 
 
 @dataclass(slots=True)
 class SurveySummary:
     """Result of a detection-only pass over the workspace.
 
-    Not frozen: the survey/sync loops accumulate counts in place.
+    Counts are derived from the per-status path lists, so the summary line
+    and the ``pending`` listing always agree.
     """
 
-    unchanged: int = 0  # indexed, on disk, same mtime+size, status current
-    new: int = 0  # on disk, not indexed yet
-    changed: int = 0  # on disk, differs from the index, marked stale
-    stale: int = 0  # already marked stale, awaiting sync
-    missing: int = 0  # indexed, gone from disk (orphans, cleaned by sync)
+    unchanged_files: list[str] = field(default_factory=list[str])
+    new_files: list[str] = field(default_factory=list[str])
+    changed_files: list[str] = field(default_factory=list[str])
+    stale_files: list[str] = field(default_factory=list[str])
+    missing_files: list[str] = field(default_factory=list[str])
     skipped: int = 0  # on disk, unsupported format
+
+    @property
+    def unchanged(self) -> int:
+        return len(self.unchanged_files)
+
+    @property
+    def new(self) -> int:
+        return len(self.new_files)
+
+    @property
+    def changed(self) -> int:
+        return len(self.changed_files)
+
+    @property
+    def stale(self) -> int:
+        return len(self.stale_files)
+
+    @property
+    def missing(self) -> int:
+        return len(self.missing_files)
 
     @property
     def pending(self) -> int:
@@ -49,12 +70,24 @@ class SurveySummary:
 class SyncSummary:
     """Result of a full update pass."""
 
-    added: int = 0
-    updated: int = 0
+    added_files: list[str] = field(default_factory=list[str])
+    updated_files: list[str] = field(default_factory=list[str])
+    removed_files: list[str] = field(default_factory=list[str])
     unchanged: int = 0
-    removed: int = 0
     skipped: int = 0
     failed: list[str] = field(default_factory=list[str])
+
+    @property
+    def added(self) -> int:
+        return len(self.added_files)
+
+    @property
+    def updated(self) -> int:
+        return len(self.updated_files)
+
+    @property
+    def removed(self) -> int:
+        return len(self.removed_files)
 
 
 def survey_workspace(
@@ -80,24 +113,20 @@ def survey_workspace(
         stat = (root / rel).stat()
         known = indexed.get(rel_text)
         if known is None:
-            summary.new += 1
+            summary.new_files.append(rel_text)
         elif known.mtime == stat.st_mtime and known.size == stat.st_size:
             if known.status is FileStatus.CURRENT:
-                summary.unchanged += 1
+                summary.unchanged_files.append(rel_text)
             else:
-                summary.stale += 1
+                summary.stale_files.append(rel_text)
         else:
             store.mark_stale(rel_text)
-            summary.changed += 1
+            summary.changed_files.append(rel_text)
 
-    summary = SurveySummary(
-        unchanged=summary.unchanged,
-        new=summary.new,
-        changed=summary.changed,
-        stale=summary.stale,
-        missing=sum(1 for path in indexed if path not in on_disk),
-        skipped=summary.skipped,
-    )
+    for path in indexed:
+        if path not in on_disk:
+            summary.missing_files.append(path)
+
     return summary
 
 
@@ -105,7 +134,7 @@ def sync(
     store: Store,
     root: Path,
     embedder: Embedder,
-    splitter: Splitter,
+    splitter: SegmentSplitter,
     ignore_files: Sequence[str] = (),
 ) -> SyncSummary:
     """Update the index to match the workspace: embed what changed, prune the rest.
@@ -143,13 +172,18 @@ def sync(
             summary.unchanged += 1
             continue
 
-        text = extract_text(data, rel.suffix)
-        if text is None:
+        try:
+            segments = extract_document(data, rel.suffix)
+        except Exception as exc:
+            summary.failed.append(f"{rel_text}: {exc}")
+            store.mark_stale(rel_text)
+            continue
+        if segments is None:
             summary.skipped += 1
             continue
 
         try:
-            chunks = splitter.split(text)
+            chunks = splitter.split_segments(segments)
             vectors = embedder.embed_documents([chunk.text for chunk in chunks])
             store.replace_file(
                 FileRecord(path=rel_text, digest=file_digest(data), mtime=stat.st_mtime, size=stat.st_size),
@@ -157,9 +191,9 @@ def sync(
                 vectors,
             )
             if known is None:
-                summary.added += 1
+                summary.added_files.append(rel_text)
             else:
-                summary.updated += 1
+                summary.updated_files.append(rel_text)
         except Exception as exc:
             # The old snapshot stays queryable; the file is flagged so search
             # can tell the user it may be out of date (PLAN D7).
@@ -169,6 +203,6 @@ def sync(
     for path in indexed:
         if path not in on_disk:
             store.remove_file(path)
-            summary.removed += 1
+            summary.removed_files.append(path)
 
     return summary

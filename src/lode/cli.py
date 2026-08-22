@@ -17,7 +17,7 @@ from lode.config import build_embedder, load_settings
 from lode.index import EmbedderUnavailableError, ModelStatus, SchemaVersionError, Store
 from lode.index.search import search
 from lode.ingestion.pipeline import survey_workspace, sync
-from lode.ingestion.split import RecursiveTextSplitter
+from lode.ingestion.split import RecursiveSegmentSplitter
 
 # The index lives next to the workspace's own .lode/ directory (PLAN §3).
 INDEX_DB_RELATIVE = Path(".lode") / "index.db"
@@ -77,12 +77,24 @@ def survey(
         raise typer.Exit(code=1) from exc
     with store:
         result = survey_workspace(store, workspace, settings.ignore.files)
+        typer.echo(f"Surveyed {workspace}:")
         typer.echo(
-            f"Surveyed {workspace}: {result.unchanged} unchanged, {result.new} new, "
-            f"{result.changed} changed, {result.stale} stale, {result.missing} missing, "
-            f"{result.skipped} skipped. {result.pending} file(s) pending sync "
-            "(run `lode mine`)."
+            f"{result.unchanged} unchanged, {result.new} new, {result.changed} changed, "
+            f"{result.stale} stale, {result.missing} missing, {result.skipped} skipped."
         )
+        if result.pending:
+            typer.echo()
+            typer.echo("Pending sync:")
+            for path in result.new_files:
+                typer.echo(f"  + {path}")
+            for path in result.changed_files:
+                typer.echo(f"  ~ {path}")
+            for path in result.stale_files:
+                typer.echo(f"  ~ {path}")
+            for path in result.missing_files:
+                typer.echo(f"  - {path}")
+            typer.echo()
+            typer.echo("Run `lode mine` to update index.")
 
 
 @app.command("mine")
@@ -117,15 +129,25 @@ def mine(
                 store,
                 workspace,
                 embedder,
-                RecursiveTextSplitter(),
+                RecursiveSegmentSplitter(),
                 settings.ignore.files,
             )
+            typer.echo(f"Mined {workspace}:")
             typer.echo(
-                f"Mined {workspace}: {result.added} added, {result.updated} updated, "
+                f"{result.added} added, {result.updated} updated, "
                 f"{result.unchanged} unchanged, {result.removed} removed, "
                 f"{result.skipped} skipped."
             )
+            if result.added or result.updated or result.removed:
+                typer.echo()
+                for path in result.added_files:
+                    typer.echo(f"  + {path}")
+                for path in result.updated_files:
+                    typer.echo(f"  ~ {path}")
+                for path in result.removed_files:
+                    typer.echo(f"  - {path}")
             if result.failed:
+                typer.echo()
                 typer.echo("Stumbled on:")
                 for failure in result.failed:
                     typer.echo(f"  - {failure}")

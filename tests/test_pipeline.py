@@ -9,10 +9,11 @@ from pathlib import Path
 
 import pytest
 
+from lode.index.search import search
 from lode.index.store import FileStatus, Store
 from lode.ingestion.pipeline import survey_workspace, sync
-from lode.ingestion.split import RecursiveTextSplitter
-from tests.fakes import FailingEmbedder, FakeEmbedder
+from lode.ingestion.split import RecursiveSegmentSplitter
+from tests.fakes import FailingEmbedder, FakeEmbedder, make_docx_bytes
 
 
 @pytest.fixture
@@ -29,7 +30,7 @@ def write(tmp_path: Path, name: str, content: str) -> Path:
     return path
 
 
-SPLITTER = RecursiveTextSplitter(chunk_size=50, chunk_overlap=5)
+SPLITTER = RecursiveSegmentSplitter(chunk_size=50, chunk_overlap=5)
 
 
 def test_sync_indexes_new_files(store: Store, tmp_path: Path) -> None:
@@ -148,3 +149,25 @@ def test_survey_reports_new_missing_and_skipped(store: Store, tmp_path: Path) ->
     assert summary.missing == 1
     assert summary.skipped == 1
     assert summary.pending == 2  # new + missing
+
+
+def test_sync_indexes_docx_and_surfaces_heading(store: Store, tmp_path: Path) -> None:
+    (tmp_path / "report.docx").write_bytes(make_docx_bytes())
+
+    result = sync(store, tmp_path, FakeEmbedder(), SPLITTER)
+
+    assert result.added == 1
+    files = store.list_files()
+    assert len(files) == 1
+    assert files[0].path == "report.docx"
+    assert files[0].status is FileStatus.CURRENT
+
+    # The heading chain is written onto the stored chunks (provenance).
+    rowids = store.dense_search([0.1] * FakeEmbedder().dimension, 10)
+    chunks = store.get_chunks([rowid for rowid, _ in rowids])
+    assert "总体报告 / 第三章" in {chunk.heading for chunk in chunks.values()}
+
+    # And retrieval surfaces a provenance heading on its hits.
+    hits = search(store, FakeEmbedder(), "总体", dense_weight=0.6, sparse_weight=0.4, top_k=5)
+    assert hits
+    assert any(hit.heading for hit in hits)

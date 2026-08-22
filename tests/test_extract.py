@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from lode.ingestion.extract import decode_text, extract_text, is_supported
+from lode.ingestion.extract import decode_text, extract_document, extract_text, is_supported
 
 
 def test_extracts_utf8_plain_text() -> None:
@@ -27,7 +27,6 @@ def test_latin1_never_fails() -> None:
 
 def test_unsupported_extension_returns_none() -> None:
     assert extract_text(b"binary", ".pdf") is None
-    assert extract_text(b"x", ".docx") is None
 
 
 def test_extension_matching_is_case_insensitive() -> None:
@@ -38,8 +37,18 @@ def test_is_supported() -> None:
     assert is_supported(".txt")
     assert is_supported(".md")
     assert is_supported(".markdown")
-    assert not is_supported(".docx")
+    assert is_supported(".docx")
+    assert not is_supported(".pdf")
     assert not is_supported("")
+
+
+def test_extract_document_plain_is_single_segment() -> None:
+    segments = extract_document(b"hello world", ".txt")
+    assert segments is not None
+    assert len(segments) == 1
+    assert segments[0].text == "hello world"
+    assert segments[0].heading == ""
+    assert segments[0].page is None
 
 
 def test_decode_text_empty() -> None:

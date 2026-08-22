@@ -17,6 +17,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 from lode.ingestion.digest import chunk_id
+from lode.ingestion.extract import Segment
 from lode.ingestion.vendored import (
     RecursiveCharacterTextSplitter as _RecursiveCharacterTextSplitter,
 )
@@ -94,3 +95,52 @@ class RecursiveTextSplitter(Splitter):
     def split(self, text: str) -> list[Chunk]:
         pieces = self._splitter.split_text(text)
         return [Chunk(id=chunk_id(piece), text=piece, seq=seq) for seq, piece in enumerate(pieces)]
+
+
+class SegmentSplitter(ABC):
+    """Interface for chunking structured extracted content.
+
+    Operates on a sequence of ``Segment``s (which carry a heading chain and
+    optional page). Implementations are pure string algorithms: no I/O, no
+    side effects, deterministic for a given input. This is the entry point
+    the pipeline uses for formats with structure (docx today, pdf/xlsx
+    later); plain formats degrade to a single unstyled segment.
+    """
+
+    @abstractmethod
+    def split_segments(self, segments: list[Segment]) -> list[Chunk]:
+        """Split segments into chunks with global sequential positions (0-based)."""
+
+
+class RecursiveSegmentSplitter(SegmentSplitter):
+    """Heading-aware recursive splitter: window each segment independently.
+
+    Each segment's text is windowed by the same recursive rules as
+    ``RecursiveTextSplitter``, and the resulting chunks are tagged with the
+    segment's ``heading``/``page``. Heading boundaries are hard chunk
+    boundaries (no overlap across sections), which keeps provenance exact.
+
+    A plain format arrives as a single unstyled segment, so the output is
+    identical to windowing the whole text with ``RecursiveTextSplitter`` —
+    only ``seq`` is re-numbered globally.
+    """
+
+    def __init__(self, *, chunk_size: int = 512, chunk_overlap: int = 64) -> None:
+        self._splitter = RecursiveTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+
+    def split_segments(self, segments: list[Segment]) -> list[Chunk]:
+        chunks: list[Chunk] = []
+        seq = 0
+        for segment in segments:
+            for piece in self._splitter.split(segment.text):
+                chunks.append(
+                    Chunk(
+                        id=piece.id,
+                        text=piece.text,
+                        seq=seq,
+                        heading=segment.heading,
+                        page=segment.page,
+                    )
+                )
+                seq += 1
+        return chunks
