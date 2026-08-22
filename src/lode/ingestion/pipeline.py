@@ -36,7 +36,6 @@ class SurveySummary:
     unchanged_files: list[str] = field(default_factory=list[str])
     new_files: list[str] = field(default_factory=list[str])
     changed_files: list[str] = field(default_factory=list[str])
-    stale_files: list[str] = field(default_factory=list[str])
     missing_files: list[str] = field(default_factory=list[str])
     skipped: int = 0  # on disk, unsupported format
 
@@ -53,17 +52,13 @@ class SurveySummary:
         return len(self.changed_files)
 
     @property
-    def stale(self) -> int:
-        return len(self.stale_files)
-
-    @property
     def missing(self) -> int:
         return len(self.missing_files)
 
     @property
     def pending(self) -> int:
-        """Work for the next ``sync``: new + changed + stale + missing."""
-        return self.new + self.changed + self.stale + self.missing
+        """Work for the next ``sync``: new + changed + missing."""
+        return self.new + self.changed + self.missing
 
 
 @dataclass(slots=True)
@@ -95,10 +90,18 @@ def survey_workspace(
     root: Path,
     ignore_files: Sequence[str] = (),
 ) -> SurveySummary:
-    """Detect workspace changes against the index and mark stale files.
+    """Detect workspace changes against the index and mark changed files stale.
 
-    Read-mostly: only ``files.status`` is written (to STALE). No content is
-    embedded or replaced here — that is ``sync``'s job.
+    Read-mostly: only ``files.status`` is written (to STALE), so search can
+    flag files whose index may be out of date. No content is embedded or
+    replaced here — that is ``sync``'s job.
+
+    Classification is purely a disk-vs-index stat comparison:
+
+    * ``new`` — on disk but not indexed.
+    * ``changed`` — mtime/size differ from the index; the file is marked stale.
+    * ``unchanged`` — mtime/size match the index. A lingering STALE marker from
+      a previous failed run is cleared by ``sync``, not reported here.
     """
     discovered = discover(root, ignore_files)
     indexed = {file.path: file for file in store.list_files()}
@@ -115,10 +118,7 @@ def survey_workspace(
         if known is None:
             summary.new_files.append(rel_text)
         elif known.mtime == stat.st_mtime and known.size == stat.st_size:
-            if known.status is FileStatus.CURRENT:
-                summary.unchanged_files.append(rel_text)
-            else:
-                summary.stale_files.append(rel_text)
+            summary.unchanged_files.append(rel_text)
         else:
             store.mark_stale(rel_text)
             summary.changed_files.append(rel_text)

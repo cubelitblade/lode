@@ -80,7 +80,7 @@ def survey(
         typer.echo(f"Surveyed {workspace}:")
         typer.echo(
             f"{result.unchanged} unchanged, {result.new} new, {result.changed} changed, "
-            f"{result.stale} stale, {result.missing} missing, {result.skipped} skipped."
+            f"{result.missing} missing, {result.skipped} skipped."
         )
         if result.pending:
             typer.echo()
@@ -88,8 +88,6 @@ def survey(
             for path in result.new_files:
                 typer.echo(f"  + {path}")
             for path in result.changed_files:
-                typer.echo(f"  ~ {path}")
-            for path in result.stale_files:
                 typer.echo(f"  ~ {path}")
             for path in result.missing_files:
                 typer.echo(f"  - {path}")

@@ -151,6 +151,21 @@ def test_survey_reports_new_missing_and_skipped(store: Store, tmp_path: Path) ->
     assert summary.pending == 2  # new + missing
 
 
+def test_survey_reports_residual_stale_marker_as_unchanged(store: Store, tmp_path: Path) -> None:
+    write(tmp_path, "a.txt", "hello world content")
+    sync(store, tmp_path, FakeEmbedder(), SPLITTER)
+    # Simulate a failed sync that left a stale marker without any disk change.
+    store.mark_stale("a.txt")
+
+    summary = survey_workspace(store, tmp_path)
+
+    # Content still matches the index, so it is not pending work; sync will
+    # clear the stale marker rather than report it as a separate bucket.
+    assert summary.unchanged == 1
+    assert summary.changed == 0
+    assert summary.pending == 0
+
+
 def test_sync_indexes_docx_and_surfaces_heading(store: Store, tmp_path: Path) -> None:
     (tmp_path / "report.docx").write_bytes(make_docx_bytes())
 
