@@ -61,6 +61,18 @@ class SurveySummary:
         return self.new + self.changed + self.missing
 
 
+@dataclass(frozen=True, slots=True)
+class FailedFile:
+    """A file that failed to (re)index, with the reason it failed.
+
+    Structured so machine-readable output (and a future MCP layer) can read
+    ``path`` and ``error`` apart instead of parsing a single string.
+    """
+
+    path: str
+    error: str
+
+
 @dataclass(slots=True)
 class SyncSummary:
     """Result of a full update pass."""
@@ -70,7 +82,7 @@ class SyncSummary:
     removed_files: list[str] = field(default_factory=list[str])
     unchanged: int = 0
     skipped: int = 0
-    failed: list[str] = field(default_factory=list[str])
+    failed: list[FailedFile] = field(default_factory=list[FailedFile])
 
     @property
     def added(self) -> int:
@@ -157,8 +169,8 @@ def sync(
         try:
             data = path.read_bytes()
             stat = path.stat()
-        except OSError:
-            summary.failed.append(rel_text)
+        except OSError as exc:
+            summary.failed.append(FailedFile(path=rel_text, error=f"could not read file: {exc}"))
             store.mark_stale(rel_text)
             continue
 
@@ -175,7 +187,7 @@ def sync(
         try:
             segments = extract_document(data, rel.suffix)
         except Exception as exc:
-            summary.failed.append(f"{rel_text}: {exc}")
+            summary.failed.append(FailedFile(path=rel_text, error=str(exc)))
             store.mark_stale(rel_text)
             continue
         if segments is None:
@@ -197,7 +209,7 @@ def sync(
         except Exception as exc:
             # The old snapshot stays queryable; the file is flagged so search
             # can tell the user it may be out of date (PLAN D7).
-            summary.failed.append(f"{rel_text}: {exc}")
+            summary.failed.append(FailedFile(path=rel_text, error=str(exc)))
             store.mark_stale(rel_text)
 
     for path in indexed:

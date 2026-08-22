@@ -17,7 +17,7 @@ from lode import config
 from lode.cli import app
 from lode.config import EmbeddingConfig
 from lode.ingestion import chunk_id
-from tests.fakes import FakeEmbedder
+from tests.fakes import FailingEmbedder, FakeEmbedder
 
 runner = CliRunner()
 
@@ -34,6 +34,10 @@ def _fake_embedder(_cfg: EmbeddingConfig) -> FakeEmbedder:
 
 def _other_model_embedder(_cfg: EmbeddingConfig) -> FakeEmbedder:
     return FakeEmbedder(model_id="other-model")
+
+
+def _failing_embedder(_cfg: EmbeddingConfig) -> FailingEmbedder:
+    return FailingEmbedder()
 
 
 def test_mine_then_prospect_roundtrip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -312,6 +316,84 @@ def test_survey_json_error_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     assert payload["schema_version"] == 1
     assert payload["error"]["code"] == "schema_version"
     assert "rebuild" in payload["error"]["message"]
+
+
+def test_mine_json_reports_changes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
+    (tmp_path / "a.txt").write_text("hello world")
+    (tmp_path / "b.txt").write_text("quantum entanglement")
+
+    result = runner.invoke(app, ["mine", "--json", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+
+    assert payload["command"] == "mine"
+    assert payload["success"] is True
+    assert payload["schema_version"] == 1
+    assert payload["rebuild"] is False
+    assert payload["workspace"] == str(tmp_path)
+    assert payload["summary"] == {"added": 2, "updated": 0, "unchanged": 0, "removed": 0, "skipped": 0}
+    assert set(payload["paths"]["added"]) == {"a.txt", "b.txt"}
+    assert payload["paths"]["updated"] == []
+    assert payload["paths"]["removed"] == []
+    assert payload["failed"] == []
+
+
+def test_mine_rebuild_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
+    (tmp_path / "a.txt").write_text("hello world")
+
+    result = runner.invoke(app, ["mine", "--rebuild", "--json", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["success"] is True
+    assert payload["rebuild"] is True
+    assert payload["summary"]["added"] == 1
+
+
+def test_mine_json_reports_failed_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("lode.cli.build_embedder", _failing_embedder)
+    (tmp_path / "a.txt").write_text("hello world")
+
+    result = runner.invoke(app, ["mine", "--json", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["success"] is True
+    assert payload["failed"] == [{"path": "a.txt", "error": "embedding endpoint is down"}]
+    assert payload["summary"]["added"] == 0
+
+
+def test_mine_json_model_mismatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
+    (tmp_path / "a.txt").write_text("hello world")
+    runner.invoke(app, ["mine", str(tmp_path)])
+
+    monkeypatch.setattr("lode.cli.build_embedder", _other_model_embedder)
+    result = runner.invoke(app, ["mine", "--json", str(tmp_path)])
+    assert result.exit_code != 0
+    payload = json.loads(result.output)
+    assert payload["command"] == "mine"
+    assert payload["success"] is False
+    assert payload["error"]["code"] == "model_mismatch"
+
+
+def test_mine_json_schema_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
+    (tmp_path / "a.txt").write_text("hello world")
+    runner.invoke(app, ["mine", str(tmp_path)])
+
+    conn = sqlite3.connect(str(tmp_path / ".lode" / "index.db"))
+    try:
+        conn.execute("UPDATE meta SET value = ? WHERE key = 'schema_version'", ("999",))
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = runner.invoke(app, ["mine", "--json", str(tmp_path)])
+    assert result.exit_code != 0
+    payload = json.loads(result.output)
+    assert payload["success"] is False
+    assert payload["error"]["code"] == "schema_version"
 
 
 # -- `lode config` CLI ----------------------------------------------------------

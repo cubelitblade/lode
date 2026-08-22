@@ -85,7 +85,7 @@ app = typer.Typer(
 )
 
 
-def _model_gate(store: Store, *, rebuild_requested: bool = False) -> None:
+def _model_gate(store: Store, *, rebuild_requested: bool = False, as_json: bool = False, command: str = "mine") -> None:
     """Enforce the model-consistency contract for mine/prospect.
 
     A mismatch means the index was built with a different model: querying it
@@ -94,11 +94,15 @@ def _model_gate(store: Store, *, rebuild_requested: bool = False) -> None:
     does not block — search must keep working (PLAN D7).
     """
     if store.model_status is ModelStatus.MISMATCH and not rebuild_requested:
-        typer.echo(
+        message = (
             "The index was built with a different model "
             f"(indexed: {store.stored_model_id!r}). "
             "Run `lode mine --rebuild` to rebuild, or switch back to that model."
         )
+        if as_json:
+            _echo_json(_json_err(command, message, code="model_mismatch"))
+        else:
+            typer.echo(message)
         raise typer.Exit(code=1)
 
 
@@ -216,6 +220,7 @@ def mine(
         help="Drop and rebuild the whole index first (required after a model change).",
     ),
     config: ConfigArg = None,
+    as_json: bool = typer.Option(False, "--json", help="Emit machine-readable JSON output."),
 ) -> None:
     """Embed changed/new files and update the index (requires an embedding endpoint).
 
@@ -227,11 +232,15 @@ def mine(
     try:
         store = Store(workspace / INDEX_DB_RELATIVE, embedder)
     except SchemaVersionError as exc:
-        typer.echo(f"Index needs a rebuild: {exc}")
+        message = f"Index needs a rebuild: {exc}"
+        if as_json:
+            _echo_json(_json_err("mine", message, code="schema_version"))
+        else:
+            typer.echo(message)
         raise typer.Exit(code=1) from exc
 
     try:
-        _model_gate(store, rebuild_requested=rebuild)
+        _model_gate(store, rebuild_requested=rebuild, as_json=as_json, command="mine")
         with store:
             if rebuild:
                 store.rebuild()
@@ -245,28 +254,56 @@ def mine(
                 ),
                 settings.ignore.sources,
             )
-            typer.echo(f"Mined {workspace}:")
-            typer.echo(
-                f"{result.added} added, {result.updated} updated, "
-                f"{result.unchanged} unchanged, {result.removed} removed, "
-                f"{result.skipped} skipped."
-            )
-            if result.added or result.updated or result.removed:
-                typer.echo()
-                for path in result.added_files:
-                    typer.echo(f"  + {path}")
-                for path in result.updated_files:
-                    typer.echo(f"  ~ {path}")
-                for path in result.removed_files:
-                    typer.echo(f"  - {path}")
-            if result.failed:
-                typer.echo()
-                typer.echo("Stumbled on:")
-                for failure in result.failed:
-                    typer.echo(f"  - {failure}")
-                typer.echo("Re-run `lode mine` after fixing these to retry.")
+            if as_json:
+                _echo_json(
+                    _json_ok(
+                        "mine",
+                        workspace=str(workspace),
+                        rebuild=rebuild,
+                        summary={
+                            "added": result.added,
+                            "updated": result.updated,
+                            "unchanged": result.unchanged,
+                            "removed": result.removed,
+                            "skipped": result.skipped,
+                        },
+                        paths={
+                            "added": result.added_files,
+                            "updated": result.updated_files,
+                            "removed": result.removed_files,
+                        },
+                        failed=[
+                            {"path": failure.path, "error": failure.error}
+                            for failure in result.failed
+                        ],
+                    )
+                )
+            else:
+                typer.echo(f"Mined {workspace}:")
+                typer.echo(
+                    f"{result.added} added, {result.updated} updated, "
+                    f"{result.unchanged} unchanged, {result.removed} removed, "
+                    f"{result.skipped} skipped."
+                )
+                if result.added or result.updated or result.removed:
+                    typer.echo()
+                    for path in result.added_files:
+                        typer.echo(f"  + {path}")
+                    for path in result.updated_files:
+                        typer.echo(f"  ~ {path}")
+                    for path in result.removed_files:
+                        typer.echo(f"  - {path}")
+                if result.failed:
+                    typer.echo()
+                    typer.echo("Stumbled on:")
+                    for failure in result.failed:
+                        typer.echo(f"  - {failure.path}: {failure.error}")
+                    typer.echo("Re-run `lode mine` after fixing these to retry.")
     except EmbedderUnavailableError as exc:
-        typer.echo(str(exc))
+        if as_json:
+            _echo_json(_json_err("mine", str(exc), code="embedder_unavailable"))
+        else:
+            typer.echo(str(exc))
         raise typer.Exit(code=1) from exc
 
 

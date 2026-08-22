@@ -11,7 +11,7 @@ import pytest
 
 from lode.index.search import search
 from lode.index.store import FileStatus, Store
-from lode.ingestion.pipeline import survey_workspace, sync
+from lode.ingestion.pipeline import FailedFile, survey_workspace, sync
 from lode.ingestion.split import RecursiveSegmentSplitter
 from tests.fakes import FailingEmbedder, FakeEmbedder, make_docx_bytes
 
@@ -96,6 +96,9 @@ def test_sync_failure_marks_file_stale_and_keeps_going(store: Store, tmp_path: P
     result = sync(store, tmp_path, FailingEmbedder(), SPLITTER)
 
     assert len(result.failed) == 2
+    assert all(isinstance(failure, FailedFile) for failure in result.failed)
+    assert {failure.path for failure in result.failed} == {"a.txt", "b.txt"}
+    assert all(failure.error for failure in result.failed)
     file_a = store.get_file("a.txt")
     file_b = store.get_file("b.txt")
     assert file_a is not None
