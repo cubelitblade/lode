@@ -215,3 +215,59 @@ def test_build_embedder_from_settings() -> None:
     embedder = config.build_embedder(settings.embedding)
     assert isinstance(embedder, OpenAICompatibleEmbedder)
     assert embedder.base_url == "http://localhost:9999"
+
+
+# -- helpers for the `lode config` CLI -----------------------------------------
+
+
+def test_validate_key_accepts_leaf_keys() -> None:
+    config.validate_key("embedding.model")
+    config.validate_key("embedding.api.endpoint")
+    config.validate_key("retrieval.semantic_factor")
+    config.validate_key("chunking.size")
+    config.validate_key("ignore.sources")
+
+
+def test_validate_key_rejects_sections_and_unknown() -> None:
+    # Whole sections are not settable leaves.
+    for key in ("embedding", "embedding.api", "retrieval", "chunking", "ignore"):
+        with pytest.raises(KeyError):
+            config.validate_key(key)
+    # Unknown/invalid keys.
+    for key in ("config_files", "unknown", "embedding.unknown", ""):
+        with pytest.raises(KeyError):
+            config.validate_key(key)
+
+
+def test_parse_value_types() -> None:
+    assert config.parse_value("embedding.model", "BAAI/bge-small-zh-v1.5") == "BAAI/bge-small-zh-v1.5"
+    assert config.parse_value("embedding.batch_size", "8") == 8
+    assert config.parse_value("embedding.api.timeout", "30.0") == 30.0
+    assert config.parse_value("embedding.l2_normalize", "false") is False
+    assert config.parse_value("embedding.l2_normalize", "1") is True
+    assert config.parse_value("ignore.sources", ".gitignore, docs") == [".gitignore", "docs"]
+    assert config.parse_value("ignore.sources", '["a", "b"]') == ["a", "b"]
+
+
+def test_parse_value_rejects_bad_types() -> None:
+    with pytest.raises(ValueError, match=r"embedding\.batch_size"):
+        config.parse_value("embedding.batch_size", "abc")
+    with pytest.raises(ValueError, match=r"embedding\.l2_normalize"):
+        config.parse_value("embedding.l2_normalize", "maybe")
+    with pytest.raises(ValueError, match=r"ignore\.sources"):
+        config.parse_value("ignore.sources", "[1, 2]")
+    with pytest.raises(KeyError):
+        config.parse_value("unknown.key", "x")
+
+
+def test_effective_config_drops_internal_field() -> None:
+    settings = config.Settings(
+        embedding=config.EmbeddingConfig(model="m", api=config.EmbeddingApiConfig(endpoint="http://x")),
+        chunking=config.ChunkingConfig(size=2048),
+    )
+    data = config.effective_config(settings)
+    # The internal `config_files` field must not leak into the serialized config.
+    assert "config_files" not in data
+    assert data["embedding"]["model"] == "m"
+    assert data["embedding"]["api"]["endpoint"] == "http://x"
+    assert data["chunking"]["size"] == 2048
