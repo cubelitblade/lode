@@ -45,6 +45,39 @@ from lode.ingestion.split import RecursiveSegmentSplitter
 # The index lives next to the workspace's own .lode/ directory (PLAN §3).
 INDEX_DB_RELATIVE = Path(".lode") / "index.db"
 
+# Machine-readable output (--json) envelope. This is the bridge to a future
+# MCP layer: every `--json`-capable command emits the same top-level shape
+# (schema_version, command, success, plus data or error) so consumers can tell
+# success/failure apart and read data uniformly. `schema_version` lets the
+# shape evolve without breaking existing consumers.
+JSON_SCHEMA_VERSION = 1
+
+
+def _json_ok(command: str, **data: Any) -> dict[str, Any]:
+    """Build a successful --json envelope (success=True + command data)."""
+    return {
+        "schema_version": JSON_SCHEMA_VERSION,
+        "command": command,
+        "success": True,
+        **data,
+    }
+
+
+def _json_err(command: str, message: str, *, code: str = "error") -> dict[str, Any]:
+    """Build a failed --json envelope (success=False + structured error)."""
+    return {
+        "schema_version": JSON_SCHEMA_VERSION,
+        "command": command,
+        "success": False,
+        "error": {"code": code, "message": message},
+    }
+
+
+def _echo_json(payload: dict[str, Any]) -> None:
+    """Print a --json payload as an indented, non-ASCII-safe JSON document."""
+    typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
 app = typer.Typer(
     name="lode",
     help="lode: turn a workspace of documents into a searchable knowledge lode.",
@@ -114,6 +147,7 @@ ConfigArg = Annotated[
 def survey(
     workspace: WorkspaceArg = Path("."),
     config: ConfigArg = None,
+    as_json: bool = typer.Option(False, "--json", help="Emit machine-readable JSON output."),
 ) -> None:
     """Detect workspace changes against the index; mark changed files stale.
 
@@ -124,26 +158,52 @@ def survey(
     try:
         store = Store(workspace / INDEX_DB_RELATIVE, embedder)
     except SchemaVersionError as exc:
-        typer.echo(f"Index needs a rebuild: {exc}")
+        message = f"Index needs a rebuild: {exc}"
+        if as_json:
+            _echo_json(_json_err("survey", message, code="schema_version"))
+        else:
+            typer.echo(message)
         raise typer.Exit(code=1) from exc
     with store:
         result = survey_workspace(store, workspace, settings.ignore.sources)
-        typer.echo(f"Surveyed {workspace}:")
-        typer.echo(
-            f"{result.unchanged} unchanged, {result.new} new, {result.changed} changed, "
-            f"{result.missing} missing, {result.skipped} skipped."
-        )
-        if result.pending:
-            typer.echo()
-            typer.echo("Pending sync:")
-            for path in result.new_files:
-                typer.echo(f"  + {path}")
-            for path in result.changed_files:
-                typer.echo(f"  ~ {path}")
-            for path in result.missing_files:
-                typer.echo(f"  - {path}")
-            typer.echo()
-            typer.echo("Run `lode mine` to update index.")
+        if as_json:
+            _echo_json(
+                _json_ok(
+                    "survey",
+                    workspace=str(workspace),
+                    summary={
+                        "unchanged": result.unchanged,
+                        "new": result.new,
+                        "changed": result.changed,
+                        "missing": result.missing,
+                        "skipped": result.skipped,
+                        "pending": result.pending,
+                    },
+                    paths={
+                        "new": result.new_files,
+                        "changed": result.changed_files,
+                        "missing": result.missing_files,
+                        "unchanged": result.unchanged_files,
+                    },
+                )
+            )
+        else:
+            typer.echo(f"Surveyed {workspace}:")
+            typer.echo(
+                f"{result.unchanged} unchanged, {result.new} new, {result.changed} changed, "
+                f"{result.missing} missing, {result.skipped} skipped."
+            )
+            if result.pending:
+                typer.echo()
+                typer.echo("Pending sync:")
+                for path in result.new_files:
+                    typer.echo(f"  + {path}")
+                for path in result.changed_files:
+                    typer.echo(f"  ~ {path}")
+                for path in result.missing_files:
+                    typer.echo(f"  - {path}")
+                typer.echo()
+                typer.echo("Run `lode mine` to update index.")
 
 
 @app.command("mine")

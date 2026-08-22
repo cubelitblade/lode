@@ -6,6 +6,7 @@ monkeypatch; everything else runs through the actual typer app.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -258,6 +259,59 @@ def test_get_alias_is_hidden_and_works(tmp_path: Path, monkeypatch: pytest.Monke
     help_out = runner.invoke(app, ["--help"]).output
     assert "│ get " not in help_out
     assert "│ dig " in help_out
+
+
+def test_survey_json_reports_changes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
+    (tmp_path / "a.txt").write_text("hello world")
+    runner.invoke(app, ["mine", str(tmp_path)])
+
+    (tmp_path / "a.txt").write_text("changed content!")
+    (tmp_path / "b.txt").write_text("brand new file")
+
+    result = runner.invoke(app, ["survey", "--json", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+
+    assert payload["command"] == "survey"
+    assert payload["success"] is True
+    assert payload["schema_version"] == 1
+    assert payload["workspace"] == str(tmp_path)
+    assert payload["summary"] == {
+        "unchanged": 0,
+        "new": 1,
+        "changed": 1,
+        "missing": 0,
+        "skipped": 0,
+        "pending": 2,
+    }
+    assert payload["paths"]["new"] == ["b.txt"]
+    assert payload["paths"]["changed"] == ["a.txt"]
+    assert payload["paths"]["missing"] == []
+    assert payload["paths"]["unchanged"] == []
+
+
+def test_survey_json_error_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
+    (tmp_path / "a.txt").write_text("hello world")
+    runner.invoke(app, ["mine", str(tmp_path)])
+
+    # Corrupt the schema version so the store refuses to open.
+    conn = sqlite3.connect(str(tmp_path / ".lode" / "index.db"))
+    try:
+        conn.execute("UPDATE meta SET value = ? WHERE key = 'schema_version'", ("999",))
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = runner.invoke(app, ["survey", "--json", str(tmp_path)])
+    assert result.exit_code != 0
+    payload = json.loads(result.output)
+    assert payload["command"] == "survey"
+    assert payload["success"] is False
+    assert payload["schema_version"] == 1
+    assert payload["error"]["code"] == "schema_version"
+    assert "rebuild" in payload["error"]["message"]
 
 
 # -- `lode config` CLI ----------------------------------------------------------
