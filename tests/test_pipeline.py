@@ -183,6 +183,6 @@ def test_sync_indexes_docx_and_surfaces_heading(store: Store, tmp_path: Path) ->
     assert "总体报告 / 第三章" in {chunk.heading for chunk in chunks.values()}
 
     # And retrieval surfaces a provenance heading on its hits.
-    hits = search(store, FakeEmbedder(), "总体", dense_weight=0.6, sparse_weight=0.4, top_k=5)
+    hits = search(store, FakeEmbedder(), "总体", semantic_weight=0.6, lexical_weight=0.4, top_k=5)
     assert hits
     assert any(hit.heading for hit in hits)

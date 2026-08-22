@@ -206,3 +206,23 @@ def test_empty_model_list_raises() -> None:
     emb = OpenAICompatibleEmbedder(client=client)
     with pytest.raises(ValueError, match="no models"):
         _ = emb.model_id
+
+
+def test_api_key_sends_bearer_header() -> None:
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/models":
+            return httpx.Response(200, json={"data": [{"id": MODEL_ID}]})
+        if request.url.path == "/v1/embeddings":
+            seen["authorization"] = request.headers.get("Authorization", "")
+            return httpx.Response(
+                200,
+                json={"data": [{"index": 0, "embedding": [1.0] * DIM}], "model": MODEL_ID},
+            )
+        return httpx.Response(404, text="not found")
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), timeout=5.0)
+    emb = OpenAICompatibleEmbedder(client=client, model=MODEL_ID, dimension=DIM, api_key="secret")
+    emb.embed_documents(["x"])
+    assert seen["authorization"] == "Bearer secret"

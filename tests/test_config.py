@@ -52,7 +52,7 @@ batch_size = 8
     assert settings.embedding.model == "BAAI/bge-small-zh-v1.5"
     assert settings.embedding.batch_size == 8
     # Fields not present in the file keep their defaults.
-    assert settings.embedding.base_url == "http://localhost:8080"
+    assert settings.embedding.api.endpoint == "http://localhost:8080"
     # Sections absent from the file fall back to their defaults entirely.
     assert settings.retrieval == config.RetrievalConfig()
     assert settings.chunking == config.ChunkingConfig()
@@ -64,13 +64,13 @@ def test_chunking_from_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
         tmp_path / ".lode" / "config.toml",
         """
 [chunking]
-chunk_size = 2048
-chunk_overlap = 256
+size = 2048
+overlap = 256
 """,
     )
     settings = config.load_settings()
-    assert settings.chunking.chunk_size == 2048
-    assert settings.chunking.chunk_overlap == 256
+    assert settings.chunking.size == 2048
+    assert settings.chunking.overlap == 256
 
 
 def test_chunking_env_overrides_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -79,27 +79,60 @@ def test_chunking_env_overrides_toml(tmp_path: Path, monkeypatch: pytest.MonkeyP
         tmp_path / ".lode" / "config.toml",
         """
 [chunking]
-chunk_size = 2048
-chunk_overlap = 256
+size = 2048
+overlap = 256
 """,
     )
-    monkeypatch.setenv("LODE_CHUNKING__CHUNK_SIZE", "4096")
+    monkeypatch.setenv("LODE_CHUNKING__SIZE", "4096")
     settings = config.load_settings()
-    assert settings.chunking.chunk_size == 4096
+    assert settings.chunking.size == 4096
     # Env vars only touch the fields they name.
-    assert settings.chunking.chunk_overlap == 256
+    assert settings.chunking.overlap == 256
 
 
 def test_explicit_path(tmp_path: Path) -> None:
     toml = tmp_path / "custom.toml"
-    _write_toml(toml, '[embedding]\nbase_url = "http://127.0.0.1:11434"\n')
+    _write_toml(toml, '[embedding.api]\nendpoint = "http://127.0.0.1:11434"\n')
     settings = config.load_settings(toml)
-    assert settings.embedding.base_url == "http://127.0.0.1:11434"
+    assert settings.embedding.api.endpoint == "http://127.0.0.1:11434"
 
 
 def test_explicit_path_must_exist(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError, match="Config file not found"):
         config.load_settings(tmp_path / "missing.toml")
+
+
+def test_nested_api_from_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    _write_toml(
+        tmp_path / ".lode" / "config.toml",
+        """
+[embedding.api]
+type = "openai_compatible"
+endpoint = "http://127.0.0.1:11434"
+max_retries = 5
+timeout = 30.0
+""",
+    )
+    settings = config.load_settings()
+    assert settings.embedding.api.type == "openai_compatible"
+    assert settings.embedding.api.endpoint == "http://127.0.0.1:11434"
+    assert settings.embedding.api.max_retries == 5
+    assert settings.embedding.api.timeout == 30.0
+
+
+def test_nested_api_env_overrides_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    _write_toml(
+        tmp_path / ".lode" / "config.toml",
+        """
+[embedding.api]
+endpoint = "http://127.0.0.1:11434"
+""",
+    )
+    monkeypatch.setenv("LODE_EMBEDDING__API__ENDPOINT", "http://0.0.0.0:9999")
+    settings = config.load_settings()
+    assert settings.embedding.api.endpoint == "http://0.0.0.0:9999"
 
 
 def test_env_overrides_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -124,7 +157,7 @@ def test_env_without_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setenv("LODE_RETRIEVAL__TOP_K", "25")
     settings = config.load_settings()
     assert settings.retrieval.top_k == 25
-    assert settings.retrieval.dense_weight == config.DEFAULT_DENSE_WEIGHT
+    assert settings.retrieval.semantic_factor == config.DEFAULT_SEMANTIC_FACTOR
 
 
 def test_explicit_kwargs_win_over_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -134,7 +167,9 @@ def test_explicit_kwargs_win_over_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_build_embedder_from_settings() -> None:
-    settings = config.Settings(embedding=config.EmbeddingConfig(base_url="http://localhost:9999"))
+    settings = config.Settings(
+        embedding=config.EmbeddingConfig(api=config.EmbeddingApiConfig(endpoint="http://localhost:9999"))
+    )
     embedder = config.build_embedder(settings.embedding)
     assert isinstance(embedder, OpenAICompatibleEmbedder)
     assert embedder.base_url == "http://localhost:9999"

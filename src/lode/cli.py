@@ -105,7 +105,7 @@ def survey(
         typer.echo(f"Index needs a rebuild: {exc}")
         raise typer.Exit(code=1) from exc
     with store:
-        result = survey_workspace(store, workspace, settings.ignore.files)
+        result = survey_workspace(store, workspace, settings.ignore.sources)
         typer.echo(f"Surveyed {workspace}:")
         typer.echo(
             f"{result.unchanged} unchanged, {result.new} new, {result.changed} changed, "
@@ -157,10 +157,10 @@ def mine(
                 workspace,
                 embedder,
                 RecursiveSegmentSplitter(
-                    chunk_size=settings.chunking.chunk_size,
-                    chunk_overlap=settings.chunking.chunk_overlap,
+                    chunk_size=settings.chunking.size,
+                    chunk_overlap=settings.chunking.overlap,
                 ),
-                settings.ignore.files,
+                settings.ignore.sources,
             )
             typer.echo(f"Mined {workspace}:")
             typer.echo(
@@ -192,7 +192,7 @@ def mine(
 def prospect(
     query: Annotated[str, typer.Argument(help="Query to search for.")],
     workspace: WorkspaceArg = Path("."),
-    top_k: Annotated[int, typer.Option("--top-k", min=1, help="Number of results to return.")] = 10,
+    top_k: Annotated[int | None, typer.Option("--top-k", min=1, help="Number of results to return.")] = None,
 ) -> None:
     """Search the index and show results with provenance (file + heading)."""
     settings = load_settings()
@@ -205,14 +205,20 @@ def prospect(
 
     _model_gate(store)
     with store:
-        hits = search(
-            store,
-            embedder,
-            query,
-            dense_weight=settings.retrieval.dense_weight,
-            sparse_weight=settings.retrieval.sparse_weight,
-            top_k=top_k,
-        )
+        if top_k is None:
+            top_k = settings.retrieval.top_k
+        try:
+            hits = search(
+                store,
+                embedder,
+                query,
+                semantic_weight=settings.retrieval.semantic_factor,
+                lexical_weight=settings.retrieval.lexical_factor,
+                top_k=top_k,
+            )
+        except ValueError as exc:
+            typer.echo(str(exc))
+            raise typer.Exit(code=1) from exc
         if not hits:
             typer.echo("Dry hole: nothing matched.")
         else:

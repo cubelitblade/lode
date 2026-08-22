@@ -78,7 +78,7 @@ def test_mine_uses_chunking_config(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     # the CLI from the workspace root.
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".lode").mkdir()
-    (tmp_path / ".lode" / "config.toml").write_text("[chunking]\nchunk_size = 20\nchunk_overlap = 5\n")
+    (tmp_path / ".lode" / "config.toml").write_text("[chunking]\nsize = 20\noverlap = 5\n")
     (tmp_path / "a.txt").write_text("word " * 100)
 
     mine = runner.invoke(app, ["mine", str(tmp_path)])

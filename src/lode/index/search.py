@@ -1,8 +1,8 @@
-"""Hybrid retrieval: dense (vec0) + sparse (FTS5) with weighted fusion.
+"""Hybrid retrieval: semantic (dense vec0) + lexical (sparse FTS5) fusion.
 
 Per PLAN D5: both sources are scored, min-max normalized, and combined with
-configurable weights. Dense scores are cosine similarities (vectors are
-L2-normalized, so cosine == dot); sparse scores are BM25, normalized
+configurable weights. Semantic scores are cosine similarities (vectors are
+L2-normalized, so cosine == dot); lexical scores are BM25, normalized
 per-query to [0, 1] so the two are comparable.
 """
 
@@ -42,24 +42,28 @@ def search(
     embedder: Embedder,
     query: str,
     *,
-    dense_weight: float,
-    sparse_weight: float,
+    semantic_weight: float,
+    lexical_weight: float,
     top_k: int,
 ) -> list[SearchHit]:
-    """Hybrid search: weighted fusion of dense and sparse results."""
+    """Hybrid search: weighted fusion of semantic and lexical results."""
     if top_k <= 0 or not query.strip():
         return []
+    if semantic_weight == 0 and lexical_weight == 0:
+        raise ValueError(
+            "You can't discover an ore without a prospecting tool.\n"
+            "Hint: at least one of `semantic_factor` and `lexical_factor` must be non-zero."
+        )
     pool = top_k * CANDIDATE_MULTIPLIER
 
-    dense_scores = _dense_scores(store, embedder, query, pool)
-    sparse_scores = _sparse_scores(store, query, pool)
-
-    dense_norm = _minmax(dense_scores)
-    sparse_norm = _minmax(sparse_scores)
+    semantic_norm = _minmax(_semantic_scores(store, embedder, query, pool)) if semantic_weight != 0 else {}
+    lexical_norm = _minmax(_lexical_scores(store, query, pool)) if lexical_weight != 0 else {}
 
     combined: dict[int, float] = {}
-    for rowid in dense_norm.keys() | sparse_norm.keys():
-        combined[rowid] = dense_weight * dense_norm.get(rowid, 0.0) + sparse_weight * sparse_norm.get(rowid, 0.0)
+    for rowid in semantic_norm.keys() | lexical_norm.keys():
+        combined[rowid] = semantic_weight * semantic_norm.get(rowid, 0.0) + lexical_weight * lexical_norm.get(
+            rowid, 0.0
+        )
 
     # Zero-score rows (no match in either source) carry no signal; dropping
     # them keeps e.g. sparse-only queries from returning unrelated chunks.
@@ -91,12 +95,12 @@ def search(
     return hits
 
 
-def _dense_scores(store: Store, embedder: Embedder, query: str, k: int) -> dict[int, float]:
+def _semantic_scores(store: Store, embedder: Embedder, query: str, k: int) -> dict[int, float]:
     vector = embedder.embed_query(query)
     return {rowid: _cosine(distance) for rowid, distance in store.dense_search(vector, k)}
 
 
-def _sparse_scores(store: Store, query: str, k: int) -> dict[int, float]:
+def _lexical_scores(store: Store, query: str, k: int) -> dict[int, float]:
     fts_query = _fts_query(query)
     if not fts_query:
         return {}

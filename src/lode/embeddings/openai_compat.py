@@ -58,6 +58,7 @@ class OpenAICompatibleEmbedder(Embedder):
         timeout: float = 60.0,
         retries: int = 3,
         normalize: bool = True,
+        api_key: str | None = None,
         client: httpx.Client | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
@@ -65,6 +66,7 @@ class OpenAICompatibleEmbedder(Embedder):
         self.timeout = timeout
         self.retries = max(0, retries)
         self.normalize = normalize
+        self._api_key = api_key
         self._client = client or httpx.Client(timeout=timeout)
         self._model = model
         self._dimension = dimension
@@ -133,6 +135,10 @@ class OpenAICompatibleEmbedder(Embedder):
         return l2_normalize(vectors) if self.normalize else vectors
 
     def _request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
+        if self._api_key is not None:
+            headers = dict(kwargs.pop("headers", {}))
+            headers["Authorization"] = f"Bearer {self._api_key}"
+            kwargs["headers"] = headers
         attempt = 0
         while True:
             try:

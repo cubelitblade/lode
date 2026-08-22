@@ -31,8 +31,8 @@ def test_search_returns_hits_with_provenance(seeded_store: Store) -> None:
         seeded_store,
         FakeEmbedder(),
         "fox",
-        dense_weight=0.6,
-        sparse_weight=0.4,
+        semantic_weight=0.6,
+        lexical_weight=0.4,
         top_k=5,
     )
 
@@ -53,8 +53,8 @@ def test_search_exposes_page_metadata(seeded_store: Store) -> None:
         seeded_store,
         FakeEmbedder(),
         "page",
-        dense_weight=0.6,
-        sparse_weight=0.4,
+        semantic_weight=0.6,
+        lexical_weight=0.4,
         top_k=5,
     )
 
@@ -68,8 +68,8 @@ def test_sparse_only_weight_uses_bm25(seeded_store: Store) -> None:
         seeded_store,
         FakeEmbedder(),
         "fox",
-        dense_weight=0.0,
-        sparse_weight=1.0,
+        semantic_weight=0.0,
+        lexical_weight=1.0,
         top_k=5,
     )
 
@@ -82,8 +82,8 @@ def test_dense_only_weight_uses_knn(seeded_store: Store) -> None:
         seeded_store,
         FakeEmbedder(),
         "quantum",
-        dense_weight=1.0,
-        sparse_weight=0.0,
+        semantic_weight=1.0,
+        lexical_weight=0.0,
         top_k=5,
     )
 
@@ -98,8 +98,8 @@ def test_search_respects_top_k(seeded_store: Store) -> None:
         seeded_store,
         FakeEmbedder(),
         "fox",
-        dense_weight=0.6,
-        sparse_weight=0.4,
+        semantic_weight=0.6,
+        lexical_weight=0.4,
         top_k=1,
     )
     assert len(hits) == 1
@@ -112,8 +112,8 @@ def test_search_flags_stale_files(seeded_store: Store, tmp_path: Path) -> None:
         seeded_store,
         FakeEmbedder(),
         "fox",
-        dense_weight=0.6,
-        sparse_weight=0.4,
+        semantic_weight=0.6,
+        lexical_weight=0.4,
         top_k=5,
     )
 
@@ -125,22 +125,48 @@ def test_search_empty_query_returns_nothing(seeded_store: Store) -> None:
         seeded_store,
         FakeEmbedder(),
         "   ",
-        dense_weight=0.6,
-        sparse_weight=0.4,
+        semantic_weight=0.6,
+        lexical_weight=0.4,
         top_k=5,
     )
     assert hits == []
 
 
 def test_search_unmatched_query_returns_only_zero_score_filtered(seeded_store: Store) -> None:
-    # "zzzzznope" matches nothing lexically: sparse contributes zero, so with
-    # sparse-only weights no hit survives the zero-score filter.
+    # "zzzzznope" matches nothing lexically: lexical contributes zero, so with
+    # lexical-only weights no hit survives the zero-score filter.
     hits = search(
         seeded_store,
         FakeEmbedder(),
         "zzzzznope",
-        dense_weight=0.0,
-        sparse_weight=1.0,
+        semantic_weight=0.0,
+        lexical_weight=1.0,
         top_k=5,
     )
     assert hits == []
+
+
+def test_both_factors_zero_raise(seeded_store: Store) -> None:
+    with pytest.raises(ValueError, match="prospecting tool"):
+        search(
+            seeded_store,
+            FakeEmbedder(),
+            "fox",
+            semantic_weight=0.0,
+            lexical_weight=0.0,
+            top_k=5,
+        )
+
+
+def test_sum_zero_but_not_both_zero_is_allowed(seeded_store: Store) -> None:
+    # e.g. 0.5 + (-0.5) == 0 is a valid (if unusual) scoring config; only
+    # both-zero is rejected.
+    hits = search(
+        seeded_store,
+        FakeEmbedder(),
+        "fox",
+        semantic_weight=0.5,
+        lexical_weight=-0.5,
+        top_k=5,
+    )
+    assert isinstance(hits, list)

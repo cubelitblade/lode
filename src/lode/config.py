@@ -38,9 +38,9 @@ ENV_NESTED_DELIMITER = "__"
 # Default config file location, relative to the current working directory.
 DEFAULT_CONFIG_PATH = Path(".lode") / "config.toml"
 
-# Defaults for hybrid retrieval (dense + sparse); consumed in M2.
-DEFAULT_DENSE_WEIGHT = 0.6
-DEFAULT_SPARSE_WEIGHT = 0.4
+# Defaults for hybrid retrieval (semantic + lexical); consumed in M2.
+DEFAULT_SEMANTIC_FACTOR = 0.7
+DEFAULT_LEXICAL_FACTOR = 0.3
 DEFAULT_TOP_K = 10
 
 # Defaults for text chunking; consumed by the ingestion pipeline.
@@ -48,24 +48,31 @@ DEFAULT_CHUNK_SIZE = 1024
 DEFAULT_CHUNK_OVERLAP = 128
 
 
+class EmbeddingApiConfig(BaseModel):
+    """Transport settings for the embedding HTTP backend."""
+
+    type: str = "openai_compatible"
+    key: str | None = None
+    endpoint: str = "http://localhost:8080"
+    max_retries: int = 3
+    timeout: float = 60.0
+
+
 class EmbeddingConfig(BaseModel):
     """Settings for the embedding model backend."""
 
-    provider: str = "openai_compat"
-    base_url: str = "http://localhost:8080"
     model: str | None = None
     dimension: int | None = None
+    l2_normalize: bool = True
     batch_size: int = 32
-    timeout: float = 60.0
-    retries: int = 3
-    normalize: bool = True
+    api: EmbeddingApiConfig = EmbeddingApiConfig()
 
 
 class RetrievalConfig(BaseModel):
     """Settings for hybrid retrieval. Reserved for M2 — not read yet."""
 
-    dense_weight: float = DEFAULT_DENSE_WEIGHT
-    sparse_weight: float = DEFAULT_SPARSE_WEIGHT
+    semantic_factor: float = DEFAULT_SEMANTIC_FACTOR
+    lexical_factor: float = DEFAULT_LEXICAL_FACTOR
     top_k: int = DEFAULT_TOP_K
 
 
@@ -78,8 +85,8 @@ class ChunkingConfig(BaseModel):
     them.
     """
 
-    chunk_size: int = DEFAULT_CHUNK_SIZE
-    chunk_overlap: int = DEFAULT_CHUNK_OVERLAP
+    size: int = DEFAULT_CHUNK_SIZE
+    overlap: int = DEFAULT_CHUNK_OVERLAP
 
 
 class IgnoreConfig(BaseModel):
@@ -91,7 +98,7 @@ class IgnoreConfig(BaseModel):
     Reserved for M2 — not read yet.
     """
 
-    files: list[str] = Field(default_factory=list)
+    sources: list[str] = Field(default_factory=list)
 
 
 def _init_kwargs(source: PydanticBaseSettingsSource) -> dict[str, Any]:
@@ -167,14 +174,15 @@ def load_settings(toml_path: str | Path | None = None) -> Settings:
 
 def build_embedder(cfg: EmbeddingConfig) -> Embedder:
     """Construct the embedding implementation selected by config."""
-    if cfg.provider == "openai_compat":
+    if cfg.api.type == "openai_compatible":
         return OpenAICompatibleEmbedder(
-            base_url=cfg.base_url,
+            base_url=cfg.api.endpoint,
+            api_key=cfg.api.key,
             model=cfg.model,
             dimension=cfg.dimension,
             batch_size=cfg.batch_size,
-            timeout=cfg.timeout,
-            retries=cfg.retries,
-            normalize=cfg.normalize,
+            timeout=cfg.api.timeout,
+            retries=cfg.api.max_retries,
+            normalize=cfg.l2_normalize,
         )
-    raise ValueError(f"Unknown embedding provider: {cfg.provider!r}")
+    raise ValueError(f"Unknown embedding provider: {cfg.api.type!r}")

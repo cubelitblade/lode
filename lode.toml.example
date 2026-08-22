@@ -1,35 +1,82 @@
-# lode 配置示例。
-#
-# 用法：
-#   1. 复制为 .lode/config.toml（默认加载路径，相对当前工作目录）；
-#      或通过 CLI 显式指定路径（--config <path>，待实现）。
-#   2. 所有字段可省略，省略的字段使用内置默认值。
-#
-# 覆盖优先级（低 -> 高）：
-#   内置默认值 < 本文件 < 环境变量（LODE_ 前缀，分段用双下划线，
-#   如 LODE_EMBEDDING__MODEL）< 代码中显式传入的构造参数。
+version = 1
 
 [embedding]
-provider = "openai_compat"          # 目前仅此实现；未来可加 sentence-transformers 等
-base_url = "http://localhost:8080"  # 任意 OpenAI-compatible 端点：TEI / Ollama / vLLM / llama.cpp / 托管 API
-# model = "BAAI/bge-small-zh-v1.5"  # 留空则启动时从 GET /v1/models 自动探测
-# dimension = 512                   # 留空则用一次探针请求自动探测
-batch_size = 32                     # 不超过 TEI 的 max_client_batch_size
-timeout = 60.0                      # 单次请求超时（秒）
-retries = 3                         # 幂等请求（429/5xx）的重试次数
-normalize = true                    # 客户端 L2 归一化，保证 cosine == dot
 
-[retrieval]  # 预留：M2 混合检索（稠密 + BM25）权重
-dense_weight = 0.6
-sparse_weight = 0.4
+# Name of the embedding model.
+# If omitted, lode will try to discover the model information from the embedding API endpoint.
+# This is useful for OpenAI-compatible servers that expose model metadata.
+# model = "BAAI/bge-small-zh-v1.5"
+
+# Dimension of the embedding vectors.
+# If omitted, lode will try to discover it from the embedding API endpoint.
+# The dimension must match the actual output dimension of the embedding model.
+# Changing this value requires rebuilding the index.
+# dimension = 512
+
+# Whether to apply L2 normalization to embedding vectors.
+# When enabled, cosine similarity can be calculated efficiently using dot product.
+# Usually recommended for retrieval tasks.
+l2_normalize = true
+
+# Number of texts sent to the embedding API in a single request.
+# Larger values may improve throughput but require more memory.
+batch_size = 32
+
+
+[embedding.api]
+
+# Type of embedding API endpoint.
+# Supported values:
+# - `openai_compatible`: OpenAI Embeddings API compatible endpoint.
+type = "openai_compatible"
+
+# Base URL of the embedding API endpoint.
+endpoint = "http://localhost:8080"
+
+# Optional API key for authenticated endpoints.
+# key = ""
+
+# Maximum number of retries when an embedding request fails.
+max_retries = 3
+
+# Timeout in seconds for each embedding request.
+timeout = 60.0
+
+
+[retrieval]
+
+# Maximum number of results returned by `lode prospect`.
+# Larger values provide more candidates but may reduce readability.
 top_k = 10
 
-[chunking]  # 文本切分参数
-chunk_size = 1024    # 每个 chunk 的最大字符数
-chunk_overlap = 128  # 相邻 chunk 的重叠字符数（必须小于 chunk_size）
-# 注意：修改 chunk 参数后，已索引文件不会自动重新切分（索引按文件内容摘要
-# 判断是否更新），需要运行 `lode mine --rebuild` 重建索引。
+# Weight factors used to combine semantic and lexical retrieval scores.
+# Final score:
+#   score = semantic_score * semantic_factor
+#          + lexical_score * lexical_factor
+#
+# semantic_factor controls vector similarity importance.
+# lexical_factor controls keyword/full-text matching importance.
+#
+# Factors can be negative for advanced ranking strategies.
+# They must not both be zero.
+semantic_factor = 0.7
+lexical_factor = 0.3
 
-[ignore]  # 文件发现忽略规则：不写具体 patterns，而是列出要并入忽略清单的 ignore-like 文件（gitignore 语义）
-# .lodeignore 始终作为一等公民自动加载（无需在此列出）。
-files = [".gitignore"]
+
+[chunking]
+
+# Maximum size of each text chunk before embedding.
+# Larger chunks preserve more context but may reduce retrieval precision.
+size = 1024
+
+# Number of overlapping characters between adjacent chunks.
+# Overlap helps preserve context across chunk boundaries.
+overlap = 128
+
+
+[ignore]
+
+# Additional ignore sources.
+# Files matched by these patterns will not be indexed.
+# `.lodeignore` is always supported and does not need to be listed here.
+sources = [".gitignore"]
