@@ -17,11 +17,13 @@ from lode.embeddings.openai_compat import OpenAICompatibleEmbedder
 
 
 @pytest.fixture(autouse=True)
-def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:  # pyright: ignore[reportUnusedFunction]  # autouse fixture: run for every test, not referenced directly
-    """Remove any LODE_* vars so every test starts from a blank slate."""
+def _clean_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:  # pyright: ignore[reportUnusedFunction]  # autouse fixture: run for every test, not referenced directly
+    """Remove any LODE_* vars and isolate the user config dir."""
     for key in list(os.environ):
         if key.startswith(config.ENV_PREFIX):
             monkeypatch.delenv(key, raising=False)
+    # Redirect the user-level config so host configs don't leak into tests.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
 
 
 def _write_toml(path: Path, body: str) -> None:
@@ -133,6 +135,46 @@ endpoint = "http://127.0.0.1:11434"
     monkeypatch.setenv("LODE_EMBEDDING__API__ENDPOINT", "http://0.0.0.0:9999")
     settings = config.load_settings()
     assert settings.embedding.api.endpoint == "http://0.0.0.0:9999"
+
+
+def test_user_config_loads_as_base(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    user_path = config.user_config_path()
+    user_path.parent.mkdir(parents=True, exist_ok=True)
+    user_path.write_text('[embedding]\nmodel = "user-model"\n')
+    settings = config.load_settings()
+    assert settings.embedding.model == "user-model"
+
+
+def test_project_config_overrides_user(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    user_path = config.user_config_path()
+    user_path.parent.mkdir(parents=True, exist_ok=True)
+    user_path.write_text('[embedding]\nmodel = "user-model"\n')
+    (tmp_path / "lode.toml").write_text('[embedding]\nmodel = "project-model"\n')
+    settings = config.load_settings()
+    assert settings.embedding.model == "project-model"
+
+
+def test_project_configs_merge_later_wins(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".lode.toml").write_text('[embedding]\nmodel = "dot-model"\nbatch_size = 1\n')
+    (tmp_path / "lode.toml").write_text('[embedding]\nmodel = "root-model"\n')
+    (tmp_path / ".lode").mkdir()
+    (tmp_path / ".lode" / "config.toml").write_text('[embedding]\nmodel = "local-model"\n')
+    settings = config.load_settings()
+    # .lode/config.toml wins (latest), but batch_size from .lode.toml survives (merge).
+    assert settings.embedding.model == "local-model"
+    assert settings.embedding.batch_size == 1
+
+
+def test_explicit_path_skips_discovery(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "lode.toml").write_text('[embedding]\nmodel = "discovered"\n')
+    custom = tmp_path / "custom.toml"
+    custom.write_text('[embedding]\nmodel = "explicit"\n')
+    settings = config.load_settings(custom)
+    assert settings.embedding.model == "explicit"
 
 
 def test_env_overrides_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

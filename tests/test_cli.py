@@ -20,6 +20,12 @@ from tests.fakes import FakeEmbedder
 runner = CliRunner()
 
 
+@pytest.fixture(autouse=True)
+def _isolate_user_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:  # pyright: ignore[reportUnusedFunction]  # autouse fixture: run for every test, not referenced directly
+    """Redirect the user config dir so host configs don't leak into tests."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+
+
 def _fake_embedder(_cfg: EmbeddingConfig) -> FakeEmbedder:
     return FakeEmbedder()
 

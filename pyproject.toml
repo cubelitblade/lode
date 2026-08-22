@@ -8,6 +8,7 @@ dependencies = [
     "blake3>=1.0.9",
     "httpx>=0.28.1",
     "pathspec>=0.11.0",
+    "platformdirs>=4.2.0",
     "pydantic>=2.13.4",
     "pydantic-settings>=2.15.0",
     "pymupdf>=1.24.0",

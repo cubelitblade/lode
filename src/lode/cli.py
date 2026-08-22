@@ -87,17 +87,24 @@ WorkspaceArg = Annotated[
     ),
 ]
 
+# Shared config option: an explicit path skips auto-discovery (see config).
+ConfigArg = Annotated[
+    Path | None,
+    typer.Option("--config", help="Path to a config file (skips auto-discovery)."),
+]
+
 
 @app.command("survey")
 @app.command("status", hidden=True)
 def survey(
     workspace: WorkspaceArg = Path("."),
+    config: ConfigArg = None,
 ) -> None:
     """Detect workspace changes against the index; mark changed files stale.
 
     No embedding endpoint is needed — pure file comparison.
     """
-    settings = load_settings()
+    settings = load_settings(config)
     embedder = build_embedder(settings.embedding)
     try:
         store = Store(workspace / INDEX_DB_RELATIVE, embedder)
@@ -133,13 +140,14 @@ def mine(
         "--rebuild",
         help="Drop and rebuild the whole index first (required after a model change).",
     ),
+    config: ConfigArg = None,
 ) -> None:
     """Embed changed/new files and update the index (requires an embedding endpoint).
 
     Use `--rebuild` after changing the embedding model or if the index
     schema is incompatible.
     """
-    settings = load_settings()
+    settings = load_settings(config)
     embedder = build_embedder(settings.embedding)
     try:
         store = Store(workspace / INDEX_DB_RELATIVE, embedder)
@@ -193,9 +201,10 @@ def prospect(
     query: Annotated[str, typer.Argument(help="Query to search for.")],
     workspace: WorkspaceArg = Path("."),
     top_k: Annotated[int | None, typer.Option("--top-k", min=1, help="Number of results to return.")] = None,
+    config: ConfigArg = None,
 ) -> None:
     """Search the index and show results with provenance (file + heading)."""
-    settings = load_settings()
+    settings = load_settings(config)
     embedder = build_embedder(settings.embedding)
     try:
         store = Store(workspace / INDEX_DB_RELATIVE, embedder)
@@ -245,13 +254,14 @@ def dig(
         typer.Argument(help="Chunk digest: full `blake3:<hex>` or a short prefix (as shown by `prospect`)."),
     ],
     workspace: WorkspaceArg = Path("."),
+    config: ConfigArg = None,
 ) -> None:
     """Fetch a chunk's full text by its digest (content address)."""
     db_path = workspace / INDEX_DB_RELATIVE
     if not db_path.exists():
         typer.echo(f"Dry hole: no index at {db_path}; run `lode mine` first.")
         raise typer.Exit(code=1)
-    settings = load_settings()
+    settings = load_settings(config)
     embedder = build_embedder(settings.embedding)
     try:
         store = Store(db_path, embedder)
