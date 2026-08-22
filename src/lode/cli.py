@@ -212,7 +212,10 @@ def prospect(
                 stale_tag = " [stale]" if hit.stale else ""
                 heading = f" > {hit.heading}" if hit.heading else ""
                 page = f" (p.{hit.page})" if hit.page is not None else ""
-                typer.echo(f"{index}. [{hit.score:.3f}] {hit.path}{heading}{page}{stale_tag}")
+                # Short content-address prefix keeps the line readable while
+                # still identifying the chunk (full id lives in the DB).
+                short_id = hit.chunk_id.removeprefix("blake3:")[:12]
+                typer.echo(f"{index}. [{hit.score:.3f}] {hit.path}{heading}{page}{stale_tag} #{short_id}")
                 snippet = hit.text.strip().replace("\n", " ")
                 if len(snippet) > 160:
                     snippet = snippet[:157] + "..."

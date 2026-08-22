@@ -42,6 +42,9 @@ def test_mine_then_prospect_roundtrip(tmp_path: Path, monkeypatch: pytest.Monkey
     assert prospect.exit_code == 0, prospect.output
     assert "docs/report.txt" in prospect.output
     assert "quantum entanglement" in prospect.output
+    # The short chunk id (blake3: prefix stripped) is appended to the line.
+    assert "#" in prospect.output
+    assert "blake3:" not in prospect.output
 
 
 def test_survey_reports_pending(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
