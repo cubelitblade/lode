@@ -78,6 +78,22 @@ def _echo_json(payload: dict[str, Any]) -> None:
     typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
+# Max length of the `prospect` preview snippet. Human output and --json share
+# it so the two never drift; may become a config option later.
+PREVIEW_MAX_CHARS = 160
+
+
+def _preview(text: str) -> str:
+    """Flatten text to a single line, truncated to PREVIEW_MAX_CHARS.
+
+    Line breaks (\r, \n) and other whitespace runs collapse to a single space.
+    """
+    snippet = re.sub(r"\s+", " ", text).strip()
+    if len(snippet) > PREVIEW_MAX_CHARS:
+        snippet = snippet[: PREVIEW_MAX_CHARS - 3] + "..."
+    return snippet
+
+
 app = typer.Typer(
     name="lode",
     help="lode: turn a workspace of documents into a searchable knowledge lode.",
@@ -314,6 +330,7 @@ def prospect(
     workspace: WorkspaceArg = Path("."),
     top_k: Annotated[int | None, typer.Option("--top-k", min=1, help="Number of results to return.")] = None,
     config: ConfigArg = None,
+    as_json: bool = typer.Option(False, "--json", help="Emit machine-readable JSON output."),
 ) -> None:
     """Search the index and show results with provenance (file + heading)."""
     settings = load_settings(config)
@@ -321,10 +338,14 @@ def prospect(
     try:
         store = Store(workspace / INDEX_DB_RELATIVE, embedder)
     except SchemaVersionError as exc:
-        typer.echo(f"Index needs a rebuild: {exc}")
+        message = f"Index needs a rebuild: {exc}"
+        if as_json:
+            _echo_json(_json_err("prospect", message, code="schema_version"))
+        else:
+            typer.echo(message)
         raise typer.Exit(code=1) from exc
 
-    _model_gate(store)
+    _model_gate(store, as_json=as_json, command="prospect")
     with store:
         if top_k is None:
             top_k = settings.retrieval.top_k
@@ -338,24 +359,47 @@ def prospect(
                 top_k=top_k,
             )
         except ValueError as exc:
-            typer.echo(str(exc))
+            if as_json:
+                _echo_json(_json_err("prospect", str(exc), code="invalid_query"))
+            else:
+                typer.echo(str(exc))
             raise typer.Exit(code=1) from exc
-        if not hits:
-            typer.echo("Dry hole: nothing matched.")
+        if as_json:
+            _echo_json(
+                _json_ok(
+                    "prospect",
+                    workspace=str(workspace),
+                    query=query,
+                    top_k=top_k,
+                    hits=[
+                        {
+                            "rank": index,
+                            "score": hit.score,
+                            "path": hit.path,
+                            "heading": hit.heading,
+                            "page": hit.page,
+                            "state": "stale" if hit.stale else "fresh",
+                            "digest": hit.chunk_id,
+                            "preview": _preview(hit.text),
+                        }
+                        for index, hit in enumerate(hits, start=1)
+                    ],
+                )
+            )
         else:
-            for index, hit in enumerate(hits, start=1):
-                stale_tag = " [stale]" if hit.stale else ""
-                heading = f" > {hit.heading}" if hit.heading else ""
-                page = f" (p.{hit.page})" if hit.page is not None else ""
-                # Short content-address prefix keeps the line readable while
-                # still identifying the chunk (full id lives in the DB).
-                short_id = hit.chunk_id.removeprefix("blake3:")[:12]
-                typer.echo(f"{index}. [{hit.score:.3f}] {hit.path}{heading}{page}{stale_tag} #{short_id}")
-                snippet = hit.text.strip().replace("\n", " ")
-                if len(snippet) > 160:
-                    snippet = snippet[:157] + "..."
-                typer.echo(f"   {snippet}")
-        _warn_stale(store, hits)
+            if not hits:
+                typer.echo("Dry hole: nothing matched.")
+            else:
+                for index, hit in enumerate(hits, start=1):
+                    stale_tag = " [stale]" if hit.stale else ""
+                    heading = f" > {hit.heading}" if hit.heading else ""
+                    page = f" (p.{hit.page})" if hit.page is not None else ""
+                    # Short content-address prefix keeps the line readable while
+                    # still identifying the chunk (full id lives in the DB).
+                    short_id = hit.chunk_id.removeprefix("blake3:")[:12]
+                    typer.echo(f"{index}. [{hit.score:.3f}] {hit.path}{heading}{page}{stale_tag} #{short_id}")
+                    typer.echo(f"   {_preview(hit.text)}")
+            _warn_stale(store, hits)
 
 
 @app.command("dig")

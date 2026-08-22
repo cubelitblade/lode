@@ -396,6 +396,97 @@ def test_mine_json_schema_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     assert payload["error"]["code"] == "schema_version"
 
 
+def test_prospect_json_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
+    text = "The experiment showed strong quantum entanglement in the third group."
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "report.txt").write_text(text)
+    monkeypatch.chdir(tmp_path)
+
+    runner.invoke(app, ["mine", str(tmp_path)])
+    result = runner.invoke(app, ["prospect", "entanglement", "--json", "--top-k", "3", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+
+    assert payload["command"] == "prospect"
+    assert payload["success"] is True
+    assert payload["schema_version"] == 1
+    assert payload["query"] == "entanglement"
+    assert payload["top_k"] == 3
+    assert len(payload["hits"]) == 1
+
+    hit = payload["hits"][0]
+    assert set(hit) == {"rank", "score", "path", "heading", "page", "state", "digest", "preview"}
+    assert hit["rank"] == 1
+    assert hit["path"] == "docs/report.txt"
+    assert hit["state"] == "fresh"
+    assert hit["digest"].startswith("blake3:")
+    assert "quantum entanglement" in hit["preview"]
+    assert "\n" not in hit["preview"]
+
+
+def test_prospect_json_preview_flattens_crlf(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
+    (tmp_path / "a.txt").write_text("line one\r\nline two\rline three\n")
+    monkeypatch.chdir(tmp_path)
+
+    runner.invoke(app, ["mine", str(tmp_path)])
+    result = runner.invoke(app, ["prospect", "line", "--json", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["success"] is True
+    assert payload["hits"]
+    preview = payload["hits"][0]["preview"]
+    assert "\r" not in preview
+    assert "\n" not in preview
+    assert preview == "line one line two line three"
+
+
+def test_prospect_json_empty_hits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
+    (tmp_path / "a.txt").write_text("hello world")  # never mined -> empty index
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, ["prospect", "anything", "--json", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["success"] is True
+    assert payload["hits"] == []
+
+
+def test_prospect_json_model_mismatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
+    (tmp_path / "a.txt").write_text("hello world")
+    monkeypatch.chdir(tmp_path)
+    runner.invoke(app, ["mine", str(tmp_path)])
+
+    monkeypatch.setattr("lode.cli.build_embedder", _other_model_embedder)
+    result = runner.invoke(app, ["prospect", "hello", "--json", str(tmp_path)])
+    assert result.exit_code != 0
+    payload = json.loads(result.output)
+    assert payload["command"] == "prospect"
+    assert payload["success"] is False
+    assert payload["error"]["code"] == "model_mismatch"
+
+
+def test_prospect_json_invalid_query(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
+    (tmp_path / "a.txt").write_text("hello world")
+    monkeypatch.chdir(tmp_path)
+    runner.invoke(app, ["mine", str(tmp_path)])
+
+    # Both retrieval factors zero -> search refuses to run.
+    (tmp_path / ".lode" / "config.toml").write_text(
+        "[retrieval]\nsemantic_factor = 0.0\nlexical_factor = 0.0\n"
+    )
+
+    result = runner.invoke(app, ["prospect", "hello", "--json", str(tmp_path)])
+    assert result.exit_code != 0
+    payload = json.loads(result.output)
+    assert payload["success"] is False
+    assert payload["error"]["code"] == "invalid_query"
+
+
 # -- `lode config` CLI ----------------------------------------------------------
 
 
