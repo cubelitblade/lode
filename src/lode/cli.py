@@ -63,13 +63,17 @@ def _json_ok(command: str, **data: Any) -> dict[str, Any]:
     }
 
 
-def _json_err(command: str, message: str, *, code: str = "error") -> dict[str, Any]:
-    """Build a failed --json envelope (success=False + structured error)."""
+def _json_err(command: str, message: str, *, code: str = "error", **error_extra: Any) -> dict[str, Any]:
+    """Build a failed --json envelope (success=False + structured error).
+
+    ``error_extra`` lets callers add fields to the ``error`` object (e.g.
+    ``candidates`` for an ambiguous ``dig``), keeping the envelope uniform.
+    """
     return {
         "schema_version": JSON_SCHEMA_VERSION,
         "command": command,
         "success": False,
-        "error": {"code": code, "message": message},
+        "error": {"code": code, "message": message, **error_extra},
     }
 
 
@@ -411,21 +415,30 @@ def dig(
     ],
     workspace: WorkspaceArg = Path("."),
     config: ConfigArg = None,
+    as_json: bool = typer.Option(False, "--json", help="Emit machine-readable JSON output."),
 ) -> None:
     """Fetch a chunk's full text by its digest (content address)."""
     db_path = workspace / INDEX_DB_RELATIVE
     if not db_path.exists():
-        typer.echo(f"Dry hole: no index at {db_path}; run `lode mine` first.")
+        message = f"Dry hole: no index at {db_path}; run `lode mine` first."
+        if as_json:
+            _echo_json(_json_err("dig", message, code="no_index"))
+        else:
+            typer.echo(message)
         raise typer.Exit(code=1)
     settings = load_settings(config)
     embedder = build_embedder(settings.embedding)
     try:
         store = Store(db_path, embedder)
     except SchemaVersionError as exc:
-        typer.echo(f"Index needs a rebuild: {exc}")
+        message = f"Index needs a rebuild: {exc}"
+        if as_json:
+            _echo_json(_json_err("dig", message, code="schema_version"))
+        else:
+            typer.echo(message)
         raise typer.Exit(code=1) from exc
     with store:
-        _dig(store, digest)
+        _dig(store, digest, as_json=as_json)
 
 
 # Hex hexdigest bodies (BLAKE3 produces lowercase hex); accept uppercase too.
@@ -445,21 +458,57 @@ def _normalize_digest(digest: str) -> str:
     return token.removeprefix("blake3:").lower()
 
 
-def _dig(store: Store, digest: str) -> None:
+def _chunk_to_json(chunk: ChunkWithPath, *, include_text: bool = True) -> dict[str, Any]:
+    """Build a `dig` --json payload for one chunk (omit text for candidates)."""
+    data: dict[str, Any] = {
+        "digest": chunk.chunk_id,
+        "path": chunk.path,
+        "heading": chunk.heading,
+        "page": chunk.page,
+        "state": "stale" if chunk.file_status is FileStatus.STALE else "fresh",
+    }
+    if include_text:
+        data["text"] = chunk.text
+    return data
+
+
+def _dig(store: Store, digest: str, *, as_json: bool = False) -> None:
     token = _normalize_digest(digest)
     if not _DIGEST_PATTERN.fullmatch(token):
-        typer.echo(f"Dry hole: not a valid digest: {digest!r}.")
+        message = f"Dry hole: not a valid digest: {digest!r}."
+        if as_json:
+            _echo_json(_json_err("dig", message, code="invalid_digest"))
+        else:
+            typer.echo(message)
         raise typer.Exit(code=1)
     matches = store.find_chunks_by_digest(token)
     if not matches:
-        typer.echo(f"Dry hole: no chunk with digest {digest!r}.")
+        message = f"Dry hole: no chunk with digest {digest!r}."
+        if as_json:
+            _echo_json(_json_err("dig", message, code="not_found"))
+        else:
+            typer.echo(message)
         raise typer.Exit(code=1)
     if len(matches) > 1:
-        typer.echo(f"Digest {digest!r} is ambiguous ({len(matches)} chunks); use a longer prefix:")
-        for chunk in matches:
-            _echo_provenance(chunk)
+        message = f"Digest {digest!r} is ambiguous ({len(matches)} chunks); use a longer prefix:"
+        if as_json:
+            _echo_json(
+                _json_err(
+                    "dig",
+                    message,
+                    code="ambiguous",
+                    candidates=[_chunk_to_json(chunk, include_text=False) for chunk in matches],
+                )
+            )
+        else:
+            typer.echo(message)
+            for chunk in matches:
+                _echo_provenance(chunk)
         raise typer.Exit(code=1)
-    _print_chunk(matches[0])
+    if as_json:
+        _echo_json(_json_ok("dig", **_chunk_to_json(matches[0])))
+    else:
+        _print_chunk(matches[0])
 
 
 def _echo_provenance(chunk: ChunkWithPath) -> None:

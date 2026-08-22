@@ -250,6 +250,81 @@ def test_dig_invalid_digest_reports_dry_hole(tmp_path: Path, monkeypatch: pytest
     assert "not a valid digest" in dig.output
 
 
+def test_dig_json_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
+    text = "The experiment showed strong quantum entanglement in the third group."
+    (tmp_path / "a.txt").write_text(text)
+    monkeypatch.chdir(tmp_path)
+    runner.invoke(app, ["mine", str(tmp_path)])
+
+    result = runner.invoke(app, ["dig", chunk_id(text), "--json", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["command"] == "dig"
+    assert payload["success"] is True
+    assert payload["schema_version"] == 1
+    assert payload["digest"] == chunk_id(text)
+    assert payload["path"] == "a.txt"
+    assert payload["heading"] == ""
+    assert payload["page"] is None
+    assert payload["state"] == "fresh"
+    assert payload["text"] == text
+
+
+def test_dig_json_accepts_short_prefix(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
+    text = "quantum entanglement in the lab"
+    (tmp_path / "a.txt").write_text(text)
+    monkeypatch.chdir(tmp_path)
+    runner.invoke(app, ["mine", str(tmp_path)])
+
+    short = chunk_id(text).removeprefix("blake3:")[:12]
+    result = runner.invoke(app, ["dig", short, "--json", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["success"] is True
+    assert payload["digest"] == chunk_id(text)
+    assert payload["text"] == text
+
+
+def test_dig_json_not_found(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
+    (tmp_path / "a.txt").write_text("hello world")
+    monkeypatch.chdir(tmp_path)
+    runner.invoke(app, ["mine", str(tmp_path)])
+
+    result = runner.invoke(app, ["dig", chunk_id("this text is not indexed"), "--json", str(tmp_path)])
+    assert result.exit_code != 0
+    payload = json.loads(result.output)
+    assert payload["success"] is False
+    assert payload["error"]["code"] == "not_found"
+
+
+def test_dig_json_invalid_digest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
+    (tmp_path / "a.txt").write_text("quantum")
+    monkeypatch.chdir(tmp_path)
+    runner.invoke(app, ["mine", str(tmp_path)])
+
+    result = runner.invoke(app, ["dig", "not-a-digest!", "--json", str(tmp_path)])
+    assert result.exit_code != 0
+    payload = json.loads(result.output)
+    assert payload["success"] is False
+    assert payload["error"]["code"] == "invalid_digest"
+
+
+def test_dig_json_no_index(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
+    (tmp_path / "a.txt").write_text("hello")
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, ["dig", "deadbeef", "--json", str(tmp_path)])
+    assert result.exit_code != 0
+    payload = json.loads(result.output)
+    assert payload["success"] is False
+    assert payload["error"]["code"] == "no_index"
+
+
 def test_get_alias_is_hidden_and_works(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
     text = "quantum entanglement"
