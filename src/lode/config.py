@@ -43,6 +43,10 @@ DEFAULT_DENSE_WEIGHT = 0.6
 DEFAULT_SPARSE_WEIGHT = 0.4
 DEFAULT_TOP_K = 10
 
+# Defaults for text chunking; consumed by the ingestion pipeline.
+DEFAULT_CHUNK_SIZE = 1024
+DEFAULT_CHUNK_OVERLAP = 128
+
 
 class EmbeddingConfig(BaseModel):
     """Settings for the embedding model backend."""
@@ -63,6 +67,19 @@ class RetrievalConfig(BaseModel):
     dense_weight: float = DEFAULT_DENSE_WEIGHT
     sparse_weight: float = DEFAULT_SPARSE_WEIGHT
     top_k: int = DEFAULT_TOP_K
+
+
+class ChunkingConfig(BaseModel):
+    """Settings for text chunking.
+
+    Changing these values changes how files are split into chunks, but the
+    index is keyed by file digest, so already-indexed files are not
+    re-chunked automatically — run ``lode mine --rebuild`` after changing
+    them.
+    """
+
+    chunk_size: int = DEFAULT_CHUNK_SIZE
+    chunk_overlap: int = DEFAULT_CHUNK_OVERLAP
 
 
 class IgnoreConfig(BaseModel):
@@ -106,6 +123,7 @@ class Settings(BaseSettings):
 
     embedding: EmbeddingConfig = EmbeddingConfig()
     retrieval: RetrievalConfig = RetrievalConfig()
+    chunking: ChunkingConfig = ChunkingConfig()
     ignore: IgnoreConfig = IgnoreConfig()
 
     @classmethod

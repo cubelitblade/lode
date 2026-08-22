@@ -6,6 +6,7 @@ monkeypatch; everything else runs through the actual typer app.
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -64,6 +65,29 @@ def test_mine_rebuild_flag_works(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     mine = runner.invoke(app, ["mine", "--rebuild", str(tmp_path)])
     assert mine.exit_code == 0, mine.output
     assert "1 added" in mine.output
+
+
+def test_mine_uses_chunking_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A long file is split into more chunks with a small chunk_size."""
+    monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
+    # Config is loaded relative to the CWD (see lode.toml.example), so run
+    # the CLI from the workspace root.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".lode").mkdir()
+    (tmp_path / ".lode" / "config.toml").write_text("[chunking]\nchunk_size = 20\nchunk_overlap = 5\n")
+    (tmp_path / "a.txt").write_text("word " * 100)
+
+    mine = runner.invoke(app, ["mine", str(tmp_path)])
+    assert mine.exit_code == 0, mine.output
+    assert "1 added" in mine.output
+
+    # With chunk_size=20 the file must have been split into multiple chunks.
+    conn = sqlite3.connect(str(tmp_path / ".lode" / "index.db"))
+    try:
+        n_chunks = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+    finally:
+        conn.close()
+    assert n_chunks > 1
 
 
 def test_model_mismatch_blocks_prospect(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

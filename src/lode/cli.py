@@ -148,7 +148,10 @@ def mine(
                 store,
                 workspace,
                 embedder,
-                RecursiveSegmentSplitter(),
+                RecursiveSegmentSplitter(
+                    chunk_size=settings.chunking.chunk_size,
+                    chunk_overlap=settings.chunking.chunk_overlap,
+                ),
                 settings.ignore.files,
             )
             typer.echo(f"Mined {workspace}:")

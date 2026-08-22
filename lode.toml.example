@@ -24,6 +24,12 @@ dense_weight = 0.6
 sparse_weight = 0.4
 top_k = 10
 
+[chunking]  # 文本切分参数
+chunk_size = 1024    # 每个 chunk 的最大字符数
+chunk_overlap = 128  # 相邻 chunk 的重叠字符数（必须小于 chunk_size）
+# 注意：修改 chunk 参数后，已索引文件不会自动重新切分（索引按文件内容摘要
+# 判断是否更新），需要运行 `lode mine --rebuild` 重建索引。
+
 [ignore]  # 文件发现忽略规则：不写具体 patterns，而是列出要并入忽略清单的 ignore-like 文件（gitignore 语义）
 # .lodeignore 始终作为一等公民自动加载（无需在此列出）。
 files = [".gitignore"]

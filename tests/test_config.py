@@ -34,6 +34,7 @@ def test_defaults_without_file_or_env(tmp_path: Path, monkeypatch: pytest.Monkey
     settings = config.load_settings()
     assert settings.embedding == config.EmbeddingConfig()
     assert settings.retrieval == config.RetrievalConfig()
+    assert settings.chunking == config.ChunkingConfig()
     assert settings.ignore == config.IgnoreConfig()
 
 
@@ -54,6 +55,39 @@ batch_size = 8
     assert settings.embedding.base_url == "http://localhost:8080"
     # Sections absent from the file fall back to their defaults entirely.
     assert settings.retrieval == config.RetrievalConfig()
+    assert settings.chunking == config.ChunkingConfig()
+
+
+def test_chunking_from_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    _write_toml(
+        tmp_path / ".lode" / "config.toml",
+        """
+[chunking]
+chunk_size = 2048
+chunk_overlap = 256
+""",
+    )
+    settings = config.load_settings()
+    assert settings.chunking.chunk_size == 2048
+    assert settings.chunking.chunk_overlap == 256
+
+
+def test_chunking_env_overrides_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    _write_toml(
+        tmp_path / ".lode" / "config.toml",
+        """
+[chunking]
+chunk_size = 2048
+chunk_overlap = 256
+""",
+    )
+    monkeypatch.setenv("LODE_CHUNKING__CHUNK_SIZE", "4096")
+    settings = config.load_settings()
+    assert settings.chunking.chunk_size == 4096
+    # Env vars only touch the fields they name.
+    assert settings.chunking.chunk_overlap == 256
 
 
 def test_explicit_path(tmp_path: Path) -> None:
