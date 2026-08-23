@@ -149,6 +149,7 @@ class ChunkWithPath:
     path: str
     file_status: FileStatus
     page: int | None = None
+    seq: int | None = None
 
 
 class Store:
@@ -358,7 +359,7 @@ class Store:
         placeholders = ",".join("?" for _ in rowids)
         with self._lock:
             rows = self._conn.execute(
-                "SELECT c.id, c.chunk_id, c.text, c.heading, f.path, f.status, c.page "
+                "SELECT c.id, c.chunk_id, c.text, c.heading, f.path, f.status, c.page, c.seq "
                 "FROM chunks c JOIN files f ON f.id = c.file_id "
                 f"WHERE c.id IN ({placeholders})",
                 [int(r) for r in rowids],
@@ -375,11 +376,42 @@ class Store:
         """
         with self._lock:
             rows = self._conn.execute(
-                "SELECT c.id, c.chunk_id, c.text, c.heading, f.path, f.status, c.page "
+                "SELECT c.id, c.chunk_id, c.text, c.heading, f.path, f.status, c.page, c.seq "
                 "FROM chunks c JOIN files f ON f.id = c.file_id "
                 "WHERE c.chunk_id LIKE ? "
                 "ORDER BY f.path, c.seq",
                 (f"blake3:{prefix}%",),
+            ).fetchall()
+        return [_row_to_chunk_path(row) for row in rows]
+
+    def get_chunk_neighbors(self, prefix: str, context: int) -> list[ChunkWithPath]:
+        """Chunks adjacent to the chunk addressed by ``prefix`` in document order.
+
+        ``context`` is the number of chunks to include on each side of the
+        addressed chunk; the addressed chunk itself is excluded. Neighbors are
+        constrained to the same file and the same heading/section, so a short
+        prefix never pulls in unrelated sections. An empty ``heading`` (unheaded
+        documents) keeps neighbors within the same file, since every chunk
+        shares that heading. Returns an empty list when the prefix is unknown or
+        ``context`` is non-positive.
+        """
+        if context <= 0:
+            return []
+        with self._lock:
+            target = self._conn.execute(
+                "SELECT id, file_id, seq, heading FROM chunks WHERE chunk_id LIKE ? ORDER BY seq LIMIT 1",
+                (f"blake3:{prefix}%",),
+            ).fetchone()
+            if target is None:
+                return []
+            target_id, file_id, seq, heading = target
+            rows = self._conn.execute(
+                "SELECT c.id, c.chunk_id, c.text, c.heading, f.path, f.status, c.page, c.seq "
+                "FROM chunks c JOIN files f ON f.id = c.file_id "
+                "WHERE c.file_id = ? AND c.id != ? AND c.seq BETWEEN ? AND ? "
+                "AND c.heading IS ? "
+                "ORDER BY c.seq",
+                (file_id, target_id, seq - context, seq + context, heading),
             ).fetchall()
         return [_row_to_chunk_path(row) for row in rows]
 
@@ -565,7 +597,9 @@ def _row_to_file(row: sqlite3.Row) -> FileRecord:
     )
 
 
-def _row_to_chunk_path(row: sqlite3.Row) -> ChunkWithPath:
+def _row_to_chunk_path(row: tuple[Any, ...]) -> ChunkWithPath:
+    # Every caller selects c.seq as the 8th column (the store connection uses
+    # the default row factory, so rows are plain tuples, not sqlite3.Row).
     return ChunkWithPath(
         chunk_id=row[1],
         text=row[2],
@@ -573,4 +607,5 @@ def _row_to_chunk_path(row: sqlite3.Row) -> ChunkWithPath:
         path=row[4],
         file_status=FileStatus(row[5]),
         page=row[6],
+        seq=row[7],
     )

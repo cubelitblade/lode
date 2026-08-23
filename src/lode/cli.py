@@ -460,6 +460,14 @@ def dig(
         typer.Argument(help="Chunk digest: full `blake3:<hex>` or a short prefix (as shown by `prospect`)."),
     ],
     workspace: WorkspaceArg = Path("."),
+    radius: Annotated[
+        int | None,
+        typer.Option(
+            "--radius",
+            min=0,
+            help="Window radius: number of adjacent chunks to include on each side (same section).",
+        ),
+    ] = None,
     config: ConfigArg = None,
     as_json: bool = typer.Option(False, "--json", help="Emit machine-readable JSON output."),
 ) -> None:
@@ -484,7 +492,7 @@ def dig(
             typer.echo(message)
         raise typer.Exit(code=1) from exc
     with store:
-        _dig(store, digest, as_json=as_json)
+        _dig(store, digest, as_json=as_json, radius=radius or 0)
 
 
 # Hex hexdigest bodies (BLAKE3 produces lowercase hex); accept uppercase too.
@@ -511,6 +519,7 @@ def _chunk_to_json(chunk: ChunkWithPath, *, include_text: bool = True) -> dict[s
         "path": chunk.path,
         "heading": chunk.heading,
         "page": chunk.page,
+        "seq": chunk.seq,
         "state": "stale" if chunk.file_status is FileStatus.STALE else "fresh",
     }
     if include_text:
@@ -518,7 +527,7 @@ def _chunk_to_json(chunk: ChunkWithPath, *, include_text: bool = True) -> dict[s
     return data
 
 
-def _dig(store: Store, digest: str, *, as_json: bool = False) -> None:
+def _dig(store: Store, digest: str, *, as_json: bool = False, radius: int = 0) -> None:
     token = _normalize_digest(digest)
     if not _DIGEST_PATTERN.fullmatch(token):
         message = f"Dry hole: not a valid digest: {digest!r}."
@@ -551,10 +560,34 @@ def _dig(store: Store, digest: str, *, as_json: bool = False) -> None:
             for chunk in matches:
                 _echo_provenance(chunk)
         raise typer.Exit(code=1)
+
+    target = matches[0]
+    window_chunks = _window(store, token, target, radius)
     if as_json:
-        _echo_json(_json_ok("dig", **_chunk_to_json(matches[0])))
+        _echo_json(
+            _json_ok(
+                "dig",
+                window={
+                    "center_seq": target.seq,
+                    "radius": radius,
+                    "chunks": [_chunk_to_json(chunk) for chunk in window_chunks],
+                },
+            )
+        )
     else:
-        _print_chunk(matches[0])
+        _print_window(window_chunks, center_seq=target.seq, radius=radius)
+
+
+def _window(store: Store, token: str, target: ChunkWithPath, radius: int) -> list[ChunkWithPath]:
+    """Build the ordered chunk window: target plus same-section neighbors.
+
+    Neighbors are constrained to the same file/heading and within ``radius``
+    on each side; the window is returned sorted by ``seq`` so the caller can
+    splice it directly. ``radius`` of 0 yields just the target chunk.
+    """
+    chunks = [target, *store.get_chunk_neighbors(token, radius)]
+    chunks.sort(key=lambda chunk: chunk.seq if chunk.seq is not None else -1)
+    return chunks
 
 
 def _echo_provenance(chunk: ChunkWithPath) -> None:
@@ -564,14 +597,18 @@ def _echo_provenance(chunk: ChunkWithPath) -> None:
     typer.echo(f"  #{short_id} {chunk.path}{heading}{page}")
 
 
-def _print_chunk(chunk: ChunkWithPath) -> None:
-    short_id = chunk.chunk_id.removeprefix("blake3:")[:12]
-    heading = f" > {chunk.heading}" if chunk.heading else ""
-    page = f" (p.{chunk.page})" if chunk.page is not None else ""
-    stale = " [stale]" if chunk.file_status is FileStatus.STALE else ""
-    typer.echo(f"{chunk.path}{heading}{page}{stale} #{short_id}")
-    typer.echo()
-    typer.echo(chunk.text)
+def _print_window(chunks: list[ChunkWithPath], *, center_seq: int | None, radius: int) -> None:
+    """Print an ordered chunk window, marking the center chunk."""
+    typer.echo(f"Window (center seq {center_seq}, radius {radius}):")
+    for chunk in chunks:
+        short_id = chunk.chunk_id.removeprefix("blake3:")[:12]
+        heading = f" > {chunk.heading}" if chunk.heading else ""
+        page = f" (p.{chunk.page})" if chunk.page is not None else ""
+        stale = " [stale]" if chunk.file_status is FileStatus.STALE else ""
+        marker = "[center] " if chunk.seq == center_seq else f"[seq {chunk.seq}] "
+        typer.echo(f"{marker}{chunk.path}{heading}{page}{stale} #{short_id}")
+        typer.echo()
+        typer.echo(chunk.text)
 
 
 # -- `lode config`: read/write configuration without editing files -----------

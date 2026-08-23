@@ -285,6 +285,40 @@ def test_find_chunks_by_digest_returns_provenance(db_path: Path) -> None:
     assert chunk.file_status is FileStatus.CURRENT
 
 
+# -- get_chunk_neighbors ----------------------------------------------------
+
+
+def test_get_chunk_neighbors_same_heading(db_path: Path) -> None:
+    chunks = [
+        Chunk(id="blake3:aaaa1111", text="A0", seq=0, heading="A"),
+        Chunk(id="blake3:bbbb2222", text="A1", seq=1, heading="A"),
+        Chunk(id="blake3:cccc3333", text="A2", seq=2, heading="A"),
+        Chunk(id="blake3:dddd4444", text="A3", seq=3, heading="A"),
+        Chunk(id="blake3:eeee5555", text="B0", seq=4, heading="B"),
+        Chunk(id="blake3:ffff6666", text="B1", seq=5, heading="B"),
+    ]
+    vectors = [[0.1, 0.2, 0.3, 0.4] for _ in chunks]
+    with Store(db_path, FakeEmbedder()) as store:
+        store.replace_file(file_record("a.txt", digest="blake3:aa", size=1), chunks, vectors)
+
+        # context=1 around seq=1 (heading A): only same-section neighbors.
+        neighbors = store.get_chunk_neighbors("bbbb", 1)
+        assert [c.text for c in neighbors] == ["A0", "A2"]
+        assert [c.seq for c in neighbors] == [0, 2]
+        assert all(c.heading == "A" for c in neighbors)
+
+        # context=2 widens within the same heading but never crosses into B.
+        assert [c.text for c in store.get_chunk_neighbors("bbbb", 2)] == ["A0", "A2", "A3"]
+
+        # A chunk in heading B does not pull in the neighboring heading A.
+        assert [c.text for c in store.get_chunk_neighbors("eeee", 1)] == ["B1"]
+
+        # Non-positive context returns no neighbors; unknown digest is empty.
+        assert store.get_chunk_neighbors("bbbb", 0) == []
+        assert store.get_chunk_neighbors("bbbb", -1) == []
+        assert store.get_chunk_neighbors("zzzz", 1) == []
+
+
 # -- rebuild ----------------------------------------------------------------
 
 

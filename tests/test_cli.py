@@ -284,12 +284,17 @@ def test_dig_json_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
     assert payload["command"] == "dig"
     assert payload["success"] is True
     assert payload["schema_version"] == 1
-    assert payload["digest"] == chunk_id(text)
-    assert payload["path"] == "a.txt"
-    assert payload["heading"] == ""
-    assert payload["page"] is None
-    assert payload["state"] == "fresh"
-    assert payload["text"] == text
+    window = payload["window"]
+    assert window["center_seq"] == 0
+    assert window["radius"] == 0
+    assert len(window["chunks"]) == 1
+    chunk = window["chunks"][0]
+    assert chunk["digest"] == chunk_id(text)
+    assert chunk["path"] == "a.txt"
+    assert chunk["heading"] == ""
+    assert chunk["page"] is None
+    assert chunk["state"] == "fresh"
+    assert chunk["text"] == text
 
 
 def test_dig_json_accepts_short_prefix(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -304,8 +309,9 @@ def test_dig_json_accepts_short_prefix(tmp_path: Path, monkeypatch: pytest.Monke
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["success"] is True
-    assert payload["digest"] == chunk_id(text)
-    assert payload["text"] == text
+    chunk = payload["window"]["chunks"][0]
+    assert chunk["digest"] == chunk_id(text)
+    assert chunk["text"] == text
 
 
 def test_dig_json_not_found(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -344,6 +350,73 @@ def test_dig_json_no_index(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     payload = json.loads(result.output)
     assert payload["success"] is False
     assert payload["error"]["code"] == "no_index"
+
+
+def _mine_report_with_many_chunks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Mine a single .txt file into several chunks and return one chunk id."""
+    monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
+    monkeypatch.chdir(tmp_path)
+    # Small chunks so one file yields several chunks in a single section.
+    (tmp_path / "lode.toml").write_text("[chunking]\nsize = 50\noverlap = 10\n")
+    (tmp_path / "report.txt").write_text(
+        "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi " * 12
+    )
+    runner.invoke(app, ["mine", str(tmp_path)])
+
+    conn = sqlite3.connect(str(tmp_path / ".lode" / "index.db"))
+    row = conn.execute("SELECT chunk_id FROM chunks ORDER BY seq LIMIT 1").fetchone()
+    conn.close()
+    return row[0]
+
+
+def test_dig_radius_returns_section_window(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    digest = _mine_report_with_many_chunks(tmp_path, monkeypatch)
+
+    result = runner.invoke(app, ["dig", digest, "--radius", "1", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "Window (center seq 0, radius 1):" in result.output
+    # The center chunk is marked and a neighbor carries a seq annotation.
+    assert "[center] " in result.output
+    assert "[seq " in result.output
+
+
+def test_dig_json_radius_window(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    digest = _mine_report_with_many_chunks(tmp_path, monkeypatch)
+
+    result = runner.invoke(app, ["dig", digest, "--radius", "1", "--json", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["command"] == "dig"
+    assert payload["success"] is True
+    window = payload["window"]
+    assert window["center_seq"] == 0
+    assert window["radius"] == 1
+    assert isinstance(window["chunks"], list)
+    assert len(window["chunks"]) >= 1
+    center = window["chunks"][0]
+    assert center["seq"] == 0
+    assert center["digest"].startswith("blake3:")
+    assert "text" in center
+    assert "heading" in center
+    assert "state" in center
+    # The window holds at least one distinct neighbor chunk beyond the center.
+    assert any(chunk["digest"] != digest for chunk in window["chunks"])
+
+
+def test_dig_json_default_single_chunk_window(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
+    text = "quantum entanglement"
+    (tmp_path / "a.txt").write_text(text)
+    monkeypatch.chdir(tmp_path)
+    runner.invoke(app, ["mine", str(tmp_path)])
+
+    result = runner.invoke(app, ["dig", chunk_id(text), "--json", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    window = payload["window"]
+    assert window["center_seq"] == 0
+    assert window["radius"] == 0
+    assert len(window["chunks"]) == 1
 
 
 def test_get_alias_is_hidden_and_works(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
