@@ -27,13 +27,19 @@ from rich import box
 
 
 class Status(StrEnum):
-    """Data state of an indexed file, as reported by survey/mine."""
+    """Data state/outcome of an indexed file, as reported by survey/mine.
+
+    ``FAILED`` is a per-run outcome for a file that could not be (re)indexed; it
+    is reported by ``mine`` and shares the marker/intent system with the
+    file-state values above.
+    """
 
     NEW = "new"
     CHANGED = "changed"
     MISSING = "missing"
     UNCHANGED = "unchanged"
     SKIPPED = "skipped"
+    FAILED = "failed"
 
 
 class Intent(StrEnum):
@@ -83,6 +89,7 @@ MARKERS: Mapping[Status, str] = {
     Status.MISSING: "-",
     Status.UNCHANGED: "=",
     Status.SKIPPED: "○",
+    Status.FAILED: "×",  # noqa: RUF001 — intentional multiplication-sign glyph for errors
 }
 
 # Data state → presentation intent.
@@ -92,6 +99,7 @@ STATUS_INTENT: Mapping[Status, Intent] = {
     Status.MISSING: Intent.ERROR,
     Status.UNCHANGED: Intent.MUTED,
     Status.SKIPPED: Intent.MUTED,
+    Status.FAILED: Intent.ERROR,
 }
 
 # Default (rich) colours: actionable signals stand out, passive ones recede.

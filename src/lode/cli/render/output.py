@@ -1,8 +1,9 @@
 """Shared output primitives for lode CLI.
 
-The machine-readable ``--json`` envelope helpers and the preview truncation
-used by ``prospect``/``dig``. Human-readable rendering lives in per-command
-modules (``survey.py``, and later ``mine.py``/``prospect.py``/``dig.py``).
+The machine-readable ``--json`` envelope helpers, the preview truncation used
+by ``prospect``/``dig``, and the ``render_message`` primitive that emits a
+single human-readable line with an ``Intent`` colour. Command-specific reports
+live in per-command modules (``survey.py``, ``mine.py``, ...).
 """
 
 from __future__ import annotations
@@ -12,6 +13,9 @@ import re
 from typing import Any
 
 import typer
+from rich.console import Console
+
+from lode.cli.render.core import Intent, RenderOptions
 
 # Machine-readable output (--json) envelope. This is the bridge to a future
 # MCP layer: every `--json`-capable command emits the same top-level shape
@@ -64,3 +68,28 @@ def preview(text: str) -> str:
     if len(snippet) > PREVIEW_MAX_CHARS:
         snippet = snippet[: PREVIEW_MAX_CHARS - 3] + "..."
     return snippet
+
+
+def render_message(
+    message: str,
+    *,
+    intent: Intent,
+    options: RenderOptions | None = None,
+    console: Console | None = None,
+) -> None:
+    """Render a single human-readable line with the given ``Intent`` colour.
+
+    For non-command human output (errors, warnings, hints) that does not
+    warrant a full per-command renderer. Colour comes from
+    ``options.intent_colors`` and is stripped in non-TTY runs; ``console`` may
+    be injected (e.g. a recording console) to capture output in tests.
+
+    ``markup`` and ``highlight`` are disabled so the message is emitted verbatim
+    and rich does not re-colour tokens such as numbers (which would otherwise
+    override the ``intent`` colour).
+    """
+    console = console or Console()
+    if options is None:
+        options = RenderOptions()
+    style = options.intent_colors.get(intent, "")
+    console.print(message, style=style, markup=False, highlight=False)

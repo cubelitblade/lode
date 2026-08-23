@@ -57,14 +57,14 @@ def render_survey(
     if frame is not None:
         status_panel = Panel(
             counts,
-            title=f"Workspace status ({workspace}):",
+            title=f"Workspace status ({workspace})",
             title_align="left",
             border_style=options.border_style,
             box=frame,
         )
         console.print(status_panel)
     else:
-        console.print(f"Workspace status ({workspace}):")
+        console.print(f"Workspace status ({workspace})")
         indented_counts = Text("  ")
         indented_counts.append_text(counts)
         console.print(indented_counts)

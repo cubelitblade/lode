@@ -56,6 +56,26 @@ def test_sync_is_idempotent(store: Store, tmp_path: Path) -> None:
     assert result.unchanged == 1
 
 
+def test_sync_reports_progress(store: Store, tmp_path: Path) -> None:
+    write(tmp_path, "a.txt", "hello world content")
+    write(tmp_path, "b.txt", "more content here")
+
+    calls: list[tuple[int, int, str]] = []
+    result = sync(
+        store,
+        tmp_path,
+        FakeEmbedder(),
+        SPLITTER,
+        report=lambda done, total, path: calls.append((done, total, path)),
+    )
+
+    assert result.added == 2
+    # One report before each discovered file (0-based count), then a completion report.
+    assert [c[0] for c in calls] == [0, 1, 2]
+    assert calls[0][1] == 2 and calls[1][1] == 2
+    assert {c[2] for c in calls[:2]} == {"a.txt", "b.txt"}
+
+
 def test_sync_reindexes_changed_file(store: Store, tmp_path: Path) -> None:
     path = write(tmp_path, "a.txt", "hello world content")
     sync(store, tmp_path, FakeEmbedder(), SPLITTER)
@@ -73,7 +93,6 @@ def test_sync_removes_files_gone_from_disk(store: Store, tmp_path: Path) -> None
     path.unlink()
 
     result = sync(store, tmp_path, FakeEmbedder(), SPLITTER)
-
     assert result.removed == 1
     assert store.list_files() == []
 

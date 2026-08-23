@@ -1,0 +1,90 @@
+"""Unit tests for `lode.cli.render.mine.render_mine`.
+
+Human-readable CLI output is presentation, not a stable contract, so these
+tests assert behavioural/structural signals rather than exact text or spacing:
+
+* the status counts are reported;
+* the actionable paths (added / updated / removed) are listed;
+* the status symbols are always emitted (independent of palette);
+* failures are surfaced with a hint to re-mine.
+
+Colour is deliberately not asserted here — it is stripped in non-TTY test runs
+and is an intent/palette concern covered by `lode.cli.render`.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from rich.console import Console
+
+from lode.cli.render import RenderOptions, render_options_from_preset
+from lode.cli.render.mine import render_mine
+from lode.ingestion.pipeline import FailedFile, SyncSummary
+
+
+def _render(result: SyncSummary, options: RenderOptions | None = None) -> str:
+    """Render a mine report to plain text via a recording console."""
+    console = Console(record=True, force_terminal=False)
+    render_mine(Path("."), result, options=options, console=console)
+    return console.export_text()
+
+
+def test_render_mine_reports_counts() -> None:
+    result = SyncSummary(
+        added_files=["a.md"],
+        updated_files=["b.md"],
+        removed_files=["c.md"],
+        unchanged=2,
+        skipped=1,
+    )
+    text = _render(result)
+    assert "+ added 1" in text
+    assert "~ updated 1" in text
+    assert "- removed 1" in text
+    assert "= unchanged 2" in text
+    assert "○ skipped 1" in text
+
+
+def test_render_mine_lists_changed_paths() -> None:
+    result = SyncSummary(
+        added_files=["docs/intro.md"],
+        updated_files=["README.md"],
+        removed_files=["old.txt"],
+    )
+    text = _render(result)
+    assert "docs/intro.md" in text
+    assert "README.md" in text
+    assert "old.txt" in text
+
+
+def test_render_mine_always_emits_symbols() -> None:
+    result = SyncSummary(added_files=["a.md"], updated_files=["b.md"], removed_files=["c.md"])
+    text = _render(result)
+    assert "+" in text
+    assert "~" in text
+    assert "-" in text
+
+
+def test_render_mine_reports_failures() -> None:
+    result = SyncSummary(added_files=[], failed=[FailedFile(path="bad.docx", error="unsupported format")])
+    text = _render(result)
+    assert "Stumbled on" in text
+    assert "× failed 1" in text  # noqa: RUF001 — multiplication-sign glyph is the intentional error marker
+    assert "×" in text  # noqa: RUF001 — multiplication-sign glyph is the intentional error marker
+    assert "bad.docx" in text
+    assert "unsupported format" in text
+    assert "Re-run `lode mine` after fixing these to retry." in text
+
+
+def test_render_mine_plain_preset_keeps_symbols() -> None:
+    result = SyncSummary(added_files=["a.md"], skipped=1)
+    text = _render(result, render_options_from_preset("plain"))
+    assert "+" in text
+    assert "a.md" in text
+
+
+def test_render_mine_empty_shows_nothing_to_do() -> None:
+    result = SyncSummary(unchanged=3, skipped=2)
+    text = _render(result)
+    assert "Nothing to do." in text

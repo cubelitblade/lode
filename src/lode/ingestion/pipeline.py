@@ -13,7 +13,7 @@ reported for new files) and the rest of the workspace continues.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -148,21 +148,32 @@ def sync(
     embedder: Embedder,
     splitter: SegmentSplitter,
     ignore_files: Sequence[str] = (),
+    *,
+    report: Callable[[int, int, str], None] | None = None,
 ) -> SyncSummary:
     """Update the index to match the workspace: embed what changed, prune the rest.
 
     A file is re-indexed when it is new, changed (mtime+size differ), or
     still stale from a previous failed run — stale-but-unchanged files must
     be retried so a transient failure does not leave them stale forever.
+
+    ``report`` (optional) is called as ``report(done, total, path)`` before
+    each file is processed — ``done`` is the count already finished, ``total``
+    the number of discovered files, and ``path`` the file now being handled.
+    It lets the CLI surface progress without the pipeline depending on a
+    concrete UI library.
     """
     discovered = discover(root, ignore_files)
     indexed = {file.path: file for file in store.list_files()}
     on_disk = {rel.as_posix() for rel in discovered}
+    total = len(discovered)
 
     summary = SyncSummary()
-    for rel in discovered:
+    for idx, rel in enumerate(discovered, start=1):
         rel_text = rel.as_posix()
         path = root / rel
+        if report is not None:
+            report(idx - 1, total, rel_text)
         if not is_supported(rel.suffix):
             summary.skipped += 1
             continue
@@ -216,5 +227,8 @@ def sync(
         if path not in on_disk:
             store.remove_file(path)
             summary.removed_files.append(path)
+
+    if report is not None:
+        report(total, total, "")
 
     return summary

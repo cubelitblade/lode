@@ -10,12 +10,17 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import typer
+from rich.console import Console
+from rich.progress import BarColumn, Progress, SpinnerColumn, TaskID, TextColumn
 
-from lode.cli.render.output import echo_json, json_err, json_ok, preview
+from lode.cli.render import Intent
+from lode.cli.render.mine import render_mine
+from lode.cli.render.output import echo_json, json_err, json_ok, preview, render_message
 from lode.cli.render.survey import render_survey
 from lode.config import (
     build_embedder,
@@ -43,8 +48,8 @@ from lode.index import (
     Store,
 )
 from lode.index.search import SearchHit, search
-from lode.ingestion.pipeline import survey_workspace, sync
-from lode.ingestion.split import RecursiveSegmentSplitter
+from lode.ingestion.pipeline import SyncSummary, survey_workspace, sync
+from lode.ingestion.split import RecursiveSegmentSplitter, SegmentSplitter
 
 # The index lives next to the workspace's own .lode/ directory (PLAN §3).
 INDEX_DB_RELATIVE = Path(".lode") / "index.db"
@@ -57,23 +62,45 @@ app = typer.Typer(
 )
 
 
-def _block(message: str, *, code: str, as_json: bool, command: str) -> None:
-    """Emit a blocking error (JSON or human) and exit non-zero."""
+def _block(
+    message: str,
+    *,
+    code: str,
+    as_json: bool,
+    command: str,
+    intent: Intent = Intent.ERROR,
+    hint: str | None = None,
+) -> None:
+    """Emit a blocking error (JSON or human) and exit non-zero.
+
+    Human output renders ``message`` with ``intent`` (default ``ERROR``) and an
+    optional ``hint`` with ``INFO``; JSON output joins the two into one envelope.
+    """
     if as_json:
-        echo_json(json_err(command, message, code=code))
+        full = f"{message}\n{hint}" if hint else message
+        echo_json(json_err(command, full, code=code))
     else:
-        typer.echo(message)
+        render_message(message, intent=intent)
+        if hint:
+            render_message(hint, intent=Intent.INFO)
     raise typer.Exit(code=1)
 
 
-def _dimension_mismatch_message(stored_dimension: int, current_dimension: int) -> str:
-    """Friendly dimension-mismatch message with the two recovery options."""
-    return (
+def _dimension_mismatch_parts(stored_dimension: int, current_dimension: int) -> tuple[str, str]:
+    """Friendly dimension-mismatch message, split into the (error, hint) parts.
+
+    Human output renders the error with ``ERROR`` and the hint with ``INFO``;
+    JSON output joins the two with a newline.
+    """
+    error = (
         f"The current lode was driven at {stored_dimension} dimensions, but this model "
-        f"yields {current_dimension}-wide nuggets — they don't sit on the same vein.\n"
-        "Hint: Re-mine it with `lode mine --from-scratch`, or switch your embedding config "
+        f"yields {current_dimension}-wide nuggets — they don't sit on the same vein."
+    )
+    hint = (
+        "Re-mine it with `lode mine --from-scratch`, or switch your embedding config "
         "back to the model/dimension that dug it."
     )
+    return error, hint
 
 
 def _model_gate(
@@ -110,8 +137,44 @@ def _model_gate(
         # block search, which can still serve cached data (PLAN D7).
         return
     if current_dimension != store.dimension:
-        message = _dimension_mismatch_message(store.dimension, current_dimension)
-        _block(message, code="dimension_mismatch", as_json=as_json, command=command)
+        error, hint = _dimension_mismatch_parts(store.dimension, current_dimension)
+        _block(error, code="dimension_mismatch", as_json=as_json, command=command, hint=hint)
+
+
+def _sync_with_progress(
+    console: Console,
+    store: Store,
+    workspace: Path,
+    embedder: Embedder,
+    splitter: SegmentSplitter,
+    ignore_sources: Sequence[str],
+) -> SyncSummary:
+    """Run ``sync`` while showing a live progress bar for observability.
+
+    Rich's ``Progress`` needs a TTY, so the caller gates on
+    ``console.is_terminal``. The bar shows the current file being processed, so
+    it is clear the run is advancing rather than stuck on an embedding call.
+    """
+    progress = Progress(
+        SpinnerColumn(),
+        TextColumn("{task.completed}/{task.total}"),
+        BarColumn(),
+        TextColumn("{task.description}"),
+        console=console,
+    )
+    task_id: TaskID | None = None
+
+    def report(processed: int, total: int, path: str) -> None:
+        nonlocal task_id
+        if task_id is None:
+            if total == 0:
+                # Nothing to mine; keep the live display empty.
+                return
+            task_id = progress.add_task("Mining", total=total)
+        progress.update(task_id, completed=processed, description=path or "done")
+
+    with progress:
+        return sync(store, workspace, embedder, splitter, ignore_sources, report=report)
 
 
 def _warn_stale(store: Store, hits: list[SearchHit]) -> None:
@@ -264,16 +327,17 @@ def mine(
         with store:
             if from_scratch:
                 store.rebuild()
-            result = sync(
-                store,
-                workspace,
-                embedder,
-                RecursiveSegmentSplitter(
-                    chunk_size=settings.chunking.size,
-                    chunk_overlap=settings.chunking.overlap,
-                ),
-                settings.ignore.sources,
+            splitter = RecursiveSegmentSplitter(
+                chunk_size=settings.chunking.size,
+                chunk_overlap=settings.chunking.overlap,
             )
+            console = Console()
+            if as_json:
+                result = sync(store, workspace, embedder, splitter, settings.ignore.sources)
+            elif console.is_terminal:
+                result = _sync_with_progress(console, store, workspace, embedder, splitter, settings.ignore.sources)
+            else:
+                result = sync(store, workspace, embedder, splitter, settings.ignore.sources)
             if as_json:
                 echo_json(
                     json_ok(
@@ -296,26 +360,7 @@ def mine(
                     )
                 )
             else:
-                typer.echo(f"Mined {workspace}:")
-                typer.echo(
-                    f"{result.added} added, {result.updated} updated, "
-                    f"{result.unchanged} unchanged, {result.removed} removed, "
-                    f"{result.skipped} skipped."
-                )
-                if result.added or result.updated or result.removed:
-                    typer.echo()
-                    for path in result.added_files:
-                        typer.echo(f"  + {path}")
-                    for path in result.updated_files:
-                        typer.echo(f"  ~ {path}")
-                    for path in result.removed_files:
-                        typer.echo(f"  - {path}")
-                if result.failed:
-                    typer.echo()
-                    typer.echo("Stumbled on:")
-                    for failure in result.failed:
-                        typer.echo(f"  - {failure.path}: {failure.error}")
-                    typer.echo("Re-run `lode mine` after fixing these to retry.")
+                render_mine(workspace, result, console=console)
     except EmbedderUnavailableError as exc:
         if as_json:
             echo_json(json_err("mine", str(exc), code="embedder_unavailable"))
@@ -370,11 +415,12 @@ def prospect(
             # config dimension mirrors the stored value but the model actually
             # emits a different width): surface the friendly recovery message
             # instead of a raw sqlite traceback.
-            message = _dimension_mismatch_message(exc.stored_dimension, exc.current_dimension)
+            error, hint = _dimension_mismatch_parts(exc.stored_dimension, exc.current_dimension)
             if as_json:
-                echo_json(json_err("prospect", message, code="dimension_mismatch"))
+                echo_json(json_err("prospect", f"{error}\n{hint}", code="dimension_mismatch"))
             else:
-                typer.echo(message)
+                render_message(error, intent=Intent.ERROR)
+                render_message(hint, intent=Intent.INFO)
             raise typer.Exit(code=1) from exc
         if as_json:
             echo_json(

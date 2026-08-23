@@ -70,7 +70,7 @@ def test_mine_then_prospect_roundtrip(tmp_path: Path, monkeypatch: pytest.Monkey
 
     mine = runner.invoke(app, ["mine", str(tmp_path)])
     assert mine.exit_code == 0, mine.output
-    assert "1 added" in mine.output
+    assert "+ added 1" in mine.output
 
     prospect = runner.invoke(app, ["prospect", "entanglement", str(tmp_path)])
     assert prospect.exit_code == 0, prospect.output
@@ -102,7 +102,7 @@ def test_mine_from_scratch_flag_works(tmp_path: Path, monkeypatch: pytest.Monkey
 
     mine = runner.invoke(app, ["mine", "--from-scratch", str(tmp_path)])
     assert mine.exit_code == 0, mine.output
-    assert "1 added" in mine.output
+    assert "+ added 1" in mine.output
 
 
 def test_mine_uses_chunking_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -117,7 +117,7 @@ def test_mine_uses_chunking_config(tmp_path: Path, monkeypatch: pytest.MonkeyPat
 
     mine = runner.invoke(app, ["mine", str(tmp_path)])
     assert mine.exit_code == 0, mine.output
-    assert "1 added" in mine.output
+    assert "+ added 1" in mine.output
 
     # With chunk_size=20 the file must have been split into multiple chunks.
     conn = sqlite3.connect(str(tmp_path / ".lode" / "index.db"))

@@ -2,7 +2,7 @@
 
 Subpackage owns everything that turns command results into text: the style
 core (``core.py``), shared output primitives (``output.py``), and per-command
-renderers (``survey.py``, and later ``mine.py``/``prospect.py``/``dig.py``).
+renderers (``survey.py``, ``mine.py``, and later ``prospect.py``/``dig.py``).
 
 The public surface is re-exported here so callers can use
 ``from lode.cli.render import render_survey, RenderOptions`` without reaching
@@ -23,6 +23,7 @@ from lode.cli.render.core import (
     Status,
     render_options_from_preset,
 )
+from lode.cli.render.mine import render_mine
 from lode.cli.render.survey import render_survey
 
 __all__ = [
@@ -35,6 +36,7 @@ __all__ = [
     "Intent",
     "RenderOptions",
     "Status",
+    "render_mine",
     "render_options_from_preset",
     "render_survey",
 ]
