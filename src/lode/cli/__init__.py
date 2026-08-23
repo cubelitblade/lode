@@ -19,6 +19,7 @@ from rich.console import Console
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskID, TextColumn
 
 from lode.cli.render import Intent
+from lode.cli.render.dig import render_dig
 from lode.cli.render.mine import render_mine
 from lode.cli.render.output import echo_json, json_err, json_ok, preview, render_message
 from lode.cli.render.prospect import render_prospect
@@ -574,7 +575,12 @@ def _dig(store: Store, digest: str, *, as_json: bool = False, radius: int = 0) -
             )
         )
     else:
-        _print_window(window_chunks, center_seq=target.seq, radius=radius)
+        render_dig(
+            window_chunks,
+            digest=target.chunk_id.removeprefix("blake3:")[:12],
+            center_seq=target.seq,
+            radius=radius,
+        )
 
 
 def _window(store: Store, token: str, target: ChunkWithPath, radius: int) -> list[ChunkWithPath]:
@@ -594,20 +600,6 @@ def _echo_provenance(chunk: ChunkWithPath) -> None:
     heading = f" > {chunk.heading}" if chunk.heading else ""
     page = f" (p.{chunk.page})" if chunk.page is not None else ""
     typer.echo(f"  #{short_id} {chunk.path}{heading}{page}")
-
-
-def _print_window(chunks: list[ChunkWithPath], *, center_seq: int | None, radius: int) -> None:
-    """Print an ordered chunk window, marking the center chunk."""
-    typer.echo(f"Window (center seq {center_seq}, radius {radius}):")
-    for chunk in chunks:
-        short_id = chunk.chunk_id.removeprefix("blake3:")[:12]
-        heading = f" > {chunk.heading}" if chunk.heading else ""
-        page = f" (p.{chunk.page})" if chunk.page is not None else ""
-        stale = " [stale]" if chunk.file_status is FileStatus.STALE else ""
-        marker = "[center] " if chunk.seq == center_seq else f"[seq {chunk.seq}] "
-        typer.echo(f"{marker}{chunk.path}{heading}{page}{stale} #{short_id}")
-        typer.echo()
-        typer.echo(chunk.text)
 
 
 # -- `lode config`: read/write configuration without editing files -----------

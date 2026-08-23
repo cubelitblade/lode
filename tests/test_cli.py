@@ -375,10 +375,11 @@ def test_dig_radius_returns_section_window(tmp_path: Path, monkeypatch: pytest.M
 
     result = runner.invoke(app, ["dig", digest, "--radius", "1", str(tmp_path)])
     assert result.exit_code == 0, result.output
-    assert "Window (center seq 0, radius 1):" in result.output
-    # The center chunk is marked and a neighbor carries a seq annotation.
-    assert "[center] " in result.output
-    assert "[seq " in result.output
+    short = digest.removeprefix("blake3:")[:12]
+    assert f"Dug {short} with radius 1" in result.output
+    # The center chunk is marked and a neighbor card is present.
+    assert "0 · center" in result.output
+    assert result.output.count("╭─") >= 2
 
 
 def test_dig_json_radius_window(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
