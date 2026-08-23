@@ -114,11 +114,11 @@ DEFAULT_INTENT_COLORS: Mapping[Intent, str] = {
 # accessible (colour-blind friendly): distinct hues with strong luminance
 # separation, paired with the always-on symbols so hue is never the only cue.
 ACCESSIBLE_INTENT_COLORS: Mapping[Intent, str] = {
-    Intent.SUCCESS: "blue",
-    Intent.ERROR: "magenta",
-    Intent.WARNING: "cyan",
-    Intent.INFO: "cyan",
-    Intent.MUTED: "dim",
+    Intent.SUCCESS: "spring_green1",
+    Intent.ERROR: "dark_orange",
+    Intent.WARNING: "gold1",
+    Intent.INFO: "deep_sky_blue1",
+    Intent.MUTED: "grey50",
 }
 
 # plain: every intent → empty style (no colour, no ANSI). Border is unaffected.
@@ -150,14 +150,14 @@ class RenderOptions:
 # Presets only control COLOUR; border is a separate axis (``RenderOptions.border``)
 # left at the default. So ``plain`` is uncoloured but still bordered.
 _PRESETS: Mapping[str, RenderOptions] = {
-    "rich": RenderOptions(),
+    "vivid": RenderOptions(),
     "plain": RenderOptions(intent_colors=PLAIN_INTENT_COLORS),
     "accessible": RenderOptions(intent_colors=ACCESSIBLE_INTENT_COLORS),
 }
 
 
 def render_options_from_preset(name: str) -> RenderOptions:
-    """Resolve a preset name (``rich``/``plain``/``accessible``) to options."""
+    """Resolve a palette name (``vivid``/``plain``/``accessible``) to options."""
     try:
         return _PRESETS[name]
     except KeyError:

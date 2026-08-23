@@ -17,7 +17,7 @@ import typer
 from rich.console import Console
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskID, TextColumn
 
-from lode.cli.render import Intent
+from lode.cli.render import Intent, RenderOptions, render_options_from_preset
 from lode.cli.render.config import (
     render_config_message,
     render_config_path,
@@ -32,6 +32,7 @@ from lode.cli.render.output import echo_json, json_err, json_ok, preview, render
 from lode.cli.render.prospect import render_prospect
 from lode.cli.render.survey import render_survey
 from lode.config import (
+    Settings,
     build_embedder,
     effective_config,
     get_nested,
@@ -209,6 +210,19 @@ def _stale_warning(store: Store, hits: list[SearchHit]) -> str | None:
     return "Warning: the index holds stale files outside these results. Run `lode mine` to update the index."
 
 
+def _render_options(settings: Settings) -> RenderOptions:
+    """Resolve the configured output palette to render options.
+
+    The command layer owns this resolution: it loads settings and hands the
+    render layer a ready-made ``RenderOptions``. The render layer never reads
+    config directly.
+
+    TODO(cli-split): fold this into the command-layer palette resolution that
+    will also take a future ``--palette`` flag (flag overrides config).
+    """
+    return render_options_from_preset(settings.output.palette)
+
+
 # Shared workspace argument shape; only the help string varies per command.
 # The default value (".") is set with `=` at the call site, not inside `Argument`.
 SurveyWorkspaceArg = Annotated[
@@ -268,6 +282,7 @@ def survey(
     """
     settings = load_settings(config)
     embedder = build_embedder(settings.embedding)
+    options = _render_options(settings)
     try:
         store = Store(workspace / INDEX_DB_RELATIVE, embedder)
     except SchemaVersionError as exc:
@@ -301,7 +316,7 @@ def survey(
                 )
             )
         else:
-            render_survey(workspace, result)
+            render_survey(workspace, result, options=options)
 
 
 @app.command("mine")
@@ -323,6 +338,7 @@ def mine(
     """
     settings = load_settings(config)
     embedder = build_embedder(settings.embedding)
+    options = _render_options(settings)
     try:
         store = Store(workspace / INDEX_DB_RELATIVE, embedder)
     except SchemaVersionError as exc:
@@ -371,7 +387,7 @@ def mine(
                     )
                 )
             else:
-                render_mine(workspace, result, console=console)
+                render_mine(workspace, result, console=console, options=options)
     except EmbedderUnavailableError as exc:
         if as_json:
             echo_json(json_err("mine", str(exc), code="embedder_unavailable"))
@@ -392,6 +408,7 @@ def prospect(
     """Search the index and show results with source information."""
     settings = load_settings(config)
     embedder = build_embedder(settings.embedding)
+    options = _render_options(settings)
     try:
         store = Store(workspace / INDEX_DB_RELATIVE, embedder)
     except SchemaVersionError as exc:
@@ -456,7 +473,7 @@ def prospect(
                 )
             )
         else:
-            render_prospect(workspace, query, hits, stale_warning=_stale_warning(store, hits))
+            render_prospect(workspace, query, hits, stale_warning=_stale_warning(store, hits), options=options)
 
 
 @app.command("dig")
@@ -489,6 +506,7 @@ def dig(
         raise typer.Exit(code=1)
     settings = load_settings(config)
     embedder = build_embedder(settings.embedding)
+    options = _render_options(settings)
     try:
         store = Store(db_path, embedder)
     except SchemaVersionError as exc:
@@ -499,7 +517,7 @@ def dig(
             typer.echo(message)
         raise typer.Exit(code=1) from exc
     with store:
-        _dig(store, digest, as_json=as_json, radius=radius or 0)
+        _dig(store, digest, as_json=as_json, radius=radius or 0, options=options)
 
 
 # Hex hexdigest bodies (BLAKE3 produces lowercase hex); accept uppercase too.
@@ -534,7 +552,14 @@ def _chunk_to_json(chunk: ChunkWithPath, *, include_text: bool = True) -> dict[s
     return data
 
 
-def _dig(store: Store, digest: str, *, as_json: bool = False, radius: int = 0) -> None:
+def _dig(
+    store: Store,
+    digest: str,
+    *,
+    as_json: bool = False,
+    radius: int = 0,
+    options: RenderOptions | None = None,
+) -> None:
     token = _normalize_digest(digest)
     if not _DIGEST_PATTERN.fullmatch(token):
         message = f"Dry hole: not a valid digest: {digest!r}."
@@ -587,6 +612,7 @@ def _dig(store: Store, digest: str, *, as_json: bool = False, radius: int = 0) -
             digest=target.chunk_id.removeprefix("blake3:")[:12],
             center_seq=target.seq,
             radius=radius,
+            options=options,
         )
 
 
@@ -633,7 +659,7 @@ def _target_config_path(scope: str) -> Path:
 def _cfg_show() -> None:
     """Print the merged effective configuration as TOML."""
     settings = load_settings()
-    render_config_show(toml_dumps(effective_config(settings)))
+    render_config_show(toml_dumps(effective_config(settings)), options=_render_options(settings))
 
 
 @config_app.callback(invoke_without_command=True)
@@ -663,19 +689,20 @@ def config_get(
     used at runtime). With `--scope user|workspace` it returns that layer's
     explicit value, failing if it is not set there.
     """
+    settings = load_settings()
+    options = _render_options(settings)
     try:
         validate_key(key)
     except KeyError:
-        render_config_message(f"Dry hole: unknown config key {key!r}.")
+        render_config_message(f"Dry hole: unknown config key {key!r}.", options=options)
         raise typer.Exit(code=1) from None
 
     if scope is None:
-        settings = load_settings()
         value = get_nested(effective_config(settings), key)
-        render_config_value(key, value)
+        render_config_value(key, value, options=options)
         return
     if scope not in ("user", "workspace"):
-        render_config_message("Stumbled: --scope must be 'user' or 'workspace'.")
+        render_config_message("Stumbled: --scope must be 'user' or 'workspace'.", options=options)
         raise typer.Exit(code=1)
 
     path = _target_config_path(scope)
@@ -683,9 +710,9 @@ def config_get(
     try:
         value = get_nested(data, key)
     except KeyError:
-        render_config_message(f"Dry hole: {key!r} is not set in {path}.")
+        render_config_message(f"Dry hole: {key!r} is not set in {path}.", options=options)
         raise typer.Exit(code=1) from None
-    render_config_value(key, value)
+    render_config_value(key, value, options=options)
 
 
 @config_app.command("set")
@@ -695,23 +722,25 @@ def config_set(
     scope: ConfigScope = "workspace",
 ) -> None:
     """Set a config value, inferring its type from the config field."""
+    settings = load_settings()
+    options = _render_options(settings)
     try:
         validate_key(key)
     except KeyError:
-        render_config_message(f"Dry hole: unknown config key {key!r}.")
+        render_config_message(f"Dry hole: unknown config key {key!r}.", options=options)
         raise typer.Exit(code=1) from None
 
     try:
         parsed = parse_value(key, value)
     except ValueError as exc:
-        render_config_message(f"Stumbled: {exc}")
+        render_config_message(f"Stumbled: {exc}", options=options)
         raise typer.Exit(code=1) from exc
 
     path = _target_config_path(scope)
     data = read_toml(path)
     set_nested(data, key, parsed)
     write_toml(path, data)
-    render_config_set(key, parsed, path)
+    render_config_set(key, parsed, path, options=options)
 
 
 @config_app.command("unset")
@@ -720,25 +749,27 @@ def config_unset(
     scope: ConfigScope = "workspace",
 ) -> None:
     """Unset a config value from the target scope."""
+    settings = load_settings()
+    options = _render_options(settings)
     try:
         validate_key(key)
     except KeyError:
-        render_config_message(f"Dry hole: unknown config key {key!r}.")
+        render_config_message(f"Dry hole: unknown config key {key!r}.", options=options)
         raise typer.Exit(code=1) from None
 
     path = _target_config_path(scope)
     data = read_toml(path)
     if not unset_nested(data, key):
-        render_config_message(f"Dry hole: {key!r} is not set in {path}.")
+        render_config_message(f"Dry hole: {key!r} is not set in {path}.", options=options)
         raise typer.Exit(code=1)
     write_toml(path, data)
-    render_config_unset(key, path)
+    render_config_unset(key, path, options=options)
 
 
 @config_app.command("path")
 def config_path(scope: ConfigScope = "workspace") -> None:
     """Show the target config file path (does not create the file)."""
-    render_config_path(_target_config_path(scope))
+    render_config_path(_target_config_path(scope), options=_render_options(load_settings()))
 
 
 app.add_typer(config_app, name="config")

@@ -11,12 +11,15 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+from rich.console import Console
 from typer.testing import CliRunner
 
 from lode import config
 from lode.cli import app
+from lode.cli.render import PLAIN_INTENT_COLORS, RenderOptions
 from lode.config import EmbeddingConfig
 from lode.ingestion import chunk_id
+from lode.ingestion.pipeline import SurveySummary
 from tests.fakes import FailingEmbedder, FakeEmbedder
 
 runner = CliRunner()
@@ -24,8 +27,15 @@ runner = CliRunner()
 
 @pytest.fixture(autouse=True)
 def _isolate_user_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:  # pyright: ignore[reportUnusedFunction]  # autouse fixture: run for every test, not referenced directly
-    """Redirect the user config dir so host configs don't leak into tests."""
+    """Isolate user and project config discovery.
+
+    Redirect the user config dir (``XDG_CONFIG_HOME``) and run from
+    ``tmp_path`` so neither the host user config nor the project's own
+    ``.lode/config.toml`` / ``lode.toml`` leak into tests (the project config
+    now carries e.g. ``output.palette``).
+    """
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.chdir(tmp_path)
 
 
 def _fake_embedder(_cfg: EmbeddingConfig) -> FakeEmbedder:
@@ -94,6 +104,58 @@ def test_survey_reports_pending(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     # Human-readable output is presentation, not a stable contract: assert only
     # that the changed file is reported, not the exact formatting.
     assert "a.txt" in survey.output
+
+
+def test_survey_uses_configured_palette(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The configured output.palette flows into the render options."""
+    monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "a.txt").write_text("hello world")
+    (tmp_path / ".lode").mkdir()
+    (tmp_path / ".lode" / "config.toml").write_text('[output]\npalette = "plain"\n')
+    runner.invoke(app, ["mine", str(tmp_path)])
+
+    captured: RenderOptions | None = None
+
+    def fake_render(
+        workspace: Path,
+        result: SurveySummary,
+        *,
+        options: RenderOptions | None = None,
+        console: Console | None = None,
+    ) -> None:
+        nonlocal captured
+        captured = options
+
+    monkeypatch.setattr("lode.cli.render_survey", fake_render)
+    result = runner.invoke(app, ["survey", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert captured is not None
+    assert captured.intent_colors == PLAIN_INTENT_COLORS
+
+
+def test_config_show_uses_configured_palette(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Config output also honours the configured output.palette."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".lode").mkdir()
+    (tmp_path / ".lode" / "config.toml").write_text('[output]\npalette = "plain"\n')
+
+    captured: RenderOptions | None = None
+
+    def fake_render(
+        content: str,
+        *,
+        options: RenderOptions | None = None,
+        console: Console | None = None,
+    ) -> None:
+        nonlocal captured
+        captured = options
+
+    monkeypatch.setattr("lode.cli.render_config_show", fake_render)
+    result = runner.invoke(app, ["config", "show"])
+    assert result.exit_code == 0, result.output
+    assert captured is not None
+    assert captured.intent_colors == PLAIN_INTENT_COLORS
 
 
 def test_mine_from_scratch_flag_works(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -15,9 +15,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from rich.console import Console
 
-from lode.cli.render import Border, RenderOptions, render_options_from_preset
+from lode.cli.render import (
+    ACCESSIBLE_INTENT_COLORS,
+    DEFAULT_INTENT_COLORS,
+    PLAIN_INTENT_COLORS,
+    Border,
+    RenderOptions,
+    render_options_from_preset,
+)
 from lode.cli.render.survey import render_survey
 from lode.ingestion.pipeline import SurveySummary
 
@@ -67,3 +75,17 @@ def test_render_survey_plain_preset_keeps_symbols() -> None:
     text = _render(SurveySummary(new_files=["a.md"], skipped=1), render_options_from_preset("plain"))
     assert "+" in text
     assert "a.md" in text
+
+
+def test_render_preset_vivid_is_default() -> None:
+    assert render_options_from_preset("vivid").intent_colors == DEFAULT_INTENT_COLORS
+
+
+def test_render_preset_plain_and_accessible() -> None:
+    assert render_options_from_preset("plain").intent_colors == PLAIN_INTENT_COLORS
+    assert render_options_from_preset("accessible").intent_colors == ACCESSIBLE_INTENT_COLORS
+
+
+def test_render_preset_rich_rejected() -> None:
+    with pytest.raises(ValueError):
+        render_options_from_preset("rich")

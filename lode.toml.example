@@ -80,3 +80,9 @@ overlap = 128
 # Files matched by these patterns will not be indexed.
 # `.lodeignore` is always supported and does not need to be listed here.
 sources = [".gitignore"]
+
+[output]
+
+# Color palette used for terminal output.
+# Options: vivid, plain, accessible.
+palette = "vivid"

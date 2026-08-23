@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from lode import config
 from lode.embeddings.openai_compat import OpenAICompatibleEmbedder
@@ -38,6 +39,7 @@ def test_defaults_without_file_or_env(tmp_path: Path, monkeypatch: pytest.Monkey
     assert settings.retrieval == config.RetrievalConfig()
     assert settings.chunking == config.ChunkingConfig()
     assert settings.ignore == config.IgnoreConfig()
+    assert settings.output == config.OutputConfig()
 
 
 def test_default_path_reads_partial_section(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -58,6 +60,34 @@ batch_size = 8
     # Sections absent from the file fall back to their defaults entirely.
     assert settings.retrieval == config.RetrievalConfig()
     assert settings.chunking == config.ChunkingConfig()
+
+
+def test_output_palette_from_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    _write_toml(tmp_path / ".lode" / "config.toml", '[output]\npalette = "plain"\n')
+    settings = config.load_settings()
+    assert settings.output.palette == "plain"
+
+
+def test_output_palette_default_vivid(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    settings = config.load_settings()
+    assert settings.output.palette == "vivid"
+
+
+def test_output_palette_env_overrides_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    _write_toml(tmp_path / ".lode" / "config.toml", '[output]\npalette = "plain"\n')
+    monkeypatch.setenv("LODE_OUTPUT__PALETTE", "accessible")
+    settings = config.load_settings()
+    assert settings.output.palette == "accessible"
+
+
+def test_output_palette_invalid_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    _write_toml(tmp_path / ".lode" / "config.toml", '[output]\npalette = "neon"\n')
+    with pytest.raises(ValidationError):
+        config.load_settings()
 
 
 def test_chunking_from_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import types
 from pathlib import Path
-from typing import Any, Union, cast, get_args, get_origin
+from typing import Any, Literal, Union, cast, get_args, get_origin
 
 import platformdirs
 import tomlkit
@@ -112,6 +112,16 @@ class IgnoreConfig(BaseModel):
     sources: list[str] = Field(default_factory=list)
 
 
+class OutputConfig(BaseModel):
+    """Settings for CLI output presentation.
+
+    ``palette`` selects the colour palette used for human-readable output; it
+    maps onto the render presets (``vivid``/``plain``/``accessible``).
+    """
+
+    palette: Literal["vivid", "plain", "accessible"] = "vivid"
+
+
 def _init_kwargs(source: PydanticBaseSettingsSource) -> dict[str, Any]:
     """Return the init kwargs of a settings source.
 
@@ -147,6 +157,7 @@ class Settings(BaseSettings):
     retrieval: RetrievalConfig = RetrievalConfig()
     chunking: ChunkingConfig = ChunkingConfig()
     ignore: IgnoreConfig = IgnoreConfig()
+    output: OutputConfig = OutputConfig()
 
     @classmethod
     def settings_customise_sources(
@@ -267,7 +278,7 @@ def unset_nested(data: dict[str, Any], key: str) -> bool:
 
 # Sections a user may read/write via `lode config`; excludes internal fields
 # such as `config_files`.
-CONFIG_SECTIONS = ("embedding", "retrieval", "chunking", "ignore")
+CONFIG_SECTIONS = ("embedding", "retrieval", "chunking", "ignore", "output")
 
 # Boolean tokens accepted by `lode config set <key> <bool-value>`.
 _BOOL_TRUE = frozenset({"true", "1", "yes", "y", "on"})
