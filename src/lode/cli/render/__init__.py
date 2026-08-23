@@ -1,0 +1,40 @@
+"""Rendering layer for lode CLI output.
+
+Subpackage owns everything that turns command results into text: the style
+core (``core.py``), shared output primitives (``output.py``), and per-command
+renderers (``survey.py``, and later ``mine.py``/``prospect.py``/``dig.py``).
+
+The public surface is re-exported here so callers can use
+``from lode.cli.render import render_survey, RenderOptions`` without reaching
+into the internals.
+"""
+
+from __future__ import annotations
+
+from lode.cli.render.core import (
+    ACCESSIBLE_INTENT_COLORS,
+    DEFAULT_INTENT_COLORS,
+    MARKERS,
+    PLAIN_INTENT_COLORS,
+    STATUS_INTENT,
+    Border,
+    Intent,
+    RenderOptions,
+    Status,
+    render_options_from_preset,
+)
+from lode.cli.render.survey import render_survey
+
+__all__ = [
+    "ACCESSIBLE_INTENT_COLORS",
+    "DEFAULT_INTENT_COLORS",
+    "MARKERS",
+    "PLAIN_INTENT_COLORS",
+    "STATUS_INTENT",
+    "Border",
+    "Intent",
+    "RenderOptions",
+    "Status",
+    "render_options_from_preset",
+    "render_survey",
+]

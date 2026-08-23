@@ -65,9 +65,9 @@ class Border(StrEnum):
     SQUARE = "square"
 
 
-# rich.box variant per Border. ``None`` means no border (rich uses ``box=None``),
-# not a sentinel ``box.Box`` — rich has no ``box.NONE`` constant. Extending the
-# enum means adding an entry here.
+# rich.box variant per Border. ``Border.NONE -> None`` signals "no frame": the
+# renderer must then emit content without a Panel, because rich's Panel requires
+# a ``box.Box`` and cannot take ``None``. Extending the enum adds an entry here.
 _BORDER_BOX: Mapping[Border, box.Box | None] = {
     Border.NONE: None,
     Border.ROUND: box.ROUNDED,
@@ -113,7 +113,7 @@ ACCESSIBLE_INTENT_COLORS: Mapping[Intent, str] = {
     Intent.MUTED: "dim",
 }
 
-# plain: every intent → empty style (no colour, no ANSI), no border.
+# plain: every intent → empty style (no colour, no ANSI). Border is unaffected.
 PLAIN_INTENT_COLORS: Mapping[Intent, str] = {intent: "" for intent in Intent}
 
 
@@ -121,9 +121,10 @@ PLAIN_INTENT_COLORS: Mapping[Intent, str] = {intent: "" for intent in Intent}
 class RenderOptions:
     """Styling knobs for command output.
 
-    Defaults reproduce the current rich output: rounded border, dim border,
-    default intent colours. Callers replace ``border``/``intent_colors`` (via a
-    preset or directly) to switch into plain/accessible modes.
+    Colour (``intent_colors``) and border (``border``) are independent axes: the
+    ``rich``/``plain``/``accessible`` presets only change colour, while ``border``
+    (``none``/``round``/``square``) is set separately. Defaults reproduce the
+    current rich output (rounded border, dim border, default colours).
     """
 
     border: Border = Border.ROUND
@@ -134,13 +135,15 @@ class RenderOptions:
 
     @property
     def box(self) -> box.Box | None:
-        """The rich ``box`` variant backing ``border`` (``None`` = no border)."""
+        """The rich ``box`` variant backing ``border`` (``None`` = no frame)."""
         return _BORDER_BOX[self.border]
 
 
+# Presets only control COLOUR; border is a separate axis (``RenderOptions.border``)
+# left at the default. So ``plain`` is uncoloured but still bordered.
 _PRESETS: Mapping[str, RenderOptions] = {
     "rich": RenderOptions(),
-    "plain": RenderOptions(border=Border.NONE, intent_colors=PLAIN_INTENT_COLORS),
+    "plain": RenderOptions(intent_colors=PLAIN_INTENT_COLORS),
     "accessible": RenderOptions(intent_colors=ACCESSIBLE_INTENT_COLORS),
 }
 

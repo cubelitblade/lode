@@ -15,7 +15,8 @@ from typing import Annotated, Any, Literal
 
 import typer
 
-from lode.cli.output import render_survey
+from lode.cli.render.output import echo_json, json_err, json_ok, preview
+from lode.cli.render.survey import render_survey
 from lode.config import (
     build_embedder,
     effective_config,
@@ -48,58 +49,6 @@ from lode.ingestion.split import RecursiveSegmentSplitter
 # The index lives next to the workspace's own .lode/ directory (PLAN §3).
 INDEX_DB_RELATIVE = Path(".lode") / "index.db"
 
-# Machine-readable output (--json) envelope. This is the bridge to a future
-# MCP layer: every `--json`-capable command emits the same top-level shape
-# (schema_version, command, success, plus data or error) so consumers can tell
-# success/failure apart and read data uniformly. `schema_version` lets the
-# shape evolve without breaking existing consumers.
-JSON_SCHEMA_VERSION = 1
-
-
-def _json_ok(command: str, **data: Any) -> dict[str, Any]:
-    """Build a successful --json envelope (success=True + command data)."""
-    return {
-        "schema_version": JSON_SCHEMA_VERSION,
-        "command": command,
-        "success": True,
-        **data,
-    }
-
-
-def _json_err(command: str, message: str, *, code: str = "error", **error_extra: Any) -> dict[str, Any]:
-    """Build a failed --json envelope (success=False + structured error).
-
-    ``error_extra`` lets callers add fields to the ``error`` object (e.g.
-    ``candidates`` for an ambiguous ``dig``), keeping the envelope uniform.
-    """
-    return {
-        "schema_version": JSON_SCHEMA_VERSION,
-        "command": command,
-        "success": False,
-        "error": {"code": code, "message": message, **error_extra},
-    }
-
-
-def _echo_json(payload: dict[str, Any]) -> None:
-    """Print a --json payload as an indented, non-ASCII-safe JSON document."""
-    typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
-
-
-# Max length of the `prospect` preview snippet. Human output and --json share
-# it so the two never drift; may become a config option later.
-PREVIEW_MAX_CHARS = 160
-
-
-def _preview(text: str) -> str:
-    """Flatten text to a single line, truncated to PREVIEW_MAX_CHARS.
-
-    Line breaks (\r, \n) and other whitespace runs collapse to a single space.
-    """
-    snippet = re.sub(r"\s+", " ", text).strip()
-    if len(snippet) > PREVIEW_MAX_CHARS:
-        snippet = snippet[: PREVIEW_MAX_CHARS - 3] + "..."
-    return snippet
-
 
 app = typer.Typer(
     name="lode",
@@ -111,7 +60,7 @@ app = typer.Typer(
 def _block(message: str, *, code: str, as_json: bool, command: str) -> None:
     """Emit a blocking error (JSON or human) and exit non-zero."""
     if as_json:
-        _echo_json(_json_err(command, message, code=code))
+        echo_json(json_err(command, message, code=code))
     else:
         typer.echo(message)
     raise typer.Exit(code=1)
@@ -250,15 +199,15 @@ def survey(
     except SchemaVersionError as exc:
         message = f"Index needs a re-mine: {exc}"
         if as_json:
-            _echo_json(_json_err("survey", message, code="schema_version"))
+            echo_json(json_err("survey", message, code="schema_version"))
         else:
             typer.echo(message)
         raise typer.Exit(code=1) from exc
     with store:
         result = survey_workspace(store, workspace, settings.ignore.sources)
         if as_json:
-            _echo_json(
-                _json_ok(
+            echo_json(
+                json_ok(
                     "survey",
                     workspace=str(workspace),
                     summary={
@@ -305,7 +254,7 @@ def mine(
     except SchemaVersionError as exc:
         message = f"Index needs a re-mine: {exc}"
         if as_json:
-            _echo_json(_json_err("mine", message, code="schema_version"))
+            echo_json(json_err("mine", message, code="schema_version"))
         else:
             typer.echo(message)
         raise typer.Exit(code=1) from exc
@@ -326,8 +275,8 @@ def mine(
                 settings.ignore.sources,
             )
             if as_json:
-                _echo_json(
-                    _json_ok(
+                echo_json(
+                    json_ok(
                         "mine",
                         workspace=str(workspace),
                         from_scratch=from_scratch,
@@ -369,7 +318,7 @@ def mine(
                     typer.echo("Re-run `lode mine` after fixing these to retry.")
     except EmbedderUnavailableError as exc:
         if as_json:
-            _echo_json(_json_err("mine", str(exc), code="embedder_unavailable"))
+            echo_json(json_err("mine", str(exc), code="embedder_unavailable"))
         else:
             typer.echo(str(exc))
         raise typer.Exit(code=1) from exc
@@ -392,7 +341,7 @@ def prospect(
     except SchemaVersionError as exc:
         message = f"Index needs a re-mine: {exc}"
         if as_json:
-            _echo_json(_json_err("prospect", message, code="schema_version"))
+            echo_json(json_err("prospect", message, code="schema_version"))
         else:
             typer.echo(message)
         raise typer.Exit(code=1) from exc
@@ -412,7 +361,7 @@ def prospect(
             )
         except ValueError as exc:
             if as_json:
-                _echo_json(_json_err("prospect", str(exc), code="invalid_query"))
+                echo_json(json_err("prospect", str(exc), code="invalid_query"))
             else:
                 typer.echo(str(exc))
             raise typer.Exit(code=1) from exc
@@ -423,13 +372,13 @@ def prospect(
             # instead of a raw sqlite traceback.
             message = _dimension_mismatch_message(exc.stored_dimension, exc.current_dimension)
             if as_json:
-                _echo_json(_json_err("prospect", message, code="dimension_mismatch"))
+                echo_json(json_err("prospect", message, code="dimension_mismatch"))
             else:
                 typer.echo(message)
             raise typer.Exit(code=1) from exc
         if as_json:
-            _echo_json(
-                _json_ok(
+            echo_json(
+                json_ok(
                     "prospect",
                     workspace=str(workspace),
                     query=query,
@@ -443,7 +392,7 @@ def prospect(
                             "page": hit.page,
                             "state": "stale" if hit.stale else "fresh",
                             "digest": hit.chunk_id,
-                            "preview": _preview(hit.text),
+                            "preview": preview(hit.text),
                         }
                         for index, hit in enumerate(hits, start=1)
                     ],
@@ -461,7 +410,7 @@ def prospect(
                     # still identifying the chunk (full id lives in the DB).
                     short_id = hit.chunk_id.removeprefix("blake3:")[:12]
                     typer.echo(f"{index}. [{hit.score:.3f}] {hit.path}{heading}{page}{stale_tag} #{short_id}")
-                    typer.echo(f"   {_preview(hit.text)}")
+                    typer.echo(f"   {preview(hit.text)}")
             _warn_stale(store, hits)
 
 
@@ -489,7 +438,7 @@ def dig(
     if not db_path.exists():
         message = f"Dry hole: no index at {db_path}; run `lode mine` first."
         if as_json:
-            _echo_json(_json_err("dig", message, code="no_index"))
+            echo_json(json_err("dig", message, code="no_index"))
         else:
             typer.echo(message)
         raise typer.Exit(code=1)
@@ -500,7 +449,7 @@ def dig(
     except SchemaVersionError as exc:
         message = f"Index needs a re-mine: {exc}"
         if as_json:
-            _echo_json(_json_err("dig", message, code="schema_version"))
+            echo_json(json_err("dig", message, code="schema_version"))
         else:
             typer.echo(message)
         raise typer.Exit(code=1) from exc
@@ -545,7 +494,7 @@ def _dig(store: Store, digest: str, *, as_json: bool = False, radius: int = 0) -
     if not _DIGEST_PATTERN.fullmatch(token):
         message = f"Dry hole: not a valid digest: {digest!r}."
         if as_json:
-            _echo_json(_json_err("dig", message, code="invalid_digest"))
+            echo_json(json_err("dig", message, code="invalid_digest"))
         else:
             typer.echo(message)
         raise typer.Exit(code=1)
@@ -553,15 +502,15 @@ def _dig(store: Store, digest: str, *, as_json: bool = False, radius: int = 0) -
     if not matches:
         message = f"Dry hole: no chunk with digest {digest!r}."
         if as_json:
-            _echo_json(_json_err("dig", message, code="not_found"))
+            echo_json(json_err("dig", message, code="not_found"))
         else:
             typer.echo(message)
         raise typer.Exit(code=1)
     if len(matches) > 1:
         message = f"Digest {digest!r} is ambiguous ({len(matches)} chunks); use a longer prefix:"
         if as_json:
-            _echo_json(
-                _json_err(
+            echo_json(
+                json_err(
                     "dig",
                     message,
                     code="ambiguous",
@@ -577,8 +526,8 @@ def _dig(store: Store, digest: str, *, as_json: bool = False, radius: int = 0) -
     target = matches[0]
     window_chunks = _window(store, token, target, radius)
     if as_json:
-        _echo_json(
-            _json_ok(
+        echo_json(
+            json_ok(
                 "dig",
                 window={
                     "center_seq": target.seq,
