@@ -21,6 +21,7 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TaskID, TextColumn
 from lode.cli.render import Intent
 from lode.cli.render.mine import render_mine
 from lode.cli.render.output import echo_json, json_err, json_ok, preview, render_message
+from lode.cli.render.prospect import render_prospect
 from lode.cli.render.survey import render_survey
 from lode.config import (
     build_embedder,
@@ -177,8 +178,8 @@ def _sync_with_progress(
         return sync(store, workspace, embedder, splitter, ignore_sources, report=report)
 
 
-def _warn_stale(store: Store, hits: list[SearchHit]) -> None:
-    """Warn when the index holds files that `lode survey` marked stale.
+def _stale_warning(store: Store, hits: list[SearchHit]) -> str | None:
+    """Build a stale-file warning message, or ``None`` when there are none.
 
     Two distinct cases keep the message honest about where the risk sits:
 
@@ -186,16 +187,18 @@ def _warn_stale(store: Store, hits: list[SearchHit]) -> None:
       elsewhere; refresh keeps the library current;
     * a stale file does show up — those entries may not reflect the
       on-disk content, so verify before trusting them.
+
+    The message is returned (not printed) so the render layer owns how it is
+    displayed: ``render_prospect`` emits it with ``WARNING`` intent.
     """
     if not any(file.status is FileStatus.STALE for file in store.list_files()):
-        return
+        return None
     if any(hit.stale for hit in hits):
-        typer.echo(
-            "\nWarning: results include stale files; verify them before relying on them. "
+        return (
+            "Warning: results include stale files; verify them before relying on them. "
             "Run `lode mine` to update the index."
         )
-    else:
-        typer.echo("\nWarning: the index holds stale files outside these results. Run `lode mine` to update the index.")
+    return "Warning: the index holds stale files outside these results. Run `lode mine` to update the index."
 
 
 # Shared workspace argument shape; only the help string varies per command.
@@ -445,19 +448,7 @@ def prospect(
                 )
             )
         else:
-            if not hits:
-                typer.echo("Dry hole: nothing matched.")
-            else:
-                for index, hit in enumerate(hits, start=1):
-                    stale_tag = " [stale]" if hit.stale else ""
-                    heading = f" > {hit.heading}" if hit.heading else ""
-                    page = f" (p.{hit.page})" if hit.page is not None else ""
-                    # Short content-address prefix keeps the line readable while
-                    # still identifying the chunk (full id lives in the DB).
-                    short_id = hit.chunk_id.removeprefix("blake3:")[:12]
-                    typer.echo(f"{index}. [{hit.score:.3f}] {hit.path}{heading}{page}{stale_tag} #{short_id}")
-                    typer.echo(f"   {preview(hit.text)}")
-            _warn_stale(store, hits)
+            render_prospect(workspace, query, hits, stale_warning=_stale_warning(store, hits))
 
 
 @app.command("dig")
