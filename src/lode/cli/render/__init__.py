@@ -2,7 +2,8 @@
 
 Subpackage owns everything that turns command results into text: the style
 core (``core.py``), shared output primitives (``output.py``), and per-command
-renderers (``survey.py``, ``mine.py``, ``prospect.py``, ``dig.py``).
+renderers (``survey.py``, ``mine.py``, ``prospect.py``, ``dig.py``,
+``config.py``).
 
 The public surface is re-exported here so callers can use
 ``from lode.cli.render import render_survey, RenderOptions`` without reaching
@@ -11,6 +12,14 @@ into the internals.
 
 from __future__ import annotations
 
+from lode.cli.render.config import (
+    render_config_message,
+    render_config_path,
+    render_config_set,
+    render_config_show,
+    render_config_unset,
+    render_config_value,
+)
 from lode.cli.render.core import (
     ACCESSIBLE_INTENT_COLORS,
     DEFAULT_INTENT_COLORS,
@@ -38,6 +47,12 @@ __all__ = [
     "Intent",
     "RenderOptions",
     "Status",
+    "render_config_message",
+    "render_config_path",
+    "render_config_set",
+    "render_config_show",
+    "render_config_unset",
+    "render_config_value",
     "render_dig",
     "render_mine",
     "render_options_from_preset",

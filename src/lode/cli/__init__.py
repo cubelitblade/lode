@@ -8,7 +8,6 @@ the same functions — CLI first, MCP later (PLAN M1).
 
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Sequence
 from pathlib import Path
@@ -19,6 +18,14 @@ from rich.console import Console
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskID, TextColumn
 
 from lode.cli.render import Intent
+from lode.cli.render.config import (
+    render_config_message,
+    render_config_path,
+    render_config_set,
+    render_config_show,
+    render_config_unset,
+    render_config_value,
+)
 from lode.cli.render.dig import render_dig
 from lode.cli.render.mine import render_mine
 from lode.cli.render.output import echo_json, json_err, json_ok, preview, render_message
@@ -623,21 +630,10 @@ def _target_config_path(scope: str) -> Path:
     return user_config_path() if scope == "user" else workspace_config_path()
 
 
-def _format_config_value(key: str, value: Any) -> str:
-    """Render a config value as `key = value` for `get` output."""
-    if isinstance(value, bool):
-        rendered = str(value).lower()
-    elif isinstance(value, (str, list)):
-        rendered = json.dumps(value)
-    else:
-        rendered = str(value)
-    return f"{key} = {rendered}"
-
-
 def _cfg_show() -> None:
     """Print the merged effective configuration as TOML."""
     settings = load_settings()
-    typer.echo(toml_dumps(effective_config(settings)))
+    render_config_show(toml_dumps(effective_config(settings)))
 
 
 @config_app.callback(invoke_without_command=True)
@@ -670,16 +666,16 @@ def config_get(
     try:
         validate_key(key)
     except KeyError:
-        typer.echo(f"Dry hole: unknown config key {key!r}.")
+        render_config_message(f"Dry hole: unknown config key {key!r}.")
         raise typer.Exit(code=1) from None
 
     if scope is None:
         settings = load_settings()
         value = get_nested(effective_config(settings), key)
-        typer.echo(_format_config_value(key, value))
+        render_config_value(key, value)
         return
     if scope not in ("user", "workspace"):
-        typer.echo("Stumbled: --scope must be 'user' or 'workspace'.")
+        render_config_message("Stumbled: --scope must be 'user' or 'workspace'.")
         raise typer.Exit(code=1)
 
     path = _target_config_path(scope)
@@ -687,9 +683,9 @@ def config_get(
     try:
         value = get_nested(data, key)
     except KeyError:
-        typer.echo(f"Dry hole: {key!r} is not set in {path}.")
+        render_config_message(f"Dry hole: {key!r} is not set in {path}.")
         raise typer.Exit(code=1) from None
-    typer.echo(_format_config_value(key, value))
+    render_config_value(key, value)
 
 
 @config_app.command("set")
@@ -702,20 +698,20 @@ def config_set(
     try:
         validate_key(key)
     except KeyError:
-        typer.echo(f"Dry hole: unknown config key {key!r}.")
+        render_config_message(f"Dry hole: unknown config key {key!r}.")
         raise typer.Exit(code=1) from None
 
     try:
         parsed = parse_value(key, value)
     except ValueError as exc:
-        typer.echo(f"Stumbled: {exc}")
+        render_config_message(f"Stumbled: {exc}")
         raise typer.Exit(code=1) from exc
 
     path = _target_config_path(scope)
     data = read_toml(path)
     set_nested(data, key, parsed)
     write_toml(path, data)
-    typer.echo(f"set {_format_config_value(key, parsed)} in {path}")
+    render_config_set(key, parsed, path)
 
 
 @config_app.command("unset")
@@ -727,22 +723,22 @@ def config_unset(
     try:
         validate_key(key)
     except KeyError:
-        typer.echo(f"Dry hole: unknown config key {key!r}.")
+        render_config_message(f"Dry hole: unknown config key {key!r}.")
         raise typer.Exit(code=1) from None
 
     path = _target_config_path(scope)
     data = read_toml(path)
     if not unset_nested(data, key):
-        typer.echo(f"Dry hole: {key!r} is not set in {path}.")
+        render_config_message(f"Dry hole: {key!r} is not set in {path}.")
         raise typer.Exit(code=1)
     write_toml(path, data)
-    typer.echo(f"unset {key} in {path}")
+    render_config_unset(key, path)
 
 
 @config_app.command("path")
 def config_path(scope: ConfigScope = "workspace") -> None:
     """Show the target config file path (does not create the file)."""
-    typer.echo(str(_target_config_path(scope)))
+    render_config_path(_target_config_path(scope))
 
 
 app.add_typer(config_app, name="config")
