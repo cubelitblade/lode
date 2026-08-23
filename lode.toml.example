@@ -10,7 +10,7 @@ version = 1
 # Dimension of the embedding vectors.
 # If omitted, lode will try to discover it from the embedding API endpoint.
 # The dimension must match the actual output dimension of the embedding model.
-# Changing this value requires rebuilding the index.
+# Changing this value requires re-mining the index.
 # dimension = 512
 
 # Whether to apply L2 normalization to embedding vectors.

@@ -95,11 +95,11 @@ def test_survey_reports_pending(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     assert "pending" in survey.output
 
 
-def test_mine_rebuild_flag_works(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_mine_from_scratch_flag_works(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
     (tmp_path / "a.txt").write_text("hello world")
 
-    mine = runner.invoke(app, ["mine", "--rebuild", str(tmp_path)])
+    mine = runner.invoke(app, ["mine", "--from-scratch", str(tmp_path)])
     assert mine.exit_code == 0, mine.output
     assert "1 added" in mine.output
 
@@ -132,13 +132,13 @@ def test_model_mismatch_blocks_prospect(tmp_path: Path, monkeypatch: pytest.Monk
     (tmp_path / "a.txt").write_text("hello world")
     runner.invoke(app, ["mine", str(tmp_path)])
 
-    # Same store, different model -> refused until --rebuild.
+    # Same store, different model -> refused until --from-scratch.
     monkeypatch.setattr("lode.cli.build_embedder", _other_model_embedder)
     prospect = runner.invoke(app, ["prospect", "hello", str(tmp_path)])
     assert prospect.exit_code != 0
     assert "different model" in prospect.output
 
-    mine = runner.invoke(app, ["mine", "--rebuild", str(tmp_path)])
+    mine = runner.invoke(app, ["mine", "--from-scratch", str(tmp_path)])
     assert mine.exit_code == 0, mine.output
 
     prospect = runner.invoke(app, ["prospect", "hello", str(tmp_path)])
@@ -484,7 +484,7 @@ def test_survey_json_error_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     assert payload["success"] is False
     assert payload["schema_version"] == 1
     assert payload["error"]["code"] == "schema_version"
-    assert "rebuild" in payload["error"]["message"]
+    assert "re-mine" in payload["error"]["message"]
 
 
 def test_mine_json_reports_changes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -499,7 +499,7 @@ def test_mine_json_reports_changes(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     assert payload["command"] == "mine"
     assert payload["success"] is True
     assert payload["schema_version"] == 1
-    assert payload["rebuild"] is False
+    assert payload["from_scratch"] is False
     assert payload["workspace"] == str(tmp_path)
     assert payload["summary"] == {"added": 2, "updated": 0, "unchanged": 0, "removed": 0, "skipped": 0}
     assert set(payload["paths"]["added"]) == {"a.txt", "b.txt"}
@@ -508,15 +508,15 @@ def test_mine_json_reports_changes(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     assert payload["failed"] == []
 
 
-def test_mine_rebuild_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_mine_from_scratch_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
     (tmp_path / "a.txt").write_text("hello world")
 
-    result = runner.invoke(app, ["mine", "--rebuild", "--json", str(tmp_path)])
+    result = runner.invoke(app, ["mine", "--from-scratch", "--json", str(tmp_path)])
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["success"] is True
-    assert payload["rebuild"] is True
+    assert payload["from_scratch"] is True
     assert payload["summary"]["added"] == 1
 
 
@@ -667,7 +667,7 @@ def test_prospect_dimension_mismatch_blocks(tmp_path: Path, monkeypatch: pytest.
     prospect = runner.invoke(app, ["prospect", "hello", str(tmp_path)])
     assert prospect.exit_code != 0
     assert "same vein" in prospect.output
-    assert "lode mine --rebuild" in prospect.output
+    assert "lode mine --from-scratch" in prospect.output
 
 
 def test_prospect_dimension_mismatch_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -682,20 +682,20 @@ def test_prospect_dimension_mismatch_fallback(tmp_path: Path, monkeypatch: pytes
     result = runner.invoke(app, ["prospect", "hello", str(tmp_path)])
     assert result.exit_code != 0
     assert "same vein" in result.output
-    assert "lode mine --rebuild" in result.output
+    assert "lode mine --from-scratch" in result.output
 
 
-def test_mine_rebuild_dimension_mismatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_mine_from_scratch_dimension_mismatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
     (tmp_path / "a.txt").write_text("hello world")
     runner.invoke(app, ["mine", str(tmp_path)])
 
-    # A dimension change is allowed with an explicit --rebuild.
+    # A dimension change is allowed with an explicit --from-scratch.
     monkeypatch.setattr("lode.cli.build_embedder", _dimension_mismatch_embedder)
-    mine = runner.invoke(app, ["mine", "--rebuild", str(tmp_path)])
+    mine = runner.invoke(app, ["mine", "--from-scratch", str(tmp_path)])
     assert mine.exit_code == 0, mine.output
 
-    # After rebuild the index is 99-dim; prospect with the same embedder works.
+    # After re-mine the index is 99-dim; prospect with the same embedder works.
     prospect = runner.invoke(app, ["prospect", "hello", str(tmp_path)])
     assert prospect.exit_code == 0, prospect.output
 

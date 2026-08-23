@@ -121,7 +121,7 @@ def _dimension_mismatch_message(stored_dimension: int, current_dimension: int) -
     return (
         f"The current lode was driven at {stored_dimension} dimensions, but this model "
         f"yields {current_dimension}-wide nuggets — they don't sit on the same vein.\n"
-        "Hint: Re-mine it with `lode mine --rebuild`, or switch your embedding config "
+        "Hint: Re-mine it with `lode mine --from-scratch`, or switch your embedding config "
         "back to the model/dimension that dug it."
     )
 
@@ -130,7 +130,7 @@ def _model_gate(
     store: Store,
     embedder: Embedder,
     *,
-    rebuild_requested: bool = False,
+    from_scratch: bool = False,
     as_json: bool = False,
     command: str = "mine",
 ) -> None:
@@ -138,19 +138,19 @@ def _model_gate(
 
     A mismatch means the index was built with a different model or a different
     vector dimension than the current embedder reports: querying it is refused
-    and updating it without a rebuild would silently keep stale or incompatible
-    vectors. UNKNOWN (embedding endpoint down) does not block — search must
-    keep working (PLAN D7).
+    and updating it without a from-scratch re-mine would silently keep stale or
+    incompatible vectors. UNKNOWN (embedding endpoint down) does not block —
+    search must keep working (PLAN D7).
     """
-    if store.model_status is ModelStatus.MISMATCH and not rebuild_requested:
+    if store.model_status is ModelStatus.MISMATCH and not from_scratch:
         message = (
             "The index was built with a different model "
             f"(indexed: {store.stored_model_id!r}). "
-            "Run `lode mine --rebuild` to rebuild, or switch back to that model."
+            "Run `lode mine --from-scratch` to re-mine it, or switch back to that model."
         )
         _block(message, code="model_mismatch", as_json=as_json, command=command)
 
-    if rebuild_requested:
+    if from_scratch:
         return
 
     try:
@@ -185,42 +185,69 @@ def _warn_stale(store: Store, hits: list[SearchHit]) -> None:
         typer.echo("\nWarning: the index holds stale files outside these results. Run `lode mine` to update the index.")
 
 
-# Shared workspace argument shape; used by all three commands. The default
-# value (".") is set with `=` at the call site, not inside `Argument`.
-WorkspaceArg = Annotated[
+# Shared workspace argument shape; only the help string varies per command.
+# The default value (".") is set with `=` at the call site, not inside `Argument`.
+SurveyWorkspaceArg = Annotated[
     Path,
     typer.Argument(
         exists=True,
         file_okay=False,
         dir_okay=True,
-        help="Workspace directory (default: current directory).",
+        help="Workspace to inspect.",
+    ),
+]
+MineWorkspaceArg = Annotated[
+    Path,
+    typer.Argument(
+        exists=True,
+        file_okay=False,
+        dir_okay=True,
+        help="Workspace to index.",
+    ),
+]
+ProspectWorkspaceArg = Annotated[
+    Path,
+    typer.Argument(
+        exists=True,
+        file_okay=False,
+        dir_okay=True,
+        help="Workspace to search.",
+    ),
+]
+DigWorkspaceArg = Annotated[
+    Path,
+    typer.Argument(
+        exists=True,
+        file_okay=False,
+        dir_okay=True,
+        help="Workspace containing the index.",
     ),
 ]
 
-# Shared config option: an explicit path skips auto-discovery (see config).
+# Shared config option: an explicit path that skips auto-discovery (see config).
 ConfigArg = Annotated[
     Path | None,
-    typer.Option("--config", help="Path to a config file (skips auto-discovery)."),
+    typer.Option("--config", help="Path to a configuration file."),
 ]
 
 
 @app.command("survey")
 @app.command("status", hidden=True)
 def survey(
-    workspace: WorkspaceArg = Path("."),
+    workspace: SurveyWorkspaceArg = Path("."),
     config: ConfigArg = None,
-    as_json: bool = typer.Option(False, "--json", help="Emit machine-readable JSON output."),
+    as_json: bool = typer.Option(False, "--json", help="Emit JSON output."),
 ) -> None:
-    """Detect workspace changes against the index; mark changed files stale.
+    """Detect workspace changes and report stale files.
 
-    No embedding endpoint is needed — pure file comparison.
+    This command only compares files and does not require an embedding endpoint.
     """
     settings = load_settings(config)
     embedder = build_embedder(settings.embedding)
     try:
         store = Store(workspace / INDEX_DB_RELATIVE, embedder)
     except SchemaVersionError as exc:
-        message = f"Index needs a rebuild: {exc}"
+        message = f"Index needs a re-mine: {exc}"
         if as_json:
             _echo_json(_json_err("survey", message, code="schema_version"))
         else:
@@ -271,18 +298,18 @@ def survey(
 @app.command("mine")
 @app.command("index", hidden=True)
 def mine(
-    workspace: WorkspaceArg = Path("."),
-    rebuild: bool = typer.Option(
+    workspace: MineWorkspaceArg = Path("."),
+    from_scratch: bool = typer.Option(
         False,
-        "--rebuild",
-        help="Drop and rebuild the whole index first (required after a model change).",
+        "--from-scratch",
+        help="Discard the existing index and create a new one from scratch.",
     ),
     config: ConfigArg = None,
-    as_json: bool = typer.Option(False, "--json", help="Emit machine-readable JSON output."),
+    as_json: bool = typer.Option(False, "--json", help="Emit JSON output."),
 ) -> None:
-    """Embed changed/new files and update the index (requires an embedding endpoint).
+    """Embeds and indexes new or changed files. An embedding endpoint must be configured.
 
-    Use `--rebuild` after changing the embedding model or if the index
+    Use `--from-scratch` when changing the embedding model or when the index
     schema is incompatible.
     """
     settings = load_settings(config)
@@ -290,7 +317,7 @@ def mine(
     try:
         store = Store(workspace / INDEX_DB_RELATIVE, embedder)
     except SchemaVersionError as exc:
-        message = f"Index needs a rebuild: {exc}"
+        message = f"Index needs a re-mine: {exc}"
         if as_json:
             _echo_json(_json_err("mine", message, code="schema_version"))
         else:
@@ -298,9 +325,9 @@ def mine(
         raise typer.Exit(code=1) from exc
 
     try:
-        _model_gate(store, embedder, rebuild_requested=rebuild, as_json=as_json, command="mine")
+        _model_gate(store, embedder, from_scratch=from_scratch, as_json=as_json, command="mine")
         with store:
-            if rebuild:
+            if from_scratch:
                 store.rebuild()
             result = sync(
                 store,
@@ -317,7 +344,7 @@ def mine(
                     _json_ok(
                         "mine",
                         workspace=str(workspace),
-                        rebuild=rebuild,
+                        from_scratch=from_scratch,
                         summary={
                             "added": result.added,
                             "updated": result.updated,
@@ -366,18 +393,18 @@ def mine(
 @app.command("search", hidden=True)
 def prospect(
     query: Annotated[str, typer.Argument(help="Query to search for.")],
-    workspace: WorkspaceArg = Path("."),
-    top_k: Annotated[int | None, typer.Option("--top-k", min=1, help="Number of results to return.")] = None,
+    workspace: ProspectWorkspaceArg = Path("."),
+    top_k: Annotated[int | None, typer.Option("--top-k", min=1, help="Maximum number of results to return.")] = None,
     config: ConfigArg = None,
-    as_json: bool = typer.Option(False, "--json", help="Emit machine-readable JSON output."),
+    as_json: bool = typer.Option(False, "--json", help="Emit JSON output."),
 ) -> None:
-    """Search the index and show results with provenance (file + heading)."""
+    """Search the index and show results with source information."""
     settings = load_settings(config)
     embedder = build_embedder(settings.embedding)
     try:
         store = Store(workspace / INDEX_DB_RELATIVE, embedder)
     except SchemaVersionError as exc:
-        message = f"Index needs a rebuild: {exc}"
+        message = f"Index needs a re-mine: {exc}"
         if as_json:
             _echo_json(_json_err("prospect", message, code="schema_version"))
         else:
@@ -457,19 +484,19 @@ def prospect(
 def dig(
     digest: Annotated[
         str,
-        typer.Argument(help="Chunk digest: full `blake3:<hex>` or a short prefix (as shown by `prospect`)."),
+        typer.Argument(help="Chunk digest or prefix."),
     ],
-    workspace: WorkspaceArg = Path("."),
+    workspace: DigWorkspaceArg = Path("."),
     radius: Annotated[
         int | None,
         typer.Option(
             "--radius",
             min=0,
-            help="Window radius: number of adjacent chunks to include on each side (same section).",
+            help="Number of adjacent chunks to include around the target chunk.",
         ),
     ] = None,
     config: ConfigArg = None,
-    as_json: bool = typer.Option(False, "--json", help="Emit machine-readable JSON output."),
+    as_json: bool = typer.Option(False, "--json", help="Emit JSON output."),
 ) -> None:
     """Fetch a chunk's full text by its digest (content address)."""
     db_path = workspace / INDEX_DB_RELATIVE
@@ -485,7 +512,7 @@ def dig(
     try:
         store = Store(db_path, embedder)
     except SchemaVersionError as exc:
-        message = f"Index needs a rebuild: {exc}"
+        message = f"Index needs a re-mine: {exc}"
         if as_json:
             _echo_json(_json_err("dig", message, code="schema_version"))
         else:
@@ -618,12 +645,12 @@ def _print_window(chunks: list[ChunkWithPath], *, center_seq: int | None, radius
 # project-first philosophy (no global state unless explicitly requested).
 ConfigScope = Annotated[
     Literal["user", "workspace"],
-    typer.Option("--scope", help="Config scope (default: workspace)."),
+    typer.Option("--scope", help="Config scope."),
 ]
 
 config_app = typer.Typer(
     name="config",
-    help="Read and write configuration without editing files.",
+    help="Inspect and modify configuration.",
     no_args_is_help=False,
 )
 

@@ -92,7 +92,7 @@ class ChunkingConfig(BaseModel):
 
     Changing these values changes how files are split into chunks, but the
     index is keyed by file digest, so already-indexed files are not
-    re-chunked automatically — run ``lode mine --rebuild`` after changing
+    re-chunked automatically — run ``lode mine --from-scratch`` after changing
     them.
     """
 
