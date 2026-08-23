@@ -3,6 +3,7 @@
 from lode.index.store import (
     SCHEMA_VERSION,
     ChunkWithPath,
+    DimensionMismatchError,
     EmbedderUnavailableError,
     FileRecord,
     FileStatus,
@@ -15,6 +16,7 @@ from lode.index.store import (
 __all__ = [
     "SCHEMA_VERSION",
     "ChunkWithPath",
+    "DimensionMismatchError",
     "EmbedderUnavailableError",
     "FileRecord",
     "FileStatus",

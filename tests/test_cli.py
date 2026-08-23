@@ -36,6 +36,27 @@ def _other_model_embedder(_cfg: EmbeddingConfig) -> FakeEmbedder:
     return FakeEmbedder(model_id="other-model")
 
 
+def _dimension_mismatch_embedder(_cfg: EmbeddingConfig) -> FakeEmbedder:
+    """Same model id but a different reported vector dimension than the index."""
+    return FakeEmbedder(model_id="test-model", dimension=99)
+
+
+class _WrongQueryEmbedder(FakeEmbedder):
+    """Reports the stored dimension but emits query vectors of another width.
+
+    Simulates a config dimension that mirrors the stored value while the model
+    actually returns a different width — the gate cannot detect it, so the
+    query-time fallback must.
+    """
+
+    def embed_query(self, text: str) -> list[float]:
+        return [0.1] * 99
+
+
+def _wrong_query_embedder(_cfg: EmbeddingConfig) -> FakeEmbedder:
+    return _WrongQueryEmbedder(model_id="test-model", dimension=4)
+
+
 def _failing_embedder(_cfg: EmbeddingConfig) -> FailingEmbedder:
     return FailingEmbedder()
 
@@ -551,15 +572,74 @@ def test_prospect_json_invalid_query(tmp_path: Path, monkeypatch: pytest.MonkeyP
     runner.invoke(app, ["mine", str(tmp_path)])
 
     # Both retrieval factors zero -> search refuses to run.
-    (tmp_path / ".lode" / "config.toml").write_text(
-        "[retrieval]\nsemantic_factor = 0.0\nlexical_factor = 0.0\n"
-    )
+    (tmp_path / ".lode" / "config.toml").write_text("[retrieval]\nsemantic_factor = 0.0\nlexical_factor = 0.0\n")
 
     result = runner.invoke(app, ["prospect", "hello", "--json", str(tmp_path)])
     assert result.exit_code != 0
     payload = json.loads(result.output)
     assert payload["success"] is False
     assert payload["error"]["code"] == "invalid_query"
+
+
+# -- embedding dimension/model mismatch -----------------------------------------
+
+
+def test_prospect_dimension_mismatch_blocks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
+    (tmp_path / "a.txt").write_text("hello world")
+    runner.invoke(app, ["mine", str(tmp_path)])
+
+    # Same model id but a different vector dimension -> gate refuses search.
+    monkeypatch.setattr("lode.cli.build_embedder", _dimension_mismatch_embedder)
+    prospect = runner.invoke(app, ["prospect", "hello", str(tmp_path)])
+    assert prospect.exit_code != 0
+    assert "same vein" in prospect.output
+    assert "lode mine --rebuild" in prospect.output
+
+
+def test_prospect_dimension_mismatch_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
+    (tmp_path / "a.txt").write_text("hello world")
+    runner.invoke(app, ["mine", str(tmp_path)])
+
+    # Reports the stored dimension (4) so the gate passes, but actually emits
+    # 99-dim query vectors -> sqlite-vec MATCH throws DimensionMismatchError,
+    # which the CLI must translate to the friendly message (Layer 2 fallback).
+    monkeypatch.setattr("lode.cli.build_embedder", _wrong_query_embedder)
+    result = runner.invoke(app, ["prospect", "hello", str(tmp_path)])
+    assert result.exit_code != 0
+    assert "same vein" in result.output
+    assert "lode mine --rebuild" in result.output
+
+
+def test_mine_rebuild_dimension_mismatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
+    (tmp_path / "a.txt").write_text("hello world")
+    runner.invoke(app, ["mine", str(tmp_path)])
+
+    # A dimension change is allowed with an explicit --rebuild.
+    monkeypatch.setattr("lode.cli.build_embedder", _dimension_mismatch_embedder)
+    mine = runner.invoke(app, ["mine", "--rebuild", str(tmp_path)])
+    assert mine.exit_code == 0, mine.output
+
+    # After rebuild the index is 99-dim; prospect with the same embedder works.
+    prospect = runner.invoke(app, ["prospect", "hello", str(tmp_path)])
+    assert prospect.exit_code == 0, prospect.output
+
+
+def test_prospect_json_dimension_mismatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
+    (tmp_path / "a.txt").write_text("hello world")
+    runner.invoke(app, ["mine", str(tmp_path)])
+
+    monkeypatch.setattr("lode.cli.build_embedder", _dimension_mismatch_embedder)
+    result = runner.invoke(app, ["prospect", "hello", "--json", str(tmp_path)])
+    assert result.exit_code != 0
+    payload = json.loads(result.output)
+    assert payload["command"] == "prospect"
+    assert payload["success"] is False
+    assert payload["error"]["code"] == "dimension_mismatch"
+    assert "same vein" in payload["error"]["message"]
 
 
 # -- `lode config` CLI ----------------------------------------------------------

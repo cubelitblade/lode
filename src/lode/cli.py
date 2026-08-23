@@ -30,8 +30,10 @@ from lode.config import (
     workspace_config_path,
     write_toml,
 )
+from lode.embeddings.base import Embedder
 from lode.index import (
     ChunkWithPath,
+    DimensionMismatchError,
     EmbedderUnavailableError,
     FileStatus,
     ModelStatus,
@@ -105,13 +107,40 @@ app = typer.Typer(
 )
 
 
-def _model_gate(store: Store, *, rebuild_requested: bool = False, as_json: bool = False, command: str = "mine") -> None:
-    """Enforce the model-consistency contract for mine/prospect.
+def _block(message: str, *, code: str, as_json: bool, command: str) -> None:
+    """Emit a blocking error (JSON or human) and exit non-zero."""
+    if as_json:
+        _echo_json(_json_err(command, message, code=code))
+    else:
+        typer.echo(message)
+    raise typer.Exit(code=1)
 
-    A mismatch means the index was built with a different model: querying it
-    is refused, updating it without a rebuild would silently keep stale
-    vectors (unchanged files are skipped). UNKNOWN (embedding endpoint down)
-    does not block — search must keep working (PLAN D7).
+
+def _dimension_mismatch_message(stored_dimension: int, current_dimension: int) -> str:
+    """Friendly dimension-mismatch message with the two recovery options."""
+    return (
+        f"The current lode was driven at {stored_dimension} dimensions, but this model "
+        f"yields {current_dimension}-wide nuggets — they don't sit on the same vein.\n"
+        "Hint: Re-mine it with `lode mine --rebuild`, or switch your embedding config "
+        "back to the model/dimension that dug it."
+    )
+
+
+def _model_gate(
+    store: Store,
+    embedder: Embedder,
+    *,
+    rebuild_requested: bool = False,
+    as_json: bool = False,
+    command: str = "mine",
+) -> None:
+    """Enforce the model/dimension-consistency contract for mine/prospect.
+
+    A mismatch means the index was built with a different model or a different
+    vector dimension than the current embedder reports: querying it is refused
+    and updating it without a rebuild would silently keep stale or incompatible
+    vectors. UNKNOWN (embedding endpoint down) does not block — search must
+    keep working (PLAN D7).
     """
     if store.model_status is ModelStatus.MISMATCH and not rebuild_requested:
         message = (
@@ -119,11 +148,20 @@ def _model_gate(store: Store, *, rebuild_requested: bool = False, as_json: bool 
             f"(indexed: {store.stored_model_id!r}). "
             "Run `lode mine --rebuild` to rebuild, or switch back to that model."
         )
-        if as_json:
-            _echo_json(_json_err(command, message, code="model_mismatch"))
-        else:
-            typer.echo(message)
-        raise typer.Exit(code=1)
+        _block(message, code="model_mismatch", as_json=as_json, command=command)
+
+    if rebuild_requested:
+        return
+
+    try:
+        current_dimension = embedder.dimension
+    except Exception:
+        # Fault-tolerant like model detection: an unreachable endpoint must not
+        # block search, which can still serve cached data (PLAN D7).
+        return
+    if current_dimension != store.dimension:
+        message = _dimension_mismatch_message(store.dimension, current_dimension)
+        _block(message, code="dimension_mismatch", as_json=as_json, command=command)
 
 
 def _warn_stale(store: Store, hits: list[SearchHit]) -> None:
@@ -260,7 +298,7 @@ def mine(
         raise typer.Exit(code=1) from exc
 
     try:
-        _model_gate(store, rebuild_requested=rebuild, as_json=as_json, command="mine")
+        _model_gate(store, embedder, rebuild_requested=rebuild, as_json=as_json, command="mine")
         with store:
             if rebuild:
                 store.rebuild()
@@ -292,10 +330,7 @@ def mine(
                             "updated": result.updated_files,
                             "removed": result.removed_files,
                         },
-                        failed=[
-                            {"path": failure.path, "error": failure.error}
-                            for failure in result.failed
-                        ],
+                        failed=[{"path": failure.path, "error": failure.error} for failure in result.failed],
                     )
                 )
             else:
@@ -349,7 +384,7 @@ def prospect(
             typer.echo(message)
         raise typer.Exit(code=1) from exc
 
-    _model_gate(store, as_json=as_json, command="prospect")
+    _model_gate(store, embedder, as_json=as_json, command="prospect")
     with store:
         if top_k is None:
             top_k = settings.retrieval.top_k
@@ -367,6 +402,17 @@ def prospect(
                 _echo_json(_json_err("prospect", str(exc), code="invalid_query"))
             else:
                 typer.echo(str(exc))
+            raise typer.Exit(code=1) from exc
+        except DimensionMismatchError as exc:
+            # Fallback for a dimension mismatch the gate could not detect (e.g.
+            # config dimension mirrors the stored value but the model actually
+            # emits a different width): surface the friendly recovery message
+            # instead of a raw sqlite traceback.
+            message = _dimension_mismatch_message(exc.stored_dimension, exc.current_dimension)
+            if as_json:
+                _echo_json(_json_err("prospect", message, code="dimension_mismatch"))
+            else:
+                typer.echo(message)
             raise typer.Exit(code=1) from exc
         if as_json:
             _echo_json(

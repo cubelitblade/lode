@@ -97,6 +97,22 @@ class EmbedderUnavailableError(StoreError):
     """The embedder could not provide metadata needed to (re)build the index."""
 
 
+class DimensionMismatchError(StoreError):
+    """A query or insert vector's dimension differs from the index's vec0 schema.
+
+    The index's vec0 table is created for a fixed dimension (stored in `meta`);
+    a chunk embedding a different width is incompatible and cannot be matched or
+    written. Carries both widths so callers can present a friendly recovery
+    message.
+    """
+
+    def __init__(self, stored_dimension: int, current_dimension: int, *, operation: str) -> None:
+        super().__init__(f"{operation} vector has {current_dimension} dimensions; the index expects {stored_dimension}")
+        self.stored_dimension = stored_dimension
+        self.current_dimension = current_dimension
+        self.operation = operation
+
+
 class ModelStatus(enum.Enum):
     """Result of comparing the stored model with the current embedder."""
 
@@ -306,10 +322,16 @@ class Store:
         if k <= 0:
             return []
         with self._lock:
-            rows = self._conn.execute(
-                f"SELECT rowid, distance FROM chunk_vectors WHERE embedding MATCH ? AND k = {int(k)} ORDER BY distance",
-                (json.dumps(vector),),
-            ).fetchall()
+            try:
+                rows = self._conn.execute(
+                    f"SELECT rowid, distance FROM chunk_vectors "
+                    f"WHERE embedding MATCH ? AND k = {int(k)} ORDER BY distance",
+                    (json.dumps(vector),),
+                ).fetchall()
+            except sqlite3.OperationalError as exc:
+                if "Dimension mismatch" in str(exc):
+                    raise DimensionMismatchError(self.dimension, len(vector), operation="query") from exc
+                raise
         return [(int(row[0]), float(row[1])) for row in rows]
 
     def sparse_search(self, query: str, k: int) -> list[tuple[int, float]]:
@@ -438,10 +460,15 @@ class Store:
                 "INSERT INTO chunks (chunk_id, file_id, seq, text, heading, page) VALUES (?, ?, ?, ?, ?, ?)",
                 (chunk.id, file_id, chunk.seq, chunk.text, chunk.heading, chunk.page),
             )
-            self._conn.execute(
-                "INSERT INTO chunk_vectors (rowid, embedding) VALUES (?, ?)",
-                (cast(int, cursor.lastrowid), json.dumps(vector)),
-            )
+            try:
+                self._conn.execute(
+                    "INSERT INTO chunk_vectors (rowid, embedding) VALUES (?, ?)",
+                    (cast(int, cursor.lastrowid), json.dumps(vector)),
+                )
+            except sqlite3.OperationalError as exc:
+                if "Dimension mismatch" in str(exc):
+                    raise DimensionMismatchError(self.dimension, len(vector), operation="insert") from exc
+                raise
 
     # -- schema ---------------------------------------------------------------
 

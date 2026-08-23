@@ -18,6 +18,7 @@ import sqlite_vec  # pyright: ignore[reportMissingTypeStubs]
 
 from lode.embeddings.base import Embedder
 from lode.index import (
+    DimensionMismatchError,
     EmbedderUnavailableError,
     FileRecord,
     FileStatus,
@@ -208,7 +209,7 @@ def test_replace_file_rolls_back_on_vector_error(db_path: Path) -> None:
     chunks, _ = make_chunks(["ok"])
     bad_vectors = [[0.1, 0.2]]  # 2 dimensions, table expects 4
     with Store(db_path, FakeEmbedder()) as store:
-        with pytest.raises(sqlite3.Error):
+        with pytest.raises(DimensionMismatchError):
             store.replace_file(file_record(), chunks, bad_vectors)
         # The failed transaction left no partial state behind.
         assert store.get_file("a.txt") is None
