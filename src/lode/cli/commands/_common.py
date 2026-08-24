@@ -236,6 +236,15 @@ ProspectWorkspaceArg = Annotated[
         help="Workspace to search.",
     ),
 ]
+DigWorkspaceArg = Annotated[
+    Path,
+    typer.Argument(
+        exists=True,
+        file_okay=False,
+        dir_okay=True,
+        help="Workspace containing the index.",
+    ),
+]
 
 # Shared config option: an explicit path that skips auto-discovery (see config).
 ConfigArg = Annotated[
