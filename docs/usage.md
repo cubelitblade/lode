@@ -169,6 +169,64 @@ return matching candidates.
 
 Displays the target chunk and its surrounding context window.
 
+## lode assay
+
+Explain why a chunk scored as it did for a query.
+
+```bash
+lode assay QUERY DIGEST [OPTIONS] [workspace]
+```
+
+Aliases: `lode analyze`
+
+Reuses the same hybrid scoring as `prospect` (semantic + BM25, combined by
+`semantic_factor` / `lexical_factor`) and breaks down the chunk's score into
+its per-source raw and normalized values, the weighted fusion, and its rank.
+A chunk that did not make the results is explained as ranked outside `top_k`
+or as having a zero combined score.
+
+The digest may be the full `blake3:<hex>`, a bare hex, or the short prefix
+printed by `prospect` (optionally with a leading `#`). Ambiguous prefixes
+return matching candidates.
+
+### Options
+
+- `QUERY`
+    - `<query>`
+    Query to explain the score for.
+
+- `DIGEST`
+    - `<digest>`
+    Chunk digest or prefix to explain.
+
+- `[workspace]`
+    - `<path>`
+    Workspace to search.
+
+- `--top-k`
+    - `<int>`
+    Maximum number of results to return.
+
+- `--config`
+    - `<path>`
+    Path to a configuration file.
+
+- `--palette`
+    - `vivid|accessible`
+    Color palette for this run.
+
+- `--no-color`
+  Disable color for this run.
+
+- `--json`
+  Emit JSON output.
+
+### Output
+
+Displays the query, the chunk's source location, per-source raw and normalized
+scores with their weights, the combined score, and the chunk's rank (or why it
+is not in the results).
+
 ## lode config
 
 Inspect and modify configuration.

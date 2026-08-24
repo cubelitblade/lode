@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from lode.embeddings.base import Embedder
-from lode.index.store import FileStatus, PathRef, Store
+from lode.index.store import ChunkWithPath, FileStatus, PathRef, Store
 
 # Retrieve a larger candidate pool than top_k from each source so the fused
 # ranking can still reach the best combined result.
@@ -68,6 +68,54 @@ class ProspectResult:
     has_stale: bool
 
 
+@dataclass(frozen=True, slots=True)
+class _Candidates:
+    """Intermediate per-source scores for one query, before ranking.
+
+    ``*_raw`` are the un-normalized per-source scores (cosine for semantic,
+    BM25 for lexical); ``*_norm`` are their min-max normalized forms; and
+    ``combined`` is the weighted fusion. ``search`` ranks from ``combined``;
+    ``explain`` reads the per-source values for a single chunk.
+    """
+
+    semantic_raw: dict[int, float]
+    lexical_raw: dict[int, float]
+    semantic_norm: dict[int, float]
+    lexical_norm: dict[int, float]
+    combined: dict[int, float]
+
+
+@dataclass(frozen=True, slots=True)
+class ScoreExplanation:
+    """Why one chunk scored as it did for a query.
+
+    ``*_raw``/``*_norm`` are ``None`` when that source did not return the
+    chunk in its candidate pool (e.g. no lexical match, or the weight is
+    zero so the source was not queried). ``*_pool_rank`` is the chunk's rank
+    within that source's candidate pool (by raw score, descending), or
+    ``None`` when it is not in the pool; ``*_pool_size`` is the pool's actual
+    size. ``rank`` is the chunk's true rank across all scored rows (not
+    truncated to ``top_k``); ``in_results`` reports whether it actually made
+    the returned top-``top_k``.
+    """
+
+    chunk: ChunkWithPath
+    semantic_raw: float | None
+    lexical_raw: float | None
+    semantic_norm: float | None
+    lexical_norm: float | None
+    semantic_pool_rank: int | None
+    lexical_pool_rank: int | None
+    semantic_pool_size: int
+    lexical_pool_size: int
+    combined: float
+    rank: int | None
+    in_results: bool
+    semantic_weight: float
+    lexical_weight: float
+    top_k: int
+
+
 def search(
     store: Store,
     embedder: Embedder,
@@ -78,28 +126,21 @@ def search(
     top_k: int,
 ) -> list[SearchHit]:
     """Hybrid search: weighted fusion of semantic and lexical results."""
+    candidates = _score_candidates(
+        store,
+        embedder,
+        query,
+        semantic_weight=semantic_weight,
+        lexical_weight=lexical_weight,
+        top_k=top_k,
+    )
     if top_k <= 0 or not query.strip():
         return []
-    if semantic_weight == 0 and lexical_weight == 0:
-        raise ValueError(
-            "You can't discover an ore without a prospecting tool.\n"
-            "Hint: at least one of `semantic_factor` and `lexical_factor` must be non-zero."
-        )
-    pool = top_k * CANDIDATE_MULTIPLIER
-
-    semantic_norm = _minmax(_semantic_scores(store, embedder, query, pool)) if semantic_weight != 0 else {}
-    lexical_norm = _minmax(_lexical_scores(store, query, pool)) if lexical_weight != 0 else {}
-
-    combined: dict[int, float] = {}
-    for rowid in semantic_norm.keys() | lexical_norm.keys():
-        combined[rowid] = semantic_weight * semantic_norm.get(rowid, 0.0) + lexical_weight * lexical_norm.get(
-            rowid, 0.0
-        )
 
     # Zero-score rows (no match in either source) carry no signal; dropping
     # them keeps e.g. sparse-only queries from returning unrelated chunks.
     ranked = sorted(
-        ((rowid, score) for rowid, score in combined.items() if score > 0.0),
+        ((rowid, score) for rowid, score in candidates.combined.items() if score > 0.0),
         key=lambda item: item[1],
         reverse=True,
     )[:top_k]
@@ -123,6 +164,117 @@ def search(
             )
         )
     return hits
+
+
+def _score_candidates(
+    store: Store,
+    embedder: Embedder,
+    query: str,
+    *,
+    semantic_weight: float,
+    lexical_weight: float,
+    top_k: int,
+) -> _Candidates:
+    """Score every candidate chunk for a query, before ranking.
+
+    Shared by ``search`` (which ranks from ``combined``) and ``explain``
+    (which reads the per-source values for one chunk), so the two never
+    drift apart. An empty query or non-positive ``top_k`` yields empty
+    candidates; both-zero weights raise.
+    """
+    if top_k <= 0 or not query.strip():
+        return _Candidates({}, {}, {}, {}, {})
+    if semantic_weight == 0 and lexical_weight == 0:
+        raise ValueError(
+            "You can't discover an ore without a prospecting tool.\n"
+            "Hint: at least one of `semantic_factor` and `lexical_factor` must be non-zero."
+        )
+    pool = top_k * CANDIDATE_MULTIPLIER
+
+    semantic_raw = _semantic_scores(store, embedder, query, pool) if semantic_weight != 0 else {}
+    lexical_raw = _lexical_scores(store, query, pool) if lexical_weight != 0 else {}
+    semantic_norm = _minmax(semantic_raw)
+    lexical_norm = _minmax(lexical_raw)
+
+    combined: dict[int, float] = {}
+    for rowid in semantic_norm.keys() | lexical_norm.keys():
+        combined[rowid] = semantic_weight * semantic_norm.get(rowid, 0.0) + lexical_weight * lexical_norm.get(
+            rowid, 0.0
+        )
+    return _Candidates(semantic_raw, lexical_raw, semantic_norm, lexical_norm, combined)
+
+
+def explain(
+    store: Store,
+    embedder: Embedder,
+    query: str,
+    rowid: int,
+    *,
+    semantic_weight: float,
+    lexical_weight: float,
+    top_k: int,
+) -> ScoreExplanation:
+    """Explain why one chunk scored as it did for a query.
+
+    Reuses the same candidate scoring as ``search`` so the explanation always
+    matches the real ranking. ``rowid`` must address an indexed chunk.
+    """
+    candidates = _score_candidates(
+        store,
+        embedder,
+        query,
+        semantic_weight=semantic_weight,
+        lexical_weight=lexical_weight,
+        top_k=top_k,
+    )
+    chunk = store.get_chunks([rowid]).get(rowid)
+    if chunk is None:
+        raise ValueError(f"no chunk with rowid {rowid}")
+
+    semantic_raw = candidates.semantic_raw.get(rowid)
+    lexical_raw = candidates.lexical_raw.get(rowid)
+    semantic_norm = candidates.semantic_norm.get(rowid)
+    lexical_norm = candidates.lexical_norm.get(rowid)
+    combined = candidates.combined.get(rowid, 0.0)
+
+    semantic_pool_rank = _pool_rank(candidates.semantic_raw, rowid)
+    lexical_pool_rank = _pool_rank(candidates.lexical_raw, rowid)
+    semantic_pool_size = len(candidates.semantic_raw)
+    lexical_pool_size = len(candidates.lexical_raw)
+
+    all_ranked = sorted(
+        ((rid, score) for rid, score in candidates.combined.items() if score > 0.0),
+        key=lambda item: item[1],
+        reverse=True,
+    )
+    rank = next((i + 1 for i, (rid, _) in enumerate(all_ranked) if rid == rowid), None)
+    in_results = rank is not None and rank <= top_k
+
+    return ScoreExplanation(
+        chunk=chunk,
+        semantic_raw=semantic_raw,
+        lexical_raw=lexical_raw,
+        semantic_norm=semantic_norm,
+        lexical_norm=lexical_norm,
+        semantic_pool_rank=semantic_pool_rank,
+        lexical_pool_rank=lexical_pool_rank,
+        semantic_pool_size=semantic_pool_size,
+        lexical_pool_size=lexical_pool_size,
+        combined=combined,
+        rank=rank,
+        in_results=in_results,
+        semantic_weight=semantic_weight,
+        lexical_weight=lexical_weight,
+        top_k=top_k,
+    )
+
+
+def _pool_rank(scores: dict[int, float], rowid: int) -> int | None:
+    """Rank of ``rowid`` within a source pool by raw score, descending."""
+    if rowid not in scores:
+        return None
+    ordered = sorted(scores.values(), reverse=True)
+    return ordered.index(scores[rowid]) + 1
 
 
 def _semantic_scores(store: Store, embedder: Embedder, query: str, k: int) -> dict[int, float]:

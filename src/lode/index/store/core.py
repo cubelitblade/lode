@@ -322,6 +322,20 @@ class Store:
             ).fetchall()
         return {int(group[0][0]): chunk_from_rows(group) for group in _group_rows(rows).values()}
 
+    def find_chunk_rowids(self, prefix: str) -> list[int]:
+        """Rowids of chunks whose digest starts with ``prefix``, ordered by rowid.
+
+        The prefix is the hex part of a content address (``blake3:`` already
+        stripped). ``assay`` uses this to resolve a digest to the single rowid
+        it explains, distinguishing not-found (empty) from ambiguous (many).
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id FROM chunks WHERE digest LIKE ? ORDER BY id",
+                (f"blake3:{prefix}%",),
+            ).fetchall()
+        return [int(row[0]) for row in rows]
+
     def find_chunks_by_digest(self, prefix: str) -> list[ChunkWithPath]:
         """Chunks whose digest starts with ``prefix``, ordered by path then sequence.
 

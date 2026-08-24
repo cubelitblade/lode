@@ -12,6 +12,7 @@ into the internals.
 
 from __future__ import annotations
 
+from lode.cli.render.assay import render_assay
 from lode.cli.render.config import (
     render_config_message,
     render_config_path,
@@ -45,6 +46,7 @@ __all__ = [
     "Intent",
     "RenderOptions",
     "Status",
+    "render_assay",
     "render_config_message",
     "render_config_path",
     "render_config_set",

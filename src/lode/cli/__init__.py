@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import typer
 
+from lode.cli.render.assay import render_assay as render_assay  # re-exported for lode.cli.render_assay
 from lode.cli.render.dig import render_dig as render_dig  # re-exported for lode.cli.render_dig
 from lode.cli.render.mine import render_mine as render_mine  # re-exported for lode.cli.render_mine
 from lode.cli.render.prospect import render_prospect as render_prospect  # re-exported for lode.cli.render_prospect
@@ -26,12 +27,13 @@ app = typer.Typer(
 # Register the command modules on the shared app. Imported at the bottom so
 # the module-level names above (build_embedder, render_*, ...) are bound
 # before the command modules resolve them through `lode.cli`.
-from lode.cli.commands import config, dig, mine, prospect, survey  # noqa: E402
+from lode.cli.commands import assay, config, dig, mine, prospect, survey  # noqa: E402
 
 survey.register(app)
 mine.register(app)
 prospect.register(app)
 dig.register(app)
+assay.register(app)
 app.add_typer(config.config_app, name="config")
 
 

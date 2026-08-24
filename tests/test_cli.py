@@ -560,6 +560,124 @@ def test_dig_json_no_index(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     assert payload["error"]["code"] == "no_index"
 
 
+def test_assay_explains_hit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
+    text = "The experiment showed strong quantum entanglement in the third group."
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "report.txt").write_text(text)
+    runner.invoke(app, ["mine", str(tmp_path)])
+
+    digest = chunk_digest(text)
+    result = runner.invoke(app, ["assay", "entanglement", digest, str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "Query: entanglement" in result.output
+    assert "semantic" in result.output
+    assert "lexical" in result.output
+    assert "Ranking score:" in result.output
+    # Only the short stub is shown, never the full blake3 prefix.
+    assert "blake3:" not in result.output
+
+
+def test_assay_accepts_short_prefix(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
+    text = "quantum entanglement in the lab"
+    (tmp_path / "a.txt").write_text(text)
+    runner.invoke(app, ["mine", str(tmp_path)])
+
+    short = chunk_digest(text).removeprefix("blake3:")[:12]
+    result = runner.invoke(app, ["assay", "entanglement", short, str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "Query: entanglement" in result.output
+    assert "Ranking score:" in result.output
+
+
+def test_assay_analyze_alias(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
+    text = "quantum entanglement in the lab"
+    (tmp_path / "a.txt").write_text(text)
+    runner.invoke(app, ["mine", str(tmp_path)])
+
+    result = runner.invoke(app, ["analyze", "entanglement", chunk_digest(text), str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "Query: entanglement" in result.output
+    assert "Ranking score:" in result.output
+
+
+def test_assay_missing_digest_reports_dry_hole(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
+    (tmp_path / "a.txt").write_text("hello world")
+    runner.invoke(app, ["mine", str(tmp_path)])
+
+    absent = chunk_digest("this text is not indexed")
+    result = runner.invoke(app, ["assay", "hello", absent, str(tmp_path)])
+    assert result.exit_code != 0
+    assert "no chunk with digest" in result.output
+
+
+def test_assay_invalid_digest_reports_dry_hole(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
+    (tmp_path / "a.txt").write_text("hello world")
+    runner.invoke(app, ["mine", str(tmp_path)])
+
+    result = runner.invoke(app, ["assay", "hello", "not-a-digest!", str(tmp_path)])
+    assert result.exit_code != 0
+    assert "not a valid digest" in result.output
+
+
+def test_assay_without_index_reports_dry_hole(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
+    (tmp_path / "a.txt").write_text("hello")
+
+    result = runner.invoke(app, ["assay", "hello", "deadbeef", str(tmp_path)])
+    assert result.exit_code != 0
+    assert "run `lode mine` first" in result.output
+
+
+def test_assay_json_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
+    text = "quantum entanglement in the lab"
+    (tmp_path / "a.txt").write_text(text)
+    runner.invoke(app, ["mine", str(tmp_path)])
+
+    result = runner.invoke(app, ["assay", "entanglement", chunk_digest(text), "--json", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["command"] == "assay"
+    assert payload["success"] is True
+    explanation = payload["explanation"]
+    assert set(explanation) == {
+        "digest",
+        "paths",
+        "heading",
+        "page",
+        "seq",
+        "semantic",
+        "lexical",
+        "combined",
+        "rank",
+        "in_results",
+        "top_k",
+    }
+    assert set(explanation["semantic"]) == {"raw", "normalized", "pool_rank", "pool_size", "weight"}
+    assert set(explanation["lexical"]) == {"raw", "normalized", "pool_rank", "pool_size", "weight"}
+    assert explanation["semantic"]["raw"] is not None
+    assert explanation["lexical"]["raw"] is not None
+    assert explanation["in_results"] is True
+    assert explanation["rank"] == 1
+
+
+def test_assay_json_not_found(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
+    (tmp_path / "a.txt").write_text("hello world")
+    runner.invoke(app, ["mine", str(tmp_path)])
+
+    result = runner.invoke(app, ["assay", "hello", chunk_digest("not indexed"), "--json", str(tmp_path)])
+    assert result.exit_code != 0
+    payload = json.loads(result.output)
+    assert payload["success"] is False
+    assert payload["error"]["code"] == "not_found"
+
+
 def _mine_report_with_many_chunks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     """Mine a single .txt file into several chunks and return one chunk id."""
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)

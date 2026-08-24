@@ -13,8 +13,9 @@ from pathlib import Path
 
 import pytest
 
-from lode.index.search import search
+from lode.index.search import explain, search
 from lode.index.store import Store
+from lode.ingestion import chunk_digest
 from tests.fakes import FakeEmbedder, file_record, make_chunks
 
 
@@ -170,3 +171,131 @@ def test_sum_zero_but_not_both_zero_is_allowed(seeded_store: Store) -> None:
         top_k=5,
     )
     assert isinstance(hits, list)
+
+
+def _rowid(store: Store, text: str) -> int:
+    """Rowid of the single chunk whose digest addresses ``text``."""
+    prefix = chunk_digest(text).removeprefix("blake3:")
+    return store.find_chunk_rowids(prefix)[0]
+
+
+def test_explain_hit_matches_search_score(seeded_store: Store) -> None:
+    text = "the quick brown fox jumps"
+    rowid = _rowid(seeded_store, text)
+    explanation = explain(
+        seeded_store,
+        FakeEmbedder(),
+        "fox",
+        rowid,
+        semantic_weight=0.6,
+        lexical_weight=0.4,
+        top_k=5,
+    )
+
+    assert explanation.in_results
+    assert explanation.rank is not None
+    assert explanation.combined > 0
+    assert explanation.semantic_raw is not None
+    assert explanation.lexical_raw is not None
+
+    hits = search(
+        seeded_store,
+        FakeEmbedder(),
+        "fox",
+        semantic_weight=0.6,
+        lexical_weight=0.4,
+        top_k=5,
+    )
+    hit = next(h for h in hits if h.digest == chunk_digest(text))
+    assert explanation.combined == pytest.approx(hit.score)
+
+
+def test_explain_reports_rank_outside_top_k(seeded_store: Store) -> None:
+    # b.md is dense-tied with a.txt seq0 but has no lexical match, so it ranks
+    # second; with top_k=1 it is not returned.
+    text = "quantum entanglement in labs"
+    rowid = _rowid(seeded_store, text)
+    explanation = explain(
+        seeded_store,
+        FakeEmbedder(),
+        "fox",
+        rowid,
+        semantic_weight=0.6,
+        lexical_weight=0.4,
+        top_k=1,
+    )
+
+    assert explanation.rank == 2
+    assert not explanation.in_results
+    assert explanation.combined > 0
+
+
+def test_explain_lexical_miss_is_none(seeded_store: Store) -> None:
+    # "lazy dog sleeps" has no "fox" token, so its lexical score is absent
+    # even though it is in the dense candidate pool.
+    text = "lazy dog sleeps"
+    rowid = _rowid(seeded_store, text)
+    explanation = explain(
+        seeded_store,
+        FakeEmbedder(),
+        "fox",
+        rowid,
+        semantic_weight=0.6,
+        lexical_weight=0.4,
+        top_k=5,
+    )
+
+    assert explanation.lexical_raw is None
+    assert explanation.lexical_norm is None
+    assert explanation.semantic_raw is not None
+
+
+def test_explain_disabled_source_is_none(seeded_store: Store) -> None:
+    text = "the quick brown fox jumps"
+    rowid = _rowid(seeded_store, text)
+    explanation = explain(
+        seeded_store,
+        FakeEmbedder(),
+        "fox",
+        rowid,
+        semantic_weight=0.0,
+        lexical_weight=1.0,
+        top_k=5,
+    )
+
+    assert explanation.semantic_raw is None
+    assert explanation.semantic_norm is None
+    assert explanation.lexical_raw is not None
+
+
+def test_explain_zero_combined_not_in_results(seeded_store: Store) -> None:
+    # "lazy dog sleeps" is dense-ranked last (normalized to 0) and has no
+    # lexical match, so its combined score is 0 and it is filtered out.
+    text = "lazy dog sleeps"
+    rowid = _rowid(seeded_store, text)
+    explanation = explain(
+        seeded_store,
+        FakeEmbedder(),
+        "fox",
+        rowid,
+        semantic_weight=0.6,
+        lexical_weight=0.4,
+        top_k=5,
+    )
+
+    assert explanation.combined == 0.0
+    assert explanation.rank is None
+    assert not explanation.in_results
+
+
+def test_explain_unknown_rowid_raises(seeded_store: Store) -> None:
+    with pytest.raises(ValueError, match="no chunk with rowid"):
+        explain(
+            seeded_store,
+            FakeEmbedder(),
+            "fox",
+            9999,
+            semantic_weight=0.6,
+            lexical_weight=0.4,
+            top_k=5,
+        )

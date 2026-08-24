@@ -8,6 +8,7 @@ import from here instead of re-implementing these.
 
 from __future__ import annotations
 
+import re
 from dataclasses import replace
 from pathlib import Path
 from typing import Annotated, Literal
@@ -33,6 +34,23 @@ from lode.ingestion.split import SegmentSplitter
 
 # The index lives next to the workspace's own .lode/ directory.
 INDEX_DB_RELATIVE = Path(".lode") / "index.db"
+
+# Hex hexdigest bodies (BLAKE3 produces lowercase hex); accept uppercase too.
+# Shared by `dig` and `assay` for resolving a digest or short prefix.
+DIGEST_PATTERN = re.compile(r"[0-9a-f]+", re.IGNORECASE)
+
+
+def normalize_digest(digest: str) -> str:
+    """Strip cosmetics that carry no addressing value.
+
+    Accepts the full ``blake3:<hex>``, the bare hex, or the short prefix
+    ``prospect`` prints (including a leading ``#``). Any uppercase hex is
+    folded to lowercase so it matches stored content addresses.
+    """
+    token = digest.strip()
+    if token.startswith("#"):
+        token = token[1:]
+    return token.removeprefix("blake3:").lower()
 
 
 def block(
