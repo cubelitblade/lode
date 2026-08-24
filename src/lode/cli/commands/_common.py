@@ -227,6 +227,15 @@ MineWorkspaceArg = Annotated[
         help="Workspace to index.",
     ),
 ]
+ProspectWorkspaceArg = Annotated[
+    Path,
+    typer.Argument(
+        exists=True,
+        file_okay=False,
+        dir_okay=True,
+        help="Workspace to search.",
+    ),
+]
 
 # Shared config option: an explicit path that skips auto-discovery (see config).
 ConfigArg = Annotated[

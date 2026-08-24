@@ -15,11 +15,9 @@ from typing import Annotated, Any, Literal
 import typer
 
 from lode.cli.commands._common import (
-    block,
-    dimension_mismatch_parts,
     render_options,
 )
-from lode.cli.render import Intent, RenderOptions
+from lode.cli.render import RenderOptions
 from lode.cli.render.config import (
     render_config_message,
     render_config_path,
@@ -30,8 +28,8 @@ from lode.cli.render.config import (
 )
 from lode.cli.render.dig import render_dig
 from lode.cli.render.mine import render_mine as render_mine  # re-exported for lode.cli.render_mine
-from lode.cli.render.output import echo_json, json_err, json_ok, preview, render_message
-from lode.cli.render.prospect import render_prospect
+from lode.cli.render.output import echo_json, json_err, json_ok
+from lode.cli.render.prospect import render_prospect as render_prospect  # re-exported for lode.cli.render_prospect
 from lode.cli.render.survey import render_survey as render_survey  # re-exported for lode.cli.render_survey
 from lode.config import (
     build_embedder,
@@ -48,16 +46,11 @@ from lode.config import (
     workspace_config_path,
     write_toml,
 )
-from lode.embeddings.base import Embedder
 from lode.index import (
     ChunkWithPath,
-    DimensionMismatchError,
-    ModelStatus,
     SchemaVersionError,
     Store,
 )
-from lode.index.search import ProspectResult, search
-from lode.ingestion.pipeline import detect_changes
 
 # The index lives next to the workspace's own .lode/ directory (PLAN §3).
 INDEX_DB_RELATIVE = Path(".lode") / "index.db"
@@ -70,55 +63,8 @@ app = typer.Typer(
 )
 
 
-def _model_gate(
-    store: Store,
-    embedder: Embedder,
-    *,
-    from_scratch: bool = False,
-    as_json: bool = False,
-    command: str = "mine",
-) -> None:
-    """Enforce the model/dimension-consistency contract for mine/prospect.
-
-    A mismatch means the index was built with a different model or a different
-    vector dimension than the current embedder reports: querying it is refused
-    and updating it without a from-scratch re-mine would silently keep stale or
-    incompatible vectors. UNKNOWN (embedding endpoint down) does not block —
-    search must keep working (PLAN D7).
-    """
-    if store.model_status is ModelStatus.MISMATCH and not from_scratch:
-        message = (
-            "The index was built with a different model "
-            f"(indexed: {store.stored_model_id!r}). "
-            "Run `lode mine --from-scratch` to re-mine it, or switch back to that model."
-        )
-        block(message, code="model_mismatch", as_json=as_json, command=command)
-
-    if from_scratch:
-        return
-
-    try:
-        current_dimension = embedder.dimension
-    except Exception:
-        # Fault-tolerant like model detection: an unreachable endpoint must not
-        # block search, which can still serve cached data (PLAN D7).
-        return
-    if current_dimension != store.dimension:
-        error, hint = dimension_mismatch_parts(store.dimension, current_dimension)
-        block(error, code="dimension_mismatch", as_json=as_json, command=command, hint=hint)
-
-
 # Shared workspace argument shape; only the help string varies per command.
 # The default value (".") is set with `=` at the call site, not inside `Argument`.
-ProspectWorkspaceArg = Annotated[
-    Path,
-    typer.Argument(
-        exists=True,
-        file_okay=False,
-        dir_okay=True,
-        help="Workspace to search.",
-    ),
-]
 DigWorkspaceArg = Annotated[
     Path,
     typer.Argument(
@@ -134,99 +80,6 @@ ConfigArg = Annotated[
     Path | None,
     typer.Option("--config", help="Path to a configuration file."),
 ]
-
-
-@app.command("prospect")
-@app.command("search", hidden=True)
-def prospect(
-    query: Annotated[str, typer.Argument(help="Query to search for.")],
-    workspace: ProspectWorkspaceArg = Path("."),
-    top_k: Annotated[int | None, typer.Option("--top-k", min=1, help="Maximum number of results to return.")] = None,
-    config: ConfigArg = None,
-    as_json: bool = typer.Option(False, "--json", help="Emit JSON output."),
-) -> None:
-    """Search the index and show results with source information.
-
-    Runs a silent detection first so the stale bits are fresh before search
-    reads them — this command writes ``files.status`` (it is not read-only).
-    """
-    settings = load_settings(config)
-    embedder = build_embedder(settings.embedding)
-    options = render_options(settings)
-    try:
-        store = Store(workspace / INDEX_DB_RELATIVE, embedder)
-    except SchemaVersionError as exc:
-        message = f"Index needs a re-mine: {exc}"
-        if as_json:
-            echo_json(json_err("prospect", message, code="schema_version"))
-        else:
-            typer.echo(message)
-        raise typer.Exit(code=1) from exc
-
-    _model_gate(store, embedder, as_json=as_json, command="prospect")
-    with store:
-        if top_k is None:
-            top_k = settings.retrieval.top_k
-        # Refresh the stale bits before searching so per-chunk annotation and
-        # the library-wide dirty signal reflect the current workspace.
-        detect = detect_changes(store, workspace, settings.ignore.sources)
-        try:
-            hits = search(
-                store,
-                embedder,
-                query,
-                semantic_weight=settings.retrieval.semantic_factor,
-                lexical_weight=settings.retrieval.lexical_factor,
-                top_k=top_k,
-            )
-        except ValueError as exc:
-            if as_json:
-                echo_json(json_err("prospect", str(exc), code="invalid_query"))
-            else:
-                typer.echo(str(exc))
-            raise typer.Exit(code=1) from exc
-        except DimensionMismatchError as exc:
-            # Fallback for a dimension mismatch the gate could not detect (e.g.
-            # config dimension mirrors the stored value but the model actually
-            # emits a different width): surface the friendly recovery message
-            # instead of a raw sqlite traceback.
-            error, hint = dimension_mismatch_parts(exc.stored_dimension, exc.current_dimension)
-            if as_json:
-                echo_json(json_err("prospect", f"{error}\n{hint}", code="dimension_mismatch"))
-            else:
-                render_message(error, intent=Intent.ERROR)
-                render_message(hint, intent=Intent.INFO)
-            raise typer.Exit(code=1) from exc
-        result = ProspectResult(
-            workspace=workspace,
-            query=query,
-            top_k=top_k,
-            hits=hits,
-            has_stale=detect.dirty,
-        )
-        if as_json:
-            echo_json(
-                json_ok(
-                    "prospect",
-                    workspace=str(workspace),
-                    query=query,
-                    top_k=top_k,
-                    hits=[
-                        {
-                            "rank": index,
-                            "score": hit.score,
-                            "paths": [{"path": ref.path, "state": ref.status.value} for ref in hit.refs],
-                            "heading": hit.heading,
-                            "page": hit.page,
-                            "digest": hit.digest,
-                            "preview": preview(hit.text),
-                        }
-                        for index, hit in enumerate(hits, start=1)
-                    ],
-                )
-            )
-        else:
-            render_prospect(result, options=options)
 
 
 @app.command("dig")
@@ -530,10 +383,11 @@ app.add_typer(config_app, name="config")
 # Register the command modules on the shared app. Imported at the bottom so
 # the module-level names above (build_embedder, render_*, ...) are bound
 # before the command modules resolve them through `lode.cli`.
-from lode.cli.commands import mine, survey  # noqa: E402
+from lode.cli.commands import mine, prospect, survey  # noqa: E402
 
 survey.register(app)
 mine.register(app)
+prospect.register(app)
 
 
 if __name__ == "__main__":

@@ -715,14 +715,37 @@ def test_prospect_json_preview_flattens_crlf(tmp_path: Path, monkeypatch: pytest
 
 def test_prospect_json_empty_hits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
-    (tmp_path / "a.txt").write_text("hello world")  # never mined -> empty index
+    (tmp_path / "a.txt").write_text("hello world")
     monkeypatch.chdir(tmp_path)
+    # Lexical-only retrieval so a query absent from the doc yields no hits
+    # (the fake embedder always scores densely, which would mask the empty case).
+    (tmp_path / ".lode").mkdir()
+    (tmp_path / ".lode" / "config.toml").write_text(
+        "[retrieval]\nsemantic_factor = 0\nlexical_factor = 1\n"
+    )
+    runner.invoke(app, ["mine", str(tmp_path)])
 
-    result = runner.invoke(app, ["prospect", "anything", "--json", str(tmp_path)])
+    # An existing index with no matching content yields empty hits.
+    result = runner.invoke(app, ["prospect", "nothing-matches", "--json", str(tmp_path)])
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["success"] is True
     assert payload["hits"] == []
+
+
+def test_prospect_without_index_short_circuits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prospect with no index says run mine first instead of creating a db."""
+    monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
+    (tmp_path / "a.txt").write_text("hello world")
+
+    result = runner.invoke(app, ["prospect", "hello", "--json", str(tmp_path)])
+
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["success"] is False
+    assert payload["error"]["code"] == "no_index"
+    assert "run `lode mine` first" in payload["error"]["message"]
+    assert not (tmp_path / ".lode" / "index.db").exists()
 
 
 def test_prospect_json_model_mismatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
