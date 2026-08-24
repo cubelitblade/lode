@@ -1,43 +1,15 @@
-"""SQLite index store: files + chunks + vectors + FTS in one database.
+"""The ``Store`` class: lifecycle, metadata, writes, and query primitives.
 
-The store is the persistence layer under the whole pipeline (PLAN §7).
-It owns the single SQLite connection, the vec0 virtual table (dense
-vectors), the FTS5 external-content table (sparse/BM25), and the triggers
-that keep the FTS index in sync with `chunks`.
-
-Design decisions locked here (confirmed against PLAN D2/D6/D7):
-
-* ``chunks.id`` (INTEGER PRIMARY KEY) is the single rowid shared by the
-  FTS5 table (``content_rowid='id'``) and the vec0 table (``rowid``), so
-  all three tables join on one key.
-* Single connection + RLock: the connection is not thread-safe, so every
-  operation takes the lock — reads included. This keeps the store safe to
-  serve MCP worker threads later.
-* WAL + ``busy_timeout``: concurrent processes (CLI and MCP) can share the
-  database file without instant SQLITE_BUSY failures.
-* The embedder is only touched to learn the vector dimension when the
-  database does not exist yet, and for model detection — which is
-  fault-tolerant. An unreachable embedder never prevents the store from
-  opening (PLAN D7: search must keep working without the embedding
-  endpoint).
-* Schema version and embedding metadata (model_id + dimension) live in
-  `meta`. A schema mismatch raises `SchemaVersionError` at open and
-  requires an explicit rebuild — never an automatic one, and never a
-  network-triggered failure.
-* ``replace_file`` is the atomic unit of a file's re-indexing.
-* ``rebuild()`` drops everything (files included) and re-creates the
-  schema after snapshotting the old database to ``<db>.bak`` via
-  ``VACUUM INTO``.
+See the package docstring (``lode.index.store``) for the design decisions
+this class implements.
 """
 
 from __future__ import annotations
 
-import enum
 import json
 import sqlite3
 import threading
 import time
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
@@ -46,11 +18,22 @@ from typing import Any, cast
 import sqlite_vec  # pyright: ignore[reportMissingTypeStubs]
 
 from lode.embeddings.base import Embedder
+from lode.index.store.errors import (
+    DimensionMismatchError,
+    EmbedderUnavailableError,
+    SchemaVersionError,
+    StoreError,
+)
+from lode.index.store.records import (
+    ChunkWithPath,
+    FileRecord,
+    FileStatus,
+    ModelStatus,
+    row_to_chunk_path,
+    row_to_file,
+)
+from lode.index.store.schema import SCHEMA_VERSION, create_schema, drop_all
 from lode.ingestion import Chunk
-
-# Bump when the schema changes incompatibly; a mismatch makes the store
-# refuse to open until an explicit rebuild.
-SCHEMA_VERSION = 1
 
 # A second process (e.g. CLI next to MCP) waits instead of failing
 # immediately with SQLITE_BUSY.
@@ -59,97 +42,6 @@ BUSY_TIMEOUT_MS = 5000
 # SQLite does not accept parameter binding for DDL, so the VACUUM INTO
 # target is a quoted literal; escape any embedded quotes defensively.
 _VACUUM_INTO = "VACUUM INTO '{}'"
-
-_TRIGGER_CHUNKS_AI = """
-CREATE TRIGGER chunks_ai AFTER INSERT ON chunks BEGIN
-    INSERT INTO chunks_fts(rowid, text, chunk_id) VALUES (new.id, new.text, new.chunk_id);
-END
-"""
-
-_TRIGGER_CHUNKS_AD = """
-CREATE TRIGGER chunks_ad AFTER DELETE ON chunks BEGIN
-    INSERT INTO chunks_fts(chunks_fts, rowid, text, chunk_id)
-    VALUES ('delete', old.id, old.text, old.chunk_id);
-END
-"""
-
-_TRIGGER_CHUNKS_AU = """
-CREATE TRIGGER chunks_au AFTER UPDATE ON chunks BEGIN
-    INSERT INTO chunks_fts(chunks_fts, rowid, text, chunk_id)
-    VALUES ('delete', old.id, old.text, old.chunk_id);
-    INSERT INTO chunks_fts(rowid, text, chunk_id) VALUES (new.id, new.text, new.chunk_id);
-END
-"""
-
-
-class StoreError(Exception):
-    """Base class for index store failures."""
-
-
-class SchemaVersionError(StoreError):
-    """The existing database was created with an incompatible schema.
-
-    The store refuses to open; an explicit rebuild is required.
-    """
-
-
-class EmbedderUnavailableError(StoreError):
-    """The embedder could not provide metadata needed to (re)build the index."""
-
-
-class DimensionMismatchError(StoreError):
-    """A query or insert vector's dimension differs from the index's vec0 schema.
-
-    The index's vec0 table is created for a fixed dimension (stored in `meta`);
-    a chunk embedding a different width is incompatible and cannot be matched or
-    written. Carries both widths so callers can present a friendly recovery
-    message.
-    """
-
-    def __init__(self, stored_dimension: int, current_dimension: int, *, operation: str) -> None:
-        super().__init__(f"{operation} vector has {current_dimension} dimensions; the index expects {stored_dimension}")
-        self.stored_dimension = stored_dimension
-        self.current_dimension = current_dimension
-        self.operation = operation
-
-
-class ModelStatus(enum.Enum):
-    """Result of comparing the stored model with the current embedder."""
-
-    MATCH = "match"
-    MISMATCH = "mismatch"
-    # Embedder unreachable, so the comparison could not be made. The store
-    # stays usable; the search layer decides how to present this.
-    UNKNOWN = "unknown"
-
-
-class FileStatus(enum.StrEnum):
-    CURRENT = "current"
-    STALE = "stale"
-
-
-@dataclass(frozen=True, slots=True)
-class FileRecord:
-    """Metadata row for one indexed file (mirrors the `files` table)."""
-
-    path: str
-    digest: str
-    mtime: float
-    size: int
-    status: FileStatus = FileStatus.CURRENT
-
-
-@dataclass(frozen=True, slots=True)
-class ChunkWithPath:
-    """Chunk content joined with its file metadata (search-layer payload)."""
-
-    chunk_id: str
-    text: str
-    heading: str
-    path: str
-    file_status: FileStatus
-    page: int | None = None
-    seq: int | None = None
 
 
 class Store:
@@ -210,7 +102,7 @@ class Store:
                 f"cannot create index: could not determine embedding metadata: {exc}"
             ) from exc
         with self._conn:
-            self._create_schema(dimension)
+            create_schema(self._conn, dimension)
             self._set_meta("schema_version", str(SCHEMA_VERSION))
             self._set_meta("model_id", model_id)
             self._set_meta("dimension", str(dimension))
@@ -364,7 +256,7 @@ class Store:
                 f"WHERE c.id IN ({placeholders})",
                 [int(r) for r in rowids],
             ).fetchall()
-        return {int(row[0]): _row_to_chunk_path(row) for row in rows}
+        return {int(row[0]): row_to_chunk_path(row) for row in rows}
 
     def find_chunks_by_digest(self, prefix: str) -> list[ChunkWithPath]:
         """Chunks whose ``chunk_id`` starts with ``prefix``.
@@ -382,7 +274,7 @@ class Store:
                 "ORDER BY f.path, c.seq",
                 (f"blake3:{prefix}%",),
             ).fetchall()
-        return [_row_to_chunk_path(row) for row in rows]
+        return [row_to_chunk_path(row) for row in rows]
 
     def get_chunk_neighbors(self, prefix: str, context: int) -> list[ChunkWithPath]:
         """Chunks adjacent to the chunk addressed by ``prefix`` in document order.
@@ -413,13 +305,13 @@ class Store:
                 "ORDER BY c.seq",
                 (file_id, target_id, seq - context, seq + context, heading),
             ).fetchall()
-        return [_row_to_chunk_path(row) for row in rows]
+        return [row_to_chunk_path(row) for row in rows]
 
     def list_files(self) -> list[FileRecord]:
         """All indexed files, sorted by path."""
         with self._lock:
             rows = self._conn.execute("SELECT path, digest, mtime, size, status FROM files ORDER BY path").fetchall()
-        return [_row_to_file(row) for row in rows]
+        return [row_to_file(row) for row in rows]
 
     def get_file(self, path: str) -> FileRecord | None:
         """Metadata for one file, or None if it is not indexed."""
@@ -427,7 +319,7 @@ class Store:
             row = self._conn.execute(
                 "SELECT path, digest, mtime, size, status FROM files WHERE path = ?", (path,)
             ).fetchone()
-        return _row_to_file(row) if row is not None else None
+        return row_to_file(row) if row is not None else None
 
     def rebuild(self) -> None:
         """Drop everything (files included) and re-create the schema.
@@ -451,8 +343,8 @@ class Store:
             quoted = backup_path.as_posix().replace("'", "''")
             self._conn.execute(_VACUUM_INTO.format(quoted))
             with self._conn:
-                self._drop_all()
-                self._create_schema(dimension)
+                drop_all(self._conn)
+                create_schema(self._conn, dimension)
                 self._set_meta("schema_version", str(SCHEMA_VERSION))
                 self._set_meta("model_id", model_id)
                 self._set_meta("dimension", str(dimension))
@@ -502,74 +394,6 @@ class Store:
                     raise DimensionMismatchError(self.dimension, len(vector), operation="insert") from exc
                 raise
 
-    # -- schema ---------------------------------------------------------------
-
-    def _drop_all(self) -> None:
-        self._conn.execute("DROP TABLE IF EXISTS chunks_fts")
-        self._conn.execute("DROP TABLE IF EXISTS chunk_vectors")
-        self._conn.execute("DROP TABLE IF EXISTS chunks")
-        self._conn.execute("DROP TABLE IF EXISTS files")
-        self._conn.execute("DROP TABLE IF EXISTS meta")
-
-    def _create_schema(self, dimension: int) -> None:
-        if dimension <= 0:
-            raise ValueError(f"dimension must be positive, got {dimension}")
-        self._conn.execute(
-            """
-            CREATE TABLE meta (
-                key   TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            )
-            """
-        )
-        self._conn.execute(
-            """
-            CREATE TABLE files (
-                id         INTEGER PRIMARY KEY,
-                path       TEXT UNIQUE NOT NULL,
-                digest     TEXT NOT NULL,
-                mtime      REAL NOT NULL,
-                size       INTEGER NOT NULL,
-                status     TEXT NOT NULL DEFAULT 'current',
-                indexed_at REAL NOT NULL
-            )
-            """
-        )
-        self._conn.execute(
-            """
-            CREATE TABLE chunks (
-                id       INTEGER PRIMARY KEY,
-                chunk_id TEXT NOT NULL,
-                file_id  INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
-                seq      INTEGER NOT NULL,
-                text     TEXT NOT NULL,
-                heading  TEXT,
-                page     INTEGER,
-                UNIQUE (file_id, seq)
-            )
-            """
-        )
-        self._conn.execute(
-            f"""
-            CREATE VIRTUAL TABLE chunk_vectors USING vec0(
-                embedding FLOAT[{dimension}]
-            )
-            """
-        )
-        self._conn.execute(
-            """
-            CREATE VIRTUAL TABLE chunks_fts USING fts5(
-                text,
-                chunk_id UNINDEXED,
-                content='chunks',
-                content_rowid='id'
-            )
-            """
-        )
-        self._conn.execute(_TRIGGER_CHUNKS_AI)
-        self._conn.execute(_TRIGGER_CHUNKS_AD)
-        self._conn.execute(_TRIGGER_CHUNKS_AU)
-
     # -- meta helpers ---------------------------------------------------------
 
     def _set_meta(self, key: str, value: str) -> None:
@@ -585,27 +409,3 @@ class Store:
     def _has_table(self, name: str) -> bool:
         row = self._conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)).fetchone()
         return row is not None
-
-
-def _row_to_file(row: sqlite3.Row) -> FileRecord:
-    return FileRecord(
-        path=row[0],
-        digest=row[1],
-        mtime=row[2],
-        size=row[3],
-        status=FileStatus(row[4]),
-    )
-
-
-def _row_to_chunk_path(row: tuple[Any, ...]) -> ChunkWithPath:
-    # Every caller selects c.seq as the 8th column (the store connection uses
-    # the default row factory, so rows are plain tuples, not sqlite3.Row).
-    return ChunkWithPath(
-        chunk_id=row[1],
-        text=row[2],
-        heading=row[3],
-        path=row[4],
-        file_status=FileStatus(row[5]),
-        page=row[6],
-        seq=row[7],
-    )
