@@ -190,9 +190,7 @@ def test_mine_from_scratch_flag_works(tmp_path: Path, monkeypatch: pytest.Monkey
     assert "+ added 1" in mine.output
 
 
-def test_mine_with_no_indexable_files_creates_no_db(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_mine_with_no_indexable_files_creates_no_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Mine with only unsupported files reports Nothing to do. without a db.
 
     It must not create the index database or touch the embedder when there is
@@ -720,9 +718,7 @@ def test_prospect_json_empty_hits(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     # Lexical-only retrieval so a query absent from the doc yields no hits
     # (the fake embedder always scores densely, which would mask the empty case).
     (tmp_path / ".lode").mkdir()
-    (tmp_path / ".lode" / "config.toml").write_text(
-        "[retrieval]\nsemantic_factor = 0\nlexical_factor = 1\n"
-    )
+    (tmp_path / ".lode" / "config.toml").write_text("[retrieval]\nsemantic_factor = 0\nlexical_factor = 1\n")
     runner.invoke(app, ["mine", str(tmp_path)])
 
     # An existing index with no matching content yields empty hits.
