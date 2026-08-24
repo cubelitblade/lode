@@ -12,7 +12,7 @@ import pytest
 
 from lode.index.search import search
 from lode.index.store import FileStatus, Store
-from lode.ingestion.pipeline import FailedFile, SyncSummary, detect_changes, sync
+from lode.ingestion.pipeline import FailedFile, SyncSummary, classify, detect_changes, sync
 from lode.ingestion.split import RecursiveSegmentSplitter
 from tests.fakes import FailingEmbedder, FakeEmbedder, make_docx_bytes
 
@@ -230,6 +230,41 @@ def test_detect_residual_stale_not_remark(store: Store, tmp_path: Path) -> None:
     file_a = store.get_file("a.txt")
     assert file_a is not None
     assert file_a.status is FileStatus.STALE
+
+
+def test_classify_empty_snapshot_is_all_new_and_side_effect_free(tmp_path: Path) -> None:
+    write(tmp_path, "a.txt", "hello world content")
+    write(tmp_path, "b.txt", "second file content")
+    write(tmp_path, "pic.png", "nope")
+
+    summary = classify({}, tmp_path)
+
+    # No index yet: every supported file is new, nothing is stale, no missing.
+    assert summary.new == 2
+    assert summary.changed == 0
+    assert summary.unchanged == 0
+    assert summary.missing == 0
+    assert summary.skipped == 1
+    assert summary.stale_paths == []
+    assert summary.pending == 2
+    assert summary.dirty is False
+
+
+def test_classify_reports_stale_paths_without_touching_store(store: Store, tmp_path: Path) -> None:
+    path = write(tmp_path, "a.txt", "hello world content")
+    run_sync(store, tmp_path, FakeEmbedder())
+    path.write_text("changed content")
+
+    indexed = {file.path: file for file in store.list_files()}
+    summary = classify(indexed, tmp_path)
+
+    # The changed path is reported as a side effect to apply, but classify
+    # itself must not have flipped the marker (that is detect_changes' job).
+    assert summary.stale_paths == ["a.txt"]
+    assert summary.changed == 1
+    file_a = store.get_file("a.txt")
+    assert file_a is not None
+    assert file_a.status is FileStatus.FRESH
 
 
 def test_sync_indexes_docx_and_surfaces_heading(store: Store, tmp_path: Path) -> None:

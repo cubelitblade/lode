@@ -20,7 +20,7 @@ reported for new files) and the rest of the workspace continues.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -43,6 +43,11 @@ class DetectResult:
     still carry a STALE marker from a previous failed run (residual stale):
     they must be retried so a transient failure does not leave them stale
     forever. They are not re-marked here — the marker is already set.
+
+    ``stale_paths`` is the side-effect list: the paths whose stat differs
+    from the index and therefore need their ``files.status`` flipped to
+    STALE. It is produced by ``classify`` and consumed by ``detect_changes``
+    (which applies the markers); it is not part of the work buckets.
     """
 
     unchanged_files: list[str] = field(default_factory=list[str])
@@ -50,6 +55,7 @@ class DetectResult:
     changed_files: list[str] = field(default_factory=list[str])
     missing_files: list[str] = field(default_factory=list[str])
     skipped: int = 0  # on disk, unsupported format
+    stale_paths: list[str] = field(default_factory=list[str])
 
     @classmethod
     def from_paths(
@@ -60,6 +66,7 @@ class DetectResult:
         changed_files: list[str] | None = None,
         missing_files: list[str] | None = None,
         skipped: int = 0,
+        stale_paths: list[str] | None = None,
     ) -> DetectResult:
         """Build a result from explicit path lists (mainly for tests/render)."""
         return cls(
@@ -68,6 +75,7 @@ class DetectResult:
             changed_files=changed_files or [],
             missing_files=missing_files or [],
             skipped=skipped,
+            stale_paths=stale_paths or [],
         )
 
     @property
@@ -138,31 +146,32 @@ class SyncSummary:
         return len(self.removed_files)
 
 
-def detect_changes(
-    store: Store,
+def classify(
+    indexed: Mapping[str, FileRecord],
     root: Path,
     ignore_files: Sequence[str] = (),
 ) -> DetectResult:
-    """Detect workspace changes against the index and mark changed files stale.
+    """Classify the workspace against an index snapshot, with no side effects.
 
-    Read-mostly: only ``files.status`` is written (to STALE), so search can
-    flag files whose index may be out of date. No content is embedded or
-    replaced here — that is ``sync``'s job.
+    Pure classification: takes the indexed paths (a ``{path: FileRecord}``
+    snapshot) and the workspace root, and returns the ``DetectResult`` buckets
+    plus the ``stale_paths`` side-effect list. It never touches the store or
+    the embedder, so it works with an empty snapshot (no index yet) and with
+    the embedding endpoint down.
 
     Classification is a disk-vs-index stat comparison, with the persistent
     status consulted to fold residual stale markers into ``changed``:
 
     * ``new`` — on disk but not indexed.
-    * ``changed`` — mtime/size differ from the index; the file is marked stale.
-      Also includes files whose stat matches but that still carry a STALE
-      marker from a previous failed run (residual stale) — these are not
-      re-marked, the marker is already set.
+    * ``changed`` — mtime/size differ from the index; the path is added to
+      ``stale_paths``. Also includes files whose stat matches but that still
+      carry a STALE marker from a previous failed run (residual stale) —
+      these are not re-marked, the marker is already set.
     * ``unchanged`` — mtime/size match the index and the file is fresh.
     * ``missing`` — indexed but gone from disk; not marked stale (there is no
       snapshot to flag), ``sync`` deletes it.
     """
     discovered = discover(root, ignore_files)
-    indexed = {file.path: file for file in store.list_files()}
     on_disk = {rel.as_posix() for rel in discovered}
 
     summary = DetectResult()
@@ -183,7 +192,7 @@ def detect_changes(
             else:
                 summary.unchanged_files.append(rel_text)
         else:
-            store.mark_stale(rel_text)
+            summary.stale_paths.append(rel_text)
             summary.changed_files.append(rel_text)
 
     for path in indexed:
@@ -191,6 +200,28 @@ def detect_changes(
             summary.missing_files.append(path)
 
     return summary
+
+
+def detect_changes(
+    store: Store,
+    root: Path,
+    ignore_files: Sequence[str] = (),
+) -> DetectResult:
+    """Detect workspace changes against the index and mark changed files stale.
+
+    Thin wrapper over ``classify``: it snapshots the index, classifies, then
+    applies the ``stale_paths`` side effects (flipping ``files.status`` to
+    STALE) so search can flag files whose index may be out of date. No content
+    is embedded or replaced here — that is ``sync``'s job.
+
+    With no index yet (an empty snapshot), ``classify`` yields every supported
+    file as ``new`` and no ``stale_paths``; this is the no-index survey path.
+    """
+    indexed = {file.path: file for file in store.list_files()}
+    result = classify(indexed, root, ignore_files)
+    for rel_text in result.stale_paths:
+        store.mark_stale(rel_text)
+    return result
 
 
 def sync(
