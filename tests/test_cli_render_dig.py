@@ -18,7 +18,7 @@ from rich.console import Console
 
 from lode.cli.render import RenderOptions, render_options_from_preset
 from lode.cli.render.dig import render_dig
-from lode.index.store import ChunkWithPath, FileStatus
+from lode.index.store import ChunkWithPath, FileStatus, PathRef
 
 
 def _chunk(seq: int, *, stale: bool = False, text: str = "full chunk text") -> ChunkWithPath:
@@ -26,8 +26,7 @@ def _chunk(seq: int, *, stale: bool = False, text: str = "full chunk text") -> C
         digest="blake3:0123456789abcdef",
         text=text,
         heading="Intro",
-        path="docs/report.txt",
-        file_status=FileStatus.STALE if stale else FileStatus.FRESH,
+        refs=(PathRef(path="docs/report.txt", status=FileStatus.STALE if stale else FileStatus.FRESH),),
         page=3,
         seq=seq,
     )

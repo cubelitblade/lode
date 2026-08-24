@@ -1,7 +1,7 @@
 """Chunk model and splitter interface.
 
 A `Splitter` turns extracted text into a sequence of `Chunk`s. Chunk
-identity is content-addressed via `chunk_id`, so the model and the
+identity is content-addressed via `chunk_digest`, so the model and the
 splitter interface must stay stable: downstream layers (index store,
 incremental diff, search) all depend on this shape.
 
@@ -16,7 +16,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
-from lode.ingestion.digest import chunk_id
+from lode.ingestion.digest import chunk_digest
 from lode.ingestion.extract import Segment
 from lode.ingestion.vendored import (
     RecursiveCharacterTextSplitter as _RecursiveCharacterTextSplitter,
@@ -34,14 +34,14 @@ class Chunk:
     """A unit of retrievable text.
 
     Attributes:
-        id: content address, ``blake3:<hex>`` of the normalized text.
+        digest: content address, ``blake3:<hex>`` of the normalized text.
         text: the raw (unnormalized) text; what gets embedded and returned.
         seq: position of this chunk within its file, 0-based.
         heading: heading chain of this chunk (anchor/citation), may be empty.
         page: source page number (PDFs), or None otherwise.
     """
 
-    id: str
+    digest: str
     text: str
     seq: int
     heading: str = ""
@@ -94,7 +94,7 @@ class RecursiveTextSplitter(Splitter):
 
     def split(self, text: str) -> list[Chunk]:
         pieces = self._splitter.split_text(text)
-        return [Chunk(id=chunk_id(piece), text=piece, seq=seq) for seq, piece in enumerate(pieces)]
+        return [Chunk(digest=chunk_digest(piece), text=piece, seq=seq) for seq, piece in enumerate(pieces)]
 
 
 class SegmentSplitter(ABC):
@@ -135,7 +135,7 @@ class RecursiveSegmentSplitter(SegmentSplitter):
             for piece in self._splitter.split(segment.text):
                 chunks.append(
                     Chunk(
-                        id=piece.id,
+                        digest=piece.digest,
                         text=piece.text,
                         seq=seq,
                         heading=segment.heading,

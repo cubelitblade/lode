@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass
 
 from lode.embeddings.base import Embedder
-from lode.index.store import FileStatus, Store
+from lode.index.store import FileStatus, PathRef, Store
 
 # Retrieve a larger candidate pool than top_k from each source so the fused
 # ranking can still reach the best combined result.
@@ -26,15 +26,30 @@ _FTS_TOKEN = re.compile(r"\w+")
 
 @dataclass(frozen=True, slots=True)
 class SearchHit:
-    """One fused retrieval result with its provenance."""
+    """One fused retrieval result with its provenance.
+
+    Content is shared by identical files, so a hit carries every path
+    referencing it; ``primary`` picks the representative one for display
+    and ``stale`` reports whether any referencing path is outdated.
+    """
 
     digest: str
     text: str
-    path: str
     heading: str
     score: float
-    stale: bool
+    refs: tuple[PathRef, ...]
     page: int | None = None
+
+    @property
+    def primary(self) -> PathRef:
+        """Representative reference: smallest fresh path, else smallest overall."""
+        fresh = [ref for ref in self.refs if ref.status is FileStatus.FRESH]
+        return min(fresh or self.refs, key=lambda ref: ref.path)
+
+    @property
+    def stale(self) -> bool:
+        """Whether any referencing path is stale."""
+        return any(ref.status is FileStatus.STALE for ref in self.refs)
 
 
 def search(
@@ -85,10 +100,9 @@ def search(
             SearchHit(
                 digest=chunk.digest,
                 text=chunk.text,
-                path=chunk.path,
                 heading=chunk.heading,
                 score=score,
-                stale=chunk.file_status is FileStatus.STALE,
+                refs=chunk.refs,
                 page=chunk.page,
             )
         )

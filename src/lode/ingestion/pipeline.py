@@ -195,6 +195,17 @@ def sync(
             summary.unchanged += 1
             continue
 
+        digest = file_digest(data)
+        record = FileRecord(path=rel_text, digest=digest, mtime=stat.st_mtime, size=stat.st_size)
+        if store.reference_file(record):
+            # Identical content is already indexed (a copy elsewhere):
+            # reuse it instead of re-extracting and re-embedding.
+            if known is None:
+                summary.added_files.append(rel_text)
+            else:
+                summary.updated_files.append(rel_text)
+            continue
+
         try:
             segments = extract_document(data, rel.suffix)
         except Exception as exc:
@@ -208,11 +219,7 @@ def sync(
         try:
             chunks = splitter.split_segments(segments)
             vectors = embedder.embed_documents([chunk.text for chunk in chunks])
-            store.replace_file(
-                FileRecord(path=rel_text, digest=file_digest(data), mtime=stat.st_mtime, size=stat.st_size),
-                chunks,
-                vectors,
-            )
+            store.replace_file(record, chunks, vectors)
             if known is None:
                 summary.added_files.append(rel_text)
             else:

@@ -6,7 +6,7 @@ every previously stored digest, so these tests lock it down.
 
 from __future__ import annotations
 
-from lode.ingestion.digest import chunk_id, file_digest, normalize
+from lode.ingestion.digest import chunk_digest, file_digest, normalize
 
 
 def test_normalize_strips_leading_and_trailing_whitespace() -> None:
@@ -32,37 +32,37 @@ def test_normalize_empty_string() -> None:
 
 
 def test_chunk_id_is_prefixed_blake3() -> None:
-    assert chunk_id("hello").startswith("blake3:")
+    assert chunk_digest("hello").startswith("blake3:")
 
 
 def test_chunk_id_is_stable_for_same_text() -> None:
-    assert chunk_id("hello world") == chunk_id("hello world")
+    assert chunk_digest("hello world") == chunk_digest("hello world")
 
 
 def test_chunk_id_differs_for_different_text() -> None:
-    assert chunk_id("hello") != chunk_id("world")
+    assert chunk_digest("hello") != chunk_digest("world")
 
 
 def test_chunk_id_ignores_insignificant_whitespace() -> None:
     # Content addressing is over the normalized form: whitespace-only edits
     # do not change the address (and thus reuse the embedding).
-    assert chunk_id("a  b") == chunk_id("a b")
-    assert chunk_id("  hello  ") == chunk_id("hello")
+    assert chunk_digest("a  b") == chunk_digest("a b")
+    assert chunk_digest("  hello  ") == chunk_digest("hello")
 
 
 def test_chunk_id_keeps_newlines_distinct() -> None:
     # Newlines are meaningful: "a b" and "a\nb" address differently.
-    assert chunk_id("a b") != chunk_id("a\nb")
+    assert chunk_digest("a b") != chunk_digest("a\nb")
 
 
 def test_chunk_id_length() -> None:
     # blake3:<64 hex chars>
-    assert len(chunk_id("x")) == len("blake3:") + 64
+    assert len(chunk_digest("x")) == len("blake3:") + 64
 
 
 def test_normalize_and_chunk_id_agree() -> None:
     # The id is derived from the normalized text, so pre-normalizing is a no-op.
-    assert chunk_id(normalize("  messy \t text  ")) == chunk_id("messy text")
+    assert chunk_digest(normalize("  messy \t text  ")) == chunk_digest("messy text")
 
 
 def test_normalize_is_reversible_in_place() -> None:

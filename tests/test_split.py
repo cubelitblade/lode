@@ -10,7 +10,7 @@ from itertools import pairwise
 
 import pytest
 
-from lode.ingestion.digest import chunk_id
+from lode.ingestion.digest import chunk_digest
 from lode.ingestion.split import RecursiveTextSplitter
 
 
@@ -73,8 +73,8 @@ def test_chunk_ids_are_content_addressed() -> None:
     text = "one chunk\n\ntwo chunk"
     chunks = splitter.split(text)
     for chunk in chunks:
-        assert chunk.id == chunk_id(chunk.text)
-        assert chunk.id.startswith("blake3:")
+        assert chunk.digest == chunk_digest(chunk.text)
+        assert chunk.digest.startswith("blake3:")
 
 
 def test_stable_input_yields_stable_chunks() -> None:
@@ -89,7 +89,7 @@ def test_reordering_keeps_chunk_ids() -> None:
     splitter = RecursiveTextSplitter(chunk_size=10, chunk_overlap=5)
     a = splitter.split("para one\n\npara two")
     b = splitter.split("para two\n\npara one")
-    assert {c.id for c in a} == {c.id for c in b}
+    assert {c.digest for c in a} == {c.digest for c in b}
 
 
 def test_invalid_chunk_size_raises() -> None:

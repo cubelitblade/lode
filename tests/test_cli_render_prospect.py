@@ -21,16 +21,21 @@ from rich.console import Console
 from lode.cli.render import RenderOptions, render_options_from_preset
 from lode.cli.render.prospect import render_prospect
 from lode.index.search import SearchHit
+from lode.index.store import FileStatus, PathRef
 
 
 def _hit(*, stale: bool = False) -> SearchHit:
     return SearchHit(
         digest="blake3:0123456789abcdef",
         text="quantum entanglement",
-        path="docs/report.txt",
         heading="Intro",
         score=0.75,
-        stale=stale,
+        refs=(
+            PathRef(
+                path="docs/report.txt",
+                status=FileStatus.STALE if stale else FileStatus.FRESH,
+            ),
+        ),
         page=3,
     )
 

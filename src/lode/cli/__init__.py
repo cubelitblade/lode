@@ -461,10 +461,9 @@ def prospect(
                         {
                             "rank": index,
                             "score": hit.score,
-                            "path": hit.path,
+                            "paths": [{"path": ref.path, "state": ref.status.value} for ref in hit.refs],
                             "heading": hit.heading,
                             "page": hit.page,
-                            "state": "stale" if hit.stale else "fresh",
                             "digest": hit.digest,
                             "preview": preview(hit.text),
                         }
@@ -541,11 +540,10 @@ def _chunk_to_json(chunk: ChunkWithPath, *, include_text: bool = True) -> dict[s
     """Build a `dig` --json payload for one chunk (omit text for candidates)."""
     data: dict[str, Any] = {
         "digest": chunk.digest,
-        "path": chunk.path,
+        "paths": [{"path": ref.path, "state": ref.status.value} for ref in chunk.refs],
         "heading": chunk.heading,
         "page": chunk.page,
         "seq": chunk.seq,
-        "state": "stale" if chunk.file_status is FileStatus.STALE else "fresh",
     }
     if include_text:
         data["text"] = chunk.text
@@ -630,9 +628,10 @@ def _window(store: Store, token: str, target: ChunkWithPath, radius: int) -> lis
 
 def _echo_provenance(chunk: ChunkWithPath) -> None:
     short_id = chunk.digest.removeprefix("blake3:")[:12]
+    more = f" (+{len(chunk.refs) - 1} more)" if len(chunk.refs) > 1 else ""
     heading = f" > {chunk.heading}" if chunk.heading else ""
     page = f" (p.{chunk.page})" if chunk.page is not None else ""
-    typer.echo(f"  #{short_id} {chunk.path}{heading}{page}")
+    typer.echo(f"  #{short_id} {chunk.primary.path}{more}{heading}{page}")
 
 
 # -- `lode config`: read/write configuration without editing files -----------

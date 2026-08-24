@@ -55,7 +55,9 @@ def render_dig(
     stale_style = options.intent_colors.get(Intent.WARNING, "")
     muted_style = options.intent_colors.get(Intent.MUTED, "")
     for chunk in chunks:
-        source = chunk.path
+        source = chunk.primary.path
+        if len(chunk.refs) > 1:
+            source += f" (+{len(chunk.refs) - 1} more)"
         if chunk.heading:
             source += f" > {chunk.heading}"
         if chunk.page is not None:
@@ -65,7 +67,7 @@ def render_dig(
         title = str(seq_label)
         if chunk.seq == center_seq:
             title += " · center"
-        is_stale = chunk.file_status is FileStatus.STALE
+        is_stale = chunk.primary.status is FileStatus.STALE
 
         if frame is not None:
             body = Text()

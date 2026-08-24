@@ -27,7 +27,7 @@ from lode.index.store.records import (
     FileStatus,
     ModelStatus,
     SparseMatch,
-    row_to_chunk_path,
+    chunk_from_rows,
     row_to_file,
 )
 from lode.index.store.schema import SCHEMA_VERSION, create_schema, drop_all
@@ -211,6 +211,35 @@ class Store:
             if previous_content_id is not None and previous_content_id != content_id:
                 self._gc_content_if_orphaned(previous_content_id)
 
+    def reference_file(self, file: FileRecord) -> bool:
+        """Point ``file.path`` at already-indexed content; report whether it existed.
+
+        Unlike :meth:`replace_file`, no chunks are written — the caller
+        claims the content addressed by ``file.digest`` is already indexed.
+        When it is not, nothing changes and False is returned.
+        """
+        with self._lock, self._conn:
+            row = self._conn.execute("SELECT id FROM contents WHERE digest = ?", (file.digest,)).fetchone()
+            if row is None:
+                return False
+            content_id = int(row[0])
+            previous = self._conn.execute("SELECT content_id FROM files WHERE path = ?", (file.path,)).fetchone()
+            self._conn.execute(
+                """
+                INSERT INTO files (path, content_id, mtime, size, status)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(path) DO UPDATE SET
+                    content_id = excluded.content_id,
+                    mtime = excluded.mtime,
+                    size = excluded.size,
+                    status = excluded.status
+                """,
+                (file.path, content_id, file.mtime, file.size, file.status.value),
+            )
+            if previous is not None and int(previous[0]) != content_id:
+                self._gc_content_if_orphaned(int(previous[0]))
+            return True
+
     def remove_file(self, path: str) -> None:
         """Delete a path reference; drop its content when this was the last one."""
         with self._lock, self._conn:
@@ -273,8 +302,7 @@ class Store:
     def get_chunks(self, rowids: list[int]) -> dict[int, ChunkWithPath]:
         """Chunk contents for the given rowids, keyed by rowid.
 
-        A chunk shared by several paths is reported once, attributed to its
-        lexicographically smallest path.
+        Each chunk carries every path referencing its content.
         """
         if not rowids:
             return {}
@@ -285,15 +313,15 @@ class Store:
                 f"WHERE c.id IN ({placeholders})",
                 [int(r) for r in rowids],
             ).fetchall()
-        return {int(row[0]): row_to_chunk_path(row) for row in _representative_rows(rows)}
+        return {int(group[0][0]): chunk_from_rows(group) for group in _group_rows(rows).values()}
 
     def find_chunks_by_digest(self, prefix: str) -> list[ChunkWithPath]:
         """Chunks whose digest starts with ``prefix``, ordered by path then sequence.
 
         The prefix is the hex part of a content address (``blake3:`` already
         stripped). ``dig`` uses this to resolve either a full digest or the
-        short prefix ``prospect`` prints; shared content collapses to one row
-        per chunk, attributed to its smallest referencing path.
+        short prefix ``prospect`` prints; each chunk carries every path
+        referencing its content.
         """
         with self._lock:
             rows = self._conn.execute(
@@ -301,8 +329,8 @@ class Store:
                 "WHERE c.digest LIKE ? ",
                 (f"blake3:{prefix}%",),
             ).fetchall()
-        mapped = [row_to_chunk_path(row) for row in _representative_rows(rows)]
-        mapped.sort(key=lambda chunk: (chunk.path, chunk.seq if chunk.seq is not None else 0))
+        mapped = [chunk_from_rows(group) for group in _group_rows(rows).values()]
+        mapped.sort(key=lambda chunk: (chunk.primary.path, chunk.seq if chunk.seq is not None else 0))
         return mapped
 
     def get_chunk_neighbors(self, prefix: str, context: int) -> list[ChunkWithPath]:
@@ -332,7 +360,7 @@ class Store:
                 "ORDER BY c.seq",
                 (content_id, target_id, seq - context, seq + context, heading),
             ).fetchall()
-        return [row_to_chunk_path(row) for row in _representative_rows(rows)]
+        return [chunk_from_rows(group) for group in _group_rows(rows).values()]
 
     def list_files(self) -> list[FileRecord]:
         """All indexed paths with their content metadata, sorted by path."""
@@ -432,7 +460,7 @@ class Store:
         for chunk, vector in zip(chunks, vectors, strict=True):
             cursor = self._conn.execute(
                 "INSERT INTO chunks (digest, content_id, seq, text, heading, page) VALUES (?, ?, ?, ?, ?, ?)",
-                (chunk.id, content_id, chunk.seq, chunk.text, chunk.heading, chunk.page),
+                (chunk.digest, content_id, chunk.seq, chunk.text, chunk.heading, chunk.page),
             )
             try:
                 self._conn.execute(
@@ -459,12 +487,9 @@ class Store:
         return row is not None
 
 
-def _representative_rows(rows: list[tuple[Any, ...]]) -> list[tuple[Any, ...]]:
-    """Collapse chunk-to-path join rows to one deterministic row per chunk."""
-    best: dict[int, tuple[Any, ...]] = {}
+def _group_rows(rows: list[tuple[Any, ...]]) -> dict[int, list[tuple[Any, ...]]]:
+    """Group chunk-to-path join rows by chunk rowid, preserving query order."""
+    grouped: dict[int, list[tuple[Any, ...]]] = {}
     for row in rows:
-        chunk_rowid = int(row[0])
-        current = best.get(chunk_rowid)
-        if current is None or str(row[4]) < str(current[4]):
-            best[chunk_rowid] = row
-    return list(best.values())
+        grouped.setdefault(int(row[0]), []).append(row)
+    return grouped

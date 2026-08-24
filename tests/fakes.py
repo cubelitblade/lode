@@ -8,7 +8,7 @@ from docx import Document
 
 from lode.embeddings.base import Embedder
 from lode.index.store import FileRecord
-from lode.ingestion import Chunk, chunk_id
+from lode.ingestion import Chunk, chunk_digest
 
 DIM = 4
 
@@ -58,7 +58,7 @@ class FailingEmbedder(FakeEmbedder):
 
 def make_chunks(texts: list[str], *, pages: list[int | None] | None = None) -> tuple[list[Chunk], list[list[float]]]:
     chunks = [
-        Chunk(id=chunk_id(text), text=text, seq=seq, page=pages[seq] if pages else None)
+        Chunk(digest=chunk_digest(text), text=text, seq=seq, page=pages[seq] if pages else None)
         for seq, text in enumerate(texts)
     ]
     vectors = [[0.1 * (seq + 1), 0.2, 0.3, 0.4] for seq in range(len(texts))]

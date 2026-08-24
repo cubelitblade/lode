@@ -20,6 +20,7 @@ from rich.text import Text
 from lode.cli.render.core import Intent, RenderOptions
 from lode.cli.render.output import preview
 from lode.index.search import SearchHit
+from lode.index.store import FileStatus
 
 
 def render_prospect(
@@ -63,17 +64,20 @@ def render_prospect(
     muted_style = options.intent_colors.get(Intent.MUTED, "")
     for index, hit in enumerate(hits, start=1):
         title = f"#{index} · {hit.score:.3f}"
-        source = hit.path
+        source = hit.primary.path
+        if len(hit.refs) > 1:
+            source += f" (+{len(hit.refs) - 1} more)"
         if hit.heading:
             source += f" > {hit.heading}"
         if hit.page is not None:
             source += f" (p.{hit.page})"
         short_id = hit.digest.removeprefix("blake3:")[:12]
+        primary_stale = hit.primary.status is FileStatus.STALE
 
         if frame is not None:
             body = Text()
             body.append(source)
-            if hit.stale:
+            if primary_stale:
                 body.append(" [stale]", style=stale_style)
             body.append("\n\n")
             body.append(preview(hit.text))
@@ -90,9 +94,9 @@ def render_prospect(
         else:
             console.print(title)
             source_line = f"  {source}"
-            if hit.stale:
+            if primary_stale:
                 source_line += " [stale]"
-            console.print(source_line, style=stale_style if hit.stale else "")
+            console.print(source_line, style=stale_style if primary_stale else "")
             console.print(f"  {preview(hit.text)}")
             console.print(f"  {short_id}", style=muted_style)
         console.print()

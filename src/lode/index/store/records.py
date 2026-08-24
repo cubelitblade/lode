@@ -35,16 +35,33 @@ class FileRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class PathRef:
+    """One workspace path referencing a shared content, with its freshness."""
+
+    path: str
+    status: FileStatus
+
+
+@dataclass(frozen=True, slots=True)
 class ChunkWithPath:
-    """Chunk content joined with representative path metadata (search-layer payload)."""
+    """Chunk content joined with every path referencing it.
+
+    Content is shared by identical files, so a chunk can belong to several
+    paths at once; ``primary`` picks the representative one for display.
+    """
 
     digest: str
     text: str
     heading: str
-    path: str
-    file_status: FileStatus
+    refs: tuple[PathRef, ...]
     page: int | None = None
     seq: int | None = None
+
+    @property
+    def primary(self) -> PathRef:
+        """Representative reference: smallest fresh path, else smallest overall."""
+        fresh = [ref for ref in self.refs if ref.status is FileStatus.FRESH]
+        return min(fresh or self.refs, key=lambda ref: ref.path)
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,15 +94,22 @@ def row_to_file(row: sqlite3.Row) -> FileRecord:
     )
 
 
-def row_to_chunk_path(row: tuple[Any, ...]) -> ChunkWithPath:
-    # Every caller selects c.seq as the 8th column (the store connection uses
-    # the default row factory, so rows are plain tuples, not sqlite3.Row).
+def chunk_from_rows(rows: list[tuple[Any, ...]]) -> ChunkWithPath:
+    """Build one chunk from its join rows (one per referencing path).
+
+    Callers select c.seq as the 8th column; the connection uses the default
+    row factory, so rows are plain tuples, not sqlite3.Row.
+    """
+    head = rows[0]
+    refs = tuple(
+        PathRef(path=path, status=FileStatus(status))
+        for path, status in sorted({(str(row[4]), str(row[5])) for row in rows})
+    )
     return ChunkWithPath(
-        digest=row[1],
-        text=row[2],
-        heading=row[3],
-        path=row[4],
-        file_status=FileStatus(row[5]),
-        page=row[6],
-        seq=row[7],
+        digest=head[1],
+        text=head[2],
+        heading=head[3],
+        refs=refs,
+        page=head[6],
+        seq=head[7],
     )

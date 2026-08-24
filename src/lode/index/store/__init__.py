@@ -50,6 +50,7 @@ from lode.index.store.records import (
     FileRecord,
     FileStatus,
     ModelStatus,
+    PathRef,
     SparseMatch,
 )
 from lode.index.store.schema import SCHEMA_VERSION
@@ -65,6 +66,7 @@ __all__ = [
     "FileStatus",
     "MissingEmbedderError",
     "ModelStatus",
+    "PathRef",
     "SchemaVersionError",
     "SparseMatch",
     "Store",

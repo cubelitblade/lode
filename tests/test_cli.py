@@ -18,7 +18,7 @@ from lode import config
 from lode.cli import app
 from lode.cli.render import PLAIN_INTENT_COLORS, RenderOptions
 from lode.config import EmbeddingConfig
-from lode.ingestion import chunk_id
+from lode.ingestion import chunk_digest
 from lode.ingestion.pipeline import SurveySummary
 from tests.fakes import FailingEmbedder, FakeEmbedder
 
@@ -268,7 +268,7 @@ def test_dig_returns_full_chunk_text(tmp_path: Path, monkeypatch: pytest.MonkeyP
     (tmp_path / "docs" / "report.txt").write_text(text)
     runner.invoke(app, ["mine", str(tmp_path)])
 
-    digest = chunk_id(text)
+    digest = chunk_digest(text)
     dig = runner.invoke(app, ["dig", digest, str(tmp_path)])
     assert dig.exit_code == 0, dig.output
     assert "docs/report.txt" in dig.output
@@ -283,7 +283,7 @@ def test_dig_accepts_short_prefix(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     (tmp_path / "a.txt").write_text(text)
     runner.invoke(app, ["mine", str(tmp_path)])
 
-    short = chunk_id(text).removeprefix("blake3:")[:12]
+    short = chunk_digest(text).removeprefix("blake3:")[:12]
     dig = runner.invoke(app, ["dig", short, str(tmp_path)])
     assert dig.exit_code == 0, dig.output
     assert text in dig.output
@@ -296,7 +296,7 @@ def test_dig_accepts_bare_hex(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     (tmp_path / "a.txt").write_text(text)
     runner.invoke(app, ["mine", str(tmp_path)])
 
-    hex_digest = chunk_id(text).removeprefix("blake3:")
+    hex_digest = chunk_digest(text).removeprefix("blake3:")
     dig = runner.invoke(app, ["dig", hex_digest, str(tmp_path)])
     assert dig.exit_code == 0, dig.output
     assert text in dig.output
@@ -307,7 +307,7 @@ def test_dig_missing_digest_reports_dry_hole(tmp_path: Path, monkeypatch: pytest
     (tmp_path / "a.txt").write_text("hello world")
     runner.invoke(app, ["mine", str(tmp_path)])
 
-    absent = chunk_id("this text is not indexed")
+    absent = chunk_digest("this text is not indexed")
     dig = runner.invoke(app, ["dig", absent, str(tmp_path)])
     assert dig.exit_code != 0
     assert "Dry hole" in dig.output
@@ -341,7 +341,7 @@ def test_dig_json_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.chdir(tmp_path)
     runner.invoke(app, ["mine", str(tmp_path)])
 
-    result = runner.invoke(app, ["dig", chunk_id(text), "--json", str(tmp_path)])
+    result = runner.invoke(app, ["dig", chunk_digest(text), "--json", str(tmp_path)])
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["command"] == "dig"
@@ -352,11 +352,10 @@ def test_dig_json_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
     assert window["radius"] == 0
     assert len(window["chunks"]) == 1
     chunk = window["chunks"][0]
-    assert chunk["digest"] == chunk_id(text)
-    assert chunk["path"] == "a.txt"
+    assert chunk["digest"] == chunk_digest(text)
+    assert chunk["paths"] == [{"path": "a.txt", "state": "fresh"}]
     assert chunk["heading"] == ""
     assert chunk["page"] is None
-    assert chunk["state"] == "fresh"
     assert chunk["text"] == text
 
 
@@ -367,13 +366,13 @@ def test_dig_json_accepts_short_prefix(tmp_path: Path, monkeypatch: pytest.Monke
     monkeypatch.chdir(tmp_path)
     runner.invoke(app, ["mine", str(tmp_path)])
 
-    short = chunk_id(text).removeprefix("blake3:")[:12]
+    short = chunk_digest(text).removeprefix("blake3:")[:12]
     result = runner.invoke(app, ["dig", short, "--json", str(tmp_path)])
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["success"] is True
     chunk = payload["window"]["chunks"][0]
-    assert chunk["digest"] == chunk_id(text)
+    assert chunk["digest"] == chunk_digest(text)
     assert chunk["text"] == text
 
 
@@ -383,7 +382,7 @@ def test_dig_json_not_found(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.chdir(tmp_path)
     runner.invoke(app, ["mine", str(tmp_path)])
 
-    result = runner.invoke(app, ["dig", chunk_id("this text is not indexed"), "--json", str(tmp_path)])
+    result = runner.invoke(app, ["dig", chunk_digest("this text is not indexed"), "--json", str(tmp_path)])
     assert result.exit_code != 0
     payload = json.loads(result.output)
     assert payload["success"] is False
@@ -462,7 +461,7 @@ def test_dig_json_radius_window(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     assert center["digest"].startswith("blake3:")
     assert "text" in center
     assert "heading" in center
-    assert "state" in center
+    assert "paths" in center
     # The window holds at least one distinct neighbor chunk beyond the center.
     assert any(chunk["digest"] != digest for chunk in window["chunks"])
 
@@ -474,7 +473,7 @@ def test_dig_json_default_single_chunk_window(tmp_path: Path, monkeypatch: pytes
     monkeypatch.chdir(tmp_path)
     runner.invoke(app, ["mine", str(tmp_path)])
 
-    result = runner.invoke(app, ["dig", chunk_id(text), "--json", str(tmp_path)])
+    result = runner.invoke(app, ["dig", chunk_digest(text), "--json", str(tmp_path)])
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     window = payload["window"]
@@ -489,7 +488,7 @@ def test_get_alias_is_hidden_and_works(tmp_path: Path, monkeypatch: pytest.Monke
     (tmp_path / "a.txt").write_text(text)
     runner.invoke(app, ["mine", str(tmp_path)])
 
-    result = runner.invoke(app, ["get", chunk_id(text), str(tmp_path)])
+    result = runner.invoke(app, ["get", chunk_digest(text), str(tmp_path)])
     assert result.exit_code == 0, result.output
     assert text in result.output
 
@@ -649,10 +648,9 @@ def test_prospect_json_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     assert len(payload["hits"]) == 1
 
     hit = payload["hits"][0]
-    assert set(hit) == {"rank", "score", "path", "heading", "page", "state", "digest", "preview"}
+    assert set(hit) == {"rank", "score", "paths", "heading", "page", "digest", "preview"}
     assert hit["rank"] == 1
-    assert hit["path"] == "docs/report.txt"
-    assert hit["state"] == "fresh"
+    assert hit["paths"] == [{"path": "docs/report.txt", "state": "fresh"}]
     assert hit["digest"].startswith("blake3:")
     assert "quantum entanglement" in hit["preview"]
     assert "\n" not in hit["preview"]

@@ -38,7 +38,7 @@ def test_search_returns_hits_with_provenance(seeded_store: Store) -> None:
 
     assert hits
     hit = hits[0]
-    assert hit.path == "a.txt"
+    assert hit.primary.path == "a.txt"
     assert "fox" in hit.text
     assert hit.score > 0
 
@@ -58,7 +58,7 @@ def test_search_exposes_page_metadata(seeded_store: Store) -> None:
         top_k=5,
     )
 
-    pdf_hits = [hit for hit in hits if hit.path == "report.pdf"]
+    pdf_hits = [hit for hit in hits if hit.primary.path == "report.pdf"]
     assert pdf_hits
     assert {hit.page for hit in pdf_hits} == {1, 2}
 
@@ -74,7 +74,7 @@ def test_sparse_only_weight_uses_bm25(seeded_store: Store) -> None:
     )
 
     assert hits
-    assert all(hit.path == "a.txt" for hit in hits)
+    assert all(hit.primary.path == "a.txt" for hit in hits)
 
 
 def test_dense_only_weight_uses_knn(seeded_store: Store) -> None:
@@ -90,7 +90,7 @@ def test_dense_only_weight_uses_knn(seeded_store: Store) -> None:
     assert hits
     # The fake query vector is closest to seq=0 chunks; at least one hit
     # must come from the seeded data regardless of query text.
-    assert all(hit.path in {"a.txt", "b.md"} for hit in hits)
+    assert all(hit.primary.path in {"a.txt", "b.md"} for hit in hits)
 
 
 def test_search_respects_top_k(seeded_store: Store) -> None:

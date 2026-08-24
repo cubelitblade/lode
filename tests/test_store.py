@@ -26,7 +26,7 @@ from lode.index import (
     SchemaVersionError,
     Store,
 )
-from lode.ingestion import Chunk, chunk_id
+from lode.ingestion import Chunk, chunk_digest
 
 DIM = 4
 
@@ -65,7 +65,7 @@ class FakeEmbedder(Embedder):
 
 
 def make_chunks(texts: list[str]) -> tuple[list[Chunk], list[list[float]]]:
-    chunks = [Chunk(id=chunk_id(text), text=text, seq=seq) for seq, text in enumerate(texts)]
+    chunks = [Chunk(digest=chunk_digest(text), text=text, seq=seq) for seq, text in enumerate(texts)]
     vectors = [[0.1 * (seq + 1), 0.2, 0.3, 0.4] for seq in range(len(texts))]
     return chunks, vectors
 
@@ -253,9 +253,9 @@ def test_remove_missing_file_is_a_noop(db_path: Path) -> None:
 
 def test_find_chunks_by_digest_prefix_matches(db_path: Path) -> None:
     chunks = [
-        Chunk(id="blake3:aaaa1111bbbb", text="first", seq=0),
-        Chunk(id="blake3:aaaa2222cccc", text="second", seq=1),
-        Chunk(id="blake3:bbbbeeeeffff", text="third", seq=2),
+        Chunk(digest="blake3:aaaa1111bbbb", text="first", seq=0),
+        Chunk(digest="blake3:aaaa2222cccc", text="second", seq=1),
+        Chunk(digest="blake3:bbbbeeeeffff", text="third", seq=2),
     ]
     vectors = [[0.1, 0.2, 0.3, 0.4] for _ in chunks]
     with Store(db_path, FakeEmbedder()) as store:
@@ -271,7 +271,7 @@ def test_find_chunks_by_digest_prefix_matches(db_path: Path) -> None:
 
 
 def test_find_chunks_by_digest_returns_provenance(db_path: Path) -> None:
-    chunks = [Chunk(id="blake3:cccc1111", text="content", seq=0, heading="Section 1", page=2)]
+    chunks = [Chunk(digest="blake3:cccc1111", text="content", seq=0, heading="Section 1", page=2)]
     vectors = [[0.1, 0.2, 0.3, 0.4]]
     with Store(db_path, FakeEmbedder()) as store:
         store.replace_file(file_record("report.pdf", digest="blake3:cc", size=3), chunks, vectors)
@@ -281,10 +281,10 @@ def test_find_chunks_by_digest_returns_provenance(db_path: Path) -> None:
     chunk = found[0]
     assert chunk.digest == "blake3:cccc1111"
     assert chunk.text == "content"
-    assert chunk.path == "report.pdf"
+    assert chunk.primary.path == "report.pdf"
     assert chunk.heading == "Section 1"
     assert chunk.page == 2
-    assert chunk.file_status is FileStatus.FRESH
+    assert chunk.primary.status is FileStatus.FRESH
 
 
 # -- get_chunk_neighbors ----------------------------------------------------
@@ -292,12 +292,12 @@ def test_find_chunks_by_digest_returns_provenance(db_path: Path) -> None:
 
 def test_get_chunk_neighbors_same_heading(db_path: Path) -> None:
     chunks = [
-        Chunk(id="blake3:aaaa1111", text="A0", seq=0, heading="A"),
-        Chunk(id="blake3:bbbb2222", text="A1", seq=1, heading="A"),
-        Chunk(id="blake3:cccc3333", text="A2", seq=2, heading="A"),
-        Chunk(id="blake3:dddd4444", text="A3", seq=3, heading="A"),
-        Chunk(id="blake3:eeee5555", text="B0", seq=4, heading="B"),
-        Chunk(id="blake3:ffff6666", text="B1", seq=5, heading="B"),
+        Chunk(digest="blake3:aaaa1111", text="A0", seq=0, heading="A"),
+        Chunk(digest="blake3:bbbb2222", text="A1", seq=1, heading="A"),
+        Chunk(digest="blake3:cccc3333", text="A2", seq=2, heading="A"),
+        Chunk(digest="blake3:dddd4444", text="A3", seq=3, heading="A"),
+        Chunk(digest="blake3:eeee5555", text="B0", seq=4, heading="B"),
+        Chunk(digest="blake3:ffff6666", text="B1", seq=5, heading="B"),
     ]
     vectors = [[0.1, 0.2, 0.3, 0.4] for _ in chunks]
     with Store(db_path, FakeEmbedder()) as store:
