@@ -26,6 +26,7 @@ from typing import Any, cast
 import httpx
 
 from lode.embeddings.base import Embedder, l2_normalize
+from lode.embeddings.errors import EmbedderUnavailableError
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +146,9 @@ class OpenAICompatibleEmbedder(Embedder):
                 resp = self._client.request(method, url, **kwargs)
             except httpx.HTTPError as exc:
                 if attempt >= self.retries:
-                    raise
+                    raise EmbedderUnavailableError(
+                        f"embedding endpoint {url} is unreachable after {attempt + 1} attempts: {exc}"
+                    ) from exc
                 attempt += 1
                 logger.warning(
                     "OpenAI-compatible embedding request stumbled (%s); retrying attempt %d/%d",
@@ -157,7 +160,12 @@ class OpenAICompatibleEmbedder(Embedder):
                 continue
 
             if resp.status_code < 400 or resp.status_code not in RETRYABLE_STATUS or attempt >= self.retries:
-                resp.raise_for_status()
+                try:
+                    resp.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    raise EmbedderUnavailableError(
+                        f"embedding endpoint {url} returned HTTP {resp.status_code}: {exc}"
+                    ) from exc
                 return resp
 
             attempt += 1

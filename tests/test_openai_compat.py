@@ -14,6 +14,7 @@ from typing import Any
 import httpx
 import pytest
 
+from lode.embeddings.errors import EmbedderUnavailableError
 from lode.embeddings.openai_compat import OpenAICompatibleEmbedder
 
 DIM = 512
@@ -180,9 +181,19 @@ def test_retries_then_succeeds() -> None:
 def test_gives_up_after_max_retries() -> None:
     fake = _FakeServer(fail_times=99)
     emb = _make_embedder(fake, dimension=DIM, retries=2)
-    with pytest.raises(httpx.HTTPStatusError):
+    with pytest.raises(EmbedderUnavailableError):
         emb.embed_documents(["x"])
     assert fake.embed_calls == []
+
+
+def test_network_failure_wrapped_as_embedder_unavailable() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused")
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), timeout=5.0)
+    emb = OpenAICompatibleEmbedder(client=client, dimension=DIM, retries=1)
+    with pytest.raises(EmbedderUnavailableError):
+        emb.embed_query("x")
 
 
 def test_wrong_vector_count_raises() -> None:

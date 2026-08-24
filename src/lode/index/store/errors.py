@@ -1,6 +1,21 @@
-"""Exceptions raised by the index store."""
+"""Exceptions raised by the index store.
+
+``EmbedderUnavailableError`` is defined in the embedding layer and re-exported
+here so embedding backends can raise it without depending on the index
+package; callers that catch it alongside store errors keep a single import.
+"""
 
 from __future__ import annotations
+
+from lode.embeddings.errors import EmbedderUnavailableError
+
+__all__ = [
+    "DimensionMismatchError",
+    "EmbedderUnavailableError",
+    "MissingEmbedderError",
+    "SchemaVersionError",
+    "StoreError",
+]
 
 
 class StoreError(Exception):
@@ -12,10 +27,6 @@ class SchemaVersionError(StoreError):
 
     The store refuses to open; an explicit rebuild is required.
     """
-
-
-class EmbedderUnavailableError(StoreError):
-    """The embedder could not provide metadata needed to (re)build the index."""
 
 
 class MissingEmbedderError(StoreError):
