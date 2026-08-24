@@ -174,7 +174,7 @@ def test_config_show_uses_configured_palette(tmp_path: Path, monkeypatch: pytest
         nonlocal captured
         captured = options
 
-    monkeypatch.setattr("lode.cli.render_config_show", fake_render)
+    monkeypatch.setattr("lode.cli.commands.config.render_config_show", fake_render)
     result = runner.invoke(app, ["config", "show"])
     assert result.exit_code == 0, result.output
     assert captured is not None
