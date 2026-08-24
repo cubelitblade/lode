@@ -18,7 +18,7 @@ from pathlib import Path
 
 from rich.console import Console
 
-from lode.cli.render import RenderOptions, render_options_from_preset
+from lode.cli.render import RenderOptions
 from lode.cli.render.prospect import render_prospect
 from lode.index.search import ProspectResult, SearchHit
 from lode.index.store import FileStatus, PathRef
@@ -95,7 +95,7 @@ def test_render_prospect_no_warning_when_clean() -> None:
     assert "Warning" not in text
 
 
-def test_render_prospect_plain_preset_keeps_output() -> None:
-    text = _render(_result([_hit()]), options=render_options_from_preset("plain"))
+def test_render_prospect_no_color_keeps_output() -> None:
+    text = _render(_result([_hit()]), options=RenderOptions(no_color=True))
     assert "#1 · 0.750" in text
     assert "quantum entanglement" in text

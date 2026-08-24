@@ -15,6 +15,8 @@ import typer
 import lode.cli as _cli
 from lode.cli.commands._common import (
     ConfigArg,
+    NoColorArg,
+    PaletteArg,
     ProspectWorkspaceArg,
     dimension_mismatch_parts,
     model_gate,
@@ -39,6 +41,8 @@ def prospect(
     workspace: ProspectWorkspaceArg = Path("."),
     top_k: Annotated[int | None, typer.Option("--top-k", min=1, help="Maximum number of results to return.")] = None,
     config: ConfigArg = None,
+    palette: PaletteArg = None,
+    no_color: NoColorArg = False,
     as_json: bool = typer.Option(False, "--json", help="Emit JSON output."),
 ) -> None:
     """Search the index and show results with source information.
@@ -48,7 +52,7 @@ def prospect(
     """
     settings = load_settings(config)
     embedder = _cli.build_embedder(settings.embedding)
-    options = render_options(settings)
+    options = render_options(settings, palette, no_color)
     store = open_store(workspace, embedder, command="prospect", as_json=as_json)
     if store is None:
         message = f"Dry hole: no index at {workspace / '.lode' / 'index.db'}; run `lode mine` first."

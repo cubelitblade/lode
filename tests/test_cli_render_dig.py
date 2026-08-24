@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from rich.console import Console
 
-from lode.cli.render import RenderOptions, render_options_from_preset
+from lode.cli.render import RenderOptions
 from lode.cli.render.dig import render_dig
 from lode.index.store import ChunkWithPath, FileStatus, PathRef
 
@@ -81,7 +81,7 @@ def test_render_dig_hides_full_content_address() -> None:
     assert "blake3:" not in text
 
 
-def test_render_dig_plain_preset_keeps_output() -> None:
-    text = _render([_chunk(5)], center_seq=5, radius=0, options=render_options_from_preset("plain"))
+def test_render_dig_no_color_keeps_output() -> None:
+    text = _render([_chunk(5)], center_seq=5, radius=0, options=RenderOptions(no_color=True))
     assert "5 · center" in text
     assert "full chunk text" in text

@@ -1,9 +1,9 @@
 """Render configuration for lode CLI output.
 
 This module owns the *styling* knobs that command output depends on. It is
-deliberately decoupled from the data (``Status``) so a future plain-text or
-accessible (colour-blind friendly) mode can swap the palette and border without
-touching any render logic.
+deliberately decoupled from the data (``Status``) so an accessible
+(colour-blind friendly) palette and a no-colour mode can swap the palette and
+border without touching any render logic.
 
 Design notes
 ------------
@@ -13,8 +13,9 @@ Design notes
   linked by ``STATUS_INTENT``. Extra intent roles (e.g. ``ERROR``/``WARNING``,
   used by non-survey commands later) slot into ``Intent`` + the colour tables,
   not into ``Status``.
-* ``plain`` mode uses ``PLAIN_INTENT_COLORS`` (every intent → empty style) plus
-  ``Border.NONE``: no colour, no border, but the layout stays structured.
+* ``no_color`` (config or ``--no-color``) is applied at the ``Console`` layer
+  (``Console(no_color=...)``), not by swapping in an empty palette: colour is
+  off, but the layout stays structured.
 """
 
 from __future__ import annotations
@@ -121,18 +122,17 @@ ACCESSIBLE_INTENT_COLORS: Mapping[Intent, str] = {
     Intent.MUTED: "grey50",
 }
 
-# plain: every intent → empty style (no colour, no ANSI). Border is unaffected.
-PLAIN_INTENT_COLORS: Mapping[Intent, str] = {intent: "" for intent in Intent}
-
 
 @dataclass(frozen=True, slots=True)
 class RenderOptions:
     """Styling knobs for command output.
 
-    Colour (``intent_colors``) and border (``border``) are independent axes: the
-    ``rich``/``plain``/``accessible`` presets only change colour, while ``border``
-    (``none``/``round``/``square``) is set separately. Defaults reproduce the
-    current rich output (rounded border, dim border, default colours).
+    Colour (``intent_colors``), border (``border``), and the colour on/off
+    switch (``no_color``) are independent axes. ``intent_colors`` selects the
+    palette (``vivid``/``accessible``); ``no_color`` (``True``/``False``/``None``)
+    is applied at the ``Console`` layer — ``None`` defers to Rich's own
+    ``NO_COLOR`` detection. Defaults reproduce the current rich output (rounded
+    border, dim border, default colours).
     """
 
     border: Border = Border.ROUND
@@ -140,6 +140,9 @@ class RenderOptions:
     # Border colour. Kept as a value (not a bool) so it can become configurable
     # later; ``dim`` keeps the frame from competing with the content colours.
     border_style: str = "dim"
+    # Colour on/off switch, applied at the Console layer (not by swapping in an
+    # empty palette). ``None`` = unset, defer to Rich's NO_COLOR detection.
+    no_color: bool | None = None
 
     @property
     def box(self) -> box.Box | None:
@@ -147,17 +150,16 @@ class RenderOptions:
         return _BORDER_BOX[self.border]
 
 
-# Presets only control COLOUR; border is a separate axis (``RenderOptions.border``)
-# left at the default. So ``plain`` is uncoloured but still bordered.
+# Presets only control COLOUR; border (``RenderOptions.border``) and the
+# no-colour switch (``RenderOptions.no_color``) are separate axes.
 _PRESETS: Mapping[str, RenderOptions] = {
     "vivid": RenderOptions(),
-    "plain": RenderOptions(intent_colors=PLAIN_INTENT_COLORS),
     "accessible": RenderOptions(intent_colors=ACCESSIBLE_INTENT_COLORS),
 }
 
 
 def render_options_from_preset(name: str) -> RenderOptions:
-    """Resolve a palette name (``vivid``/``plain``/``accessible``) to options."""
+    """Resolve a palette name (``vivid``/``accessible``) to options."""
     try:
         return _PRESETS[name]
     except KeyError:

@@ -84,5 +84,11 @@ sources = [".gitignore"]
 [output]
 
 # Color palette used for terminal output.
-# Options: vivid, plain, accessible.
+# Options: vivid, accessible.
 palette = "vivid"
+
+# Disable color at the console level.
+#   true  = never color
+#   false = always color
+#   unset = follow the NO_COLOR environment variable (default)
+no_color = false

@@ -21,7 +21,6 @@ from rich.console import Console
 from lode.cli.render import (
     ACCESSIBLE_INTENT_COLORS,
     DEFAULT_INTENT_COLORS,
-    PLAIN_INTENT_COLORS,
     Border,
     RenderOptions,
     render_options_from_preset,
@@ -71,8 +70,11 @@ def test_render_survey_borderless_has_no_frame() -> None:
     assert "a.md" in text
 
 
-def test_render_survey_plain_preset_keeps_symbols() -> None:
-    text = _render(DetectResult.from_paths(new_files=["a.md"], skipped=1), render_options_from_preset("plain"))
+def test_render_survey_no_color_keeps_symbols() -> None:
+    text = _render(
+        DetectResult.from_paths(new_files=["a.md"], skipped=1),
+        RenderOptions(no_color=True),
+    )
     assert "+" in text
     assert "a.md" in text
 
@@ -81,11 +83,12 @@ def test_render_preset_vivid_is_default() -> None:
     assert render_options_from_preset("vivid").intent_colors == DEFAULT_INTENT_COLORS
 
 
-def test_render_preset_plain_and_accessible() -> None:
-    assert render_options_from_preset("plain").intent_colors == PLAIN_INTENT_COLORS
+def test_render_preset_accessible() -> None:
     assert render_options_from_preset("accessible").intent_colors == ACCESSIBLE_INTENT_COLORS
 
 
-def test_render_preset_rich_rejected() -> None:
+def test_render_preset_plain_and_rich_rejected() -> None:
+    with pytest.raises(ValueError):
+        render_options_from_preset("plain")
     with pytest.raises(ValueError):
         render_options_from_preset("rich")

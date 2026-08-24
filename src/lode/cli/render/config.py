@@ -46,7 +46,7 @@ def _print_intent(console: Console, content: str, *, options: RenderOptions, int
 
 def render_config_show(content: str, *, options: RenderOptions | None = None, console: Console | None = None) -> None:
     """Render the merged configuration as verbatim TOML (no wrapping)."""
-    console = console or Console()
+    console = console or Console(no_color=(options or RenderOptions()).no_color)
     _print_verbatim(console, content)
 
 
@@ -58,7 +58,7 @@ def render_config_value(
     console: Console | None = None,
 ) -> None:
     """Render a config value as ``key = value`` (verbatim)."""
-    console = console or Console()
+    console = console or Console(no_color=(options or RenderOptions()).no_color)
     _print_verbatim(console, _format_config_value(key, value))
 
 
@@ -71,7 +71,7 @@ def render_config_set(
     console: Console | None = None,
 ) -> None:
     """Render a ``config set`` confirmation."""
-    console = console or Console()
+    console = console or Console(no_color=(options or RenderOptions()).no_color)
     _print_intent(
         console,
         f"set {_format_config_value(key, value)} in {path}",
@@ -88,7 +88,7 @@ def render_config_unset(
     console: Console | None = None,
 ) -> None:
     """Render a ``config unset`` confirmation."""
-    console = console or Console()
+    console = console or Console(no_color=(options or RenderOptions()).no_color)
     _print_intent(
         console,
         f"unset {key} in {path}",
@@ -99,7 +99,7 @@ def render_config_unset(
 
 def render_config_path(path: Path, *, options: RenderOptions | None = None, console: Console | None = None) -> None:
     """Render the target config file path (verbatim)."""
-    console = console or Console()
+    console = console or Console(no_color=(options or RenderOptions()).no_color)
     _print_verbatim(console, str(path))
 
 
@@ -111,5 +111,5 @@ def render_config_message(
     console: Console | None = None,
 ) -> None:
     """Render a config error/status line with an ``Intent`` colour."""
-    console = console or Console()
+    console = console or Console(no_color=(options or RenderOptions()).no_color)
     _print_intent(console, message, options=options or RenderOptions(), intent=intent)

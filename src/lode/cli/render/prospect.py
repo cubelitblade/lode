@@ -41,9 +41,9 @@ def render_prospect(
     current). The border follows ``options.border``; ``console`` may be
     injected (e.g. a recording console) to capture output in tests.
     """
-    console = console or Console()
     if options is None:
         options = RenderOptions()
+    console = console or Console(no_color=options.no_color)
 
     hits = result.hits
     if not hits:

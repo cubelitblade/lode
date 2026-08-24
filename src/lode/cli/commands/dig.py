@@ -17,11 +17,13 @@ import lode.cli as _cli
 from lode.cli.commands._common import (
     ConfigArg,
     DigWorkspaceArg,
+    NoColorArg,
+    PaletteArg,
     open_store,
     render_options,
 )
-from lode.cli.render import RenderOptions
-from lode.cli.render.output import echo_json, json_err, json_ok
+from lode.cli.render import Intent, RenderOptions
+from lode.cli.render.output import echo_json, json_err, json_ok, render_message
 from lode.config import load_settings
 from lode.index import ChunkWithPath, Store
 from lode.ingestion.pipeline import detect_changes
@@ -50,18 +52,20 @@ def dig(
         ),
     ] = None,
     config: ConfigArg = None,
+    palette: PaletteArg = None,
+    no_color: NoColorArg = False,
     as_json: bool = typer.Option(False, "--json", help="Emit JSON output."),
 ) -> None:
     """Fetch a chunk's full text by its digest (content address)."""
     settings = load_settings(config)
-    options = render_options(settings)
+    options = render_options(settings, palette, no_color)
     store = open_store(workspace, None, command="dig", as_json=as_json)
     if store is None:
         message = f"Dry hole: no index at {workspace / '.lode' / 'index.db'}; run `lode mine` first."
         if as_json:
             echo_json(json_err("dig", message, code="no_index"))
         else:
-            typer.echo(message)
+            render_message(message, intent=Intent.ERROR, options=options)
         raise typer.Exit(code=1)
     with store:
         # Refresh the stale bits so per-chunk provenance reflects the current
@@ -112,7 +116,7 @@ def _dig(
         if as_json:
             echo_json(json_err("dig", message, code="invalid_digest"))
         else:
-            typer.echo(message)
+            render_message(message, intent=Intent.ERROR, options=options)
         raise typer.Exit(code=1)
     matches = store.find_chunks_by_digest(token)
     if not matches:
@@ -120,7 +124,7 @@ def _dig(
         if as_json:
             echo_json(json_err("dig", message, code="not_found"))
         else:
-            typer.echo(message)
+            render_message(message, intent=Intent.ERROR, options=options)
         raise typer.Exit(code=1)
     if len(matches) > 1:
         message = f"Digest {digest!r} is ambiguous ({len(matches)} chunks); use a longer prefix:"
@@ -134,9 +138,9 @@ def _dig(
                 )
             )
         else:
-            typer.echo(message)
+            render_message(message, intent=Intent.ERROR, options=options)
             for chunk in matches:
-                _echo_provenance(chunk)
+                render_message(_provenance_line(chunk), intent=Intent.MUTED, options=options)
         raise typer.Exit(code=1)
 
     target = matches[0]
@@ -174,9 +178,10 @@ def _window(store: Store, token: str, target: ChunkWithPath, radius: int) -> lis
     return chunks
 
 
-def _echo_provenance(chunk: ChunkWithPath) -> None:
+def _provenance_line(chunk: ChunkWithPath) -> str:
+    """Build the one-line provenance for a chunk (short id + source location)."""
     short_id = chunk.digest.removeprefix("blake3:")[:12]
     more = f" (+{len(chunk.refs) - 1} more)" if len(chunk.refs) > 1 else ""
     heading = f" > {chunk.heading}" if chunk.heading else ""
     page = f" (p.{chunk.page})" if chunk.page is not None else ""
-    typer.echo(f"  #{short_id} {chunk.primary.path}{more}{heading}{page}")
+    return f"  #{short_id} {chunk.primary.path}{more}{heading}{page}"

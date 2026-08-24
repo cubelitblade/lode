@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from rich.console import Console
 
-from lode.cli.render import Intent, RenderOptions, render_options_from_preset
+from lode.cli.render import Intent, RenderOptions
 from lode.cli.render.output import render_message
 
 
@@ -38,8 +38,8 @@ def test_render_message_keeps_multi_line() -> None:
     assert "Hint: Re-mine it with `lode mine --from-scratch`" in text
 
 
-def test_render_message_plain_preset_keeps_text() -> None:
-    text = _render("something went wrong", intent=Intent.ERROR, options=render_options_from_preset("plain"))
+def test_render_message_no_color_keeps_text() -> None:
+    text = _render("something went wrong", intent=Intent.ERROR, options=RenderOptions(no_color=True))
     assert "something went wrong" in text
 
 

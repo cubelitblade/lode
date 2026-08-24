@@ -64,9 +64,9 @@ batch_size = 8
 
 def test_output_palette_from_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
-    _write_toml(tmp_path / ".lode" / "config.toml", '[output]\npalette = "plain"\n')
+    _write_toml(tmp_path / ".lode" / "config.toml", '[output]\npalette = "accessible"\n')
     settings = config.load_settings()
-    assert settings.output.palette == "plain"
+    assert settings.output.palette == "accessible"
 
 
 def test_output_palette_default_vivid(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -77,7 +77,7 @@ def test_output_palette_default_vivid(tmp_path: Path, monkeypatch: pytest.Monkey
 
 def test_output_palette_env_overrides_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
-    _write_toml(tmp_path / ".lode" / "config.toml", '[output]\npalette = "plain"\n')
+    _write_toml(tmp_path / ".lode" / "config.toml", '[output]\npalette = "vivid"\n')
     monkeypatch.setenv("LODE_OUTPUT__PALETTE", "accessible")
     settings = config.load_settings()
     assert settings.output.palette == "accessible"
@@ -88,6 +88,27 @@ def test_output_palette_invalid_rejected(tmp_path: Path, monkeypatch: pytest.Mon
     _write_toml(tmp_path / ".lode" / "config.toml", '[output]\npalette = "neon"\n')
     with pytest.raises(ValidationError):
         config.load_settings()
+
+
+def test_output_no_color_default_none(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    settings = config.load_settings()
+    assert settings.output.no_color is None
+
+
+def test_output_no_color_from_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    _write_toml(tmp_path / ".lode" / "config.toml", "[output]\nno_color = true\n")
+    settings = config.load_settings()
+    assert settings.output.no_color is True
+
+
+def test_output_no_color_env_overrides_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    _write_toml(tmp_path / ".lode" / "config.toml", "[output]\nno_color = true\n")
+    monkeypatch.setenv("LODE_OUTPUT__NO_COLOR", "false")
+    settings = config.load_settings()
+    assert settings.output.no_color is False
 
 
 def test_chunking_from_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

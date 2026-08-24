@@ -16,7 +16,8 @@ from typer.testing import CliRunner
 
 from lode import config
 from lode.cli import app
-from lode.cli.render import PLAIN_INTENT_COLORS, RenderOptions
+from lode.cli.commands._common import resolve_render_options
+from lode.cli.render import ACCESSIBLE_INTENT_COLORS, DEFAULT_INTENT_COLORS, RenderOptions
 from lode.config import EmbeddingConfig
 from lode.ingestion import chunk_digest
 from lode.ingestion.pipeline import DetectResult
@@ -129,13 +130,13 @@ def test_survey_without_index_reports_all_new_and_creates_no_db(
     assert not (tmp_path / ".lode" / "index.db").exists()
 
 
-def test_survey_uses_configured_palette(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The configured output.palette flows into the render options."""
+def test_survey_uses_configured_no_color(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The configured output.no_color flows into the render options."""
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
     monkeypatch.chdir(tmp_path)
     (tmp_path / "a.txt").write_text("hello world")
     (tmp_path / ".lode").mkdir()
-    (tmp_path / ".lode" / "config.toml").write_text('[output]\npalette = "plain"\n')
+    (tmp_path / ".lode" / "config.toml").write_text("[output]\nno_color = true\n")
     runner.invoke(app, ["mine", str(tmp_path)])
 
     captured: RenderOptions | None = None
@@ -154,14 +155,65 @@ def test_survey_uses_configured_palette(tmp_path: Path, monkeypatch: pytest.Monk
     result = runner.invoke(app, ["survey", str(tmp_path)])
     assert result.exit_code == 0, result.output
     assert captured is not None
-    assert captured.intent_colors == PLAIN_INTENT_COLORS
+    assert captured.no_color is True
 
 
-def test_config_show_uses_configured_palette(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Config output also honours the configured output.palette."""
+def test_survey_palette_flag_overrides_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The --palette flag overrides the configured palette."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "a.txt").write_text("hello world")
+    (tmp_path / ".lode").mkdir()
+    (tmp_path / ".lode" / "config.toml").write_text('[output]\npalette = "vivid"\n')
+
+    captured: RenderOptions | None = None
+
+    def fake_render(
+        workspace: Path,
+        result: DetectResult,
+        *,
+        options: RenderOptions | None = None,
+        console: Console | None = None,
+    ) -> None:
+        nonlocal captured
+        captured = options
+
+    monkeypatch.setattr("lode.cli.render_survey", fake_render)
+    result = runner.invoke(app, ["survey", "--palette", "accessible", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert captured is not None
+    assert captured.intent_colors == ACCESSIBLE_INTENT_COLORS
+
+
+def test_survey_no_color_flag_wins_over_palette(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """--no-color wins over --palette: colour off, palette still resolved."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "a.txt").write_text("hello world")
+
+    captured: RenderOptions | None = None
+
+    def fake_render(
+        workspace: Path,
+        result: DetectResult,
+        *,
+        options: RenderOptions | None = None,
+        console: Console | None = None,
+    ) -> None:
+        nonlocal captured
+        captured = options
+
+    monkeypatch.setattr("lode.cli.render_survey", fake_render)
+    result = runner.invoke(app, ["survey", "--no-color", "--palette", "accessible", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert captured is not None
+    assert captured.no_color is True
+    assert captured.intent_colors == ACCESSIBLE_INTENT_COLORS
+
+
+def test_config_show_uses_configured_no_color(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Config output also honours the configured output.no_color."""
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".lode").mkdir()
-    (tmp_path / ".lode" / "config.toml").write_text('[output]\npalette = "plain"\n')
+    (tmp_path / ".lode" / "config.toml").write_text("[output]\nno_color = true\n")
 
     captured: RenderOptions | None = None
 
@@ -178,7 +230,63 @@ def test_config_show_uses_configured_palette(tmp_path: Path, monkeypatch: pytest
     result = runner.invoke(app, ["config", "show"])
     assert result.exit_code == 0, result.output
     assert captured is not None
-    assert captured.intent_colors == PLAIN_INTENT_COLORS
+    assert captured.no_color is True
+
+
+def test_resolve_render_options_no_color_flag_wins() -> None:
+    """--no-color (flag) forces colour off regardless of palette."""
+    options = resolve_render_options(
+        configured_palette="vivid",
+        configured_no_color=None,
+        palette="accessible",
+        no_color=True,
+    )
+    assert options.no_color is True
+    assert options.intent_colors == ACCESSIBLE_INTENT_COLORS
+
+
+def test_resolve_render_options_config_no_color_wins() -> None:
+    """Configured no_color forces colour off even when --palette is passed."""
+    options = resolve_render_options(
+        configured_palette="vivid",
+        configured_no_color=True,
+        palette="accessible",
+        no_color=False,
+    )
+    assert options.no_color is True
+    assert options.intent_colors == ACCESSIBLE_INTENT_COLORS
+
+
+def test_resolve_render_options_config_no_color_false_forces_color() -> None:
+    """An explicit configured no_color=false keeps colour on (overrides NO_COLOR)."""
+    options = resolve_render_options(
+        configured_palette="vivid",
+        configured_no_color=False,
+    )
+    assert options.no_color is False
+    assert options.intent_colors == DEFAULT_INTENT_COLORS
+
+
+def test_resolve_render_options_palette_flag_overrides_config() -> None:
+    """--palette overrides the configured palette when colour is on."""
+    options = resolve_render_options(
+        configured_palette="vivid",
+        configured_no_color=None,
+        palette="accessible",
+        no_color=False,
+    )
+    assert options.no_color is None
+    assert options.intent_colors == ACCESSIBLE_INTENT_COLORS
+
+
+def test_resolve_render_options_defaults_to_config() -> None:
+    """No flags: the configured palette is used and no_color is unset."""
+    options = resolve_render_options(
+        configured_palette="accessible",
+        configured_no_color=None,
+    )
+    assert options.no_color is None
+    assert options.intent_colors == ACCESSIBLE_INTENT_COLORS
 
 
 def test_mine_from_scratch_flag_works(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

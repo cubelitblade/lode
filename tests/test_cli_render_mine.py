@@ -18,7 +18,7 @@ from pathlib import Path
 
 from rich.console import Console
 
-from lode.cli.render import RenderOptions, render_options_from_preset
+from lode.cli.render import RenderOptions
 from lode.cli.render.mine import render_mine
 from lode.ingestion.pipeline import FailedFile, SyncSummary
 
@@ -77,9 +77,9 @@ def test_render_mine_reports_failures() -> None:
     assert "Re-run `lode mine` after fixing these to retry." in text
 
 
-def test_render_mine_plain_preset_keeps_symbols() -> None:
+def test_render_mine_no_color_keeps_symbols() -> None:
     result = SyncSummary(added_files=["a.md"], skipped=1)
-    text = _render(result, render_options_from_preset("plain"))
+    text = _render(result, RenderOptions(no_color=True))
     assert "+" in text
     assert "a.md" in text
 

@@ -8,11 +8,12 @@ on a user or workspace scope.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Literal, cast
 
 import typer
 
-from lode.cli.commands._common import render_options
+from lode.cli.commands._common import NoColorArg, PaletteArg, render_options
+from lode.cli.render import RenderOptions
 from lode.cli.render.config import (
     render_config_message,
     render_config_path,
@@ -55,27 +56,35 @@ def _target_config_path(scope: str) -> Path:
     return user_config_path() if scope == "user" else workspace_config_path()
 
 
-def _cfg_show() -> None:
+def _cfg_show(options: RenderOptions) -> None:
     """Print the merged effective configuration as TOML."""
     settings = load_settings()
-    render_config_show(toml_dumps(effective_config(settings)), options=render_options(settings))
+    render_config_show(toml_dumps(effective_config(settings)), options=options)
 
 
 @config_app.callback(invoke_without_command=True)
-def _config_callback(ctx: typer.Context) -> None:  # pyright: ignore[reportUnusedFunction]  # registered as the sub-app callback; not called directly
-    # Bare `lode config` (no subcommand) is an alias for `show`.
+def _config_callback(  # pyright: ignore[reportUnusedFunction]  # registered as the sub-app callback; not called directly
+    ctx: typer.Context,
+    palette: PaletteArg = None,
+    no_color: NoColorArg = False,
+) -> None:
+    # Resolve output options once for the whole sub-app; subcommands read them
+    # from ctx.obj. Bare `lode config` (no subcommand) is an alias for `show`.
+    options = render_options(load_settings(), palette, no_color)
+    ctx.obj = options
     if ctx.invoked_subcommand is None:
-        _cfg_show()
+        _cfg_show(options)
 
 
 @config_app.command("show")
-def config_show() -> None:
+def config_show(ctx: typer.Context) -> None:
     """Show the merged effective configuration (TOML)."""
-    _cfg_show()
+    _cfg_show(cast(RenderOptions, ctx.obj))
 
 
 @config_app.command("get")
 def config_get(
+    ctx: typer.Context,
     key: Annotated[str, typer.Argument(help="Config key, e.g. embedding.api.endpoint.")],
     scope: Annotated[
         str | None,
@@ -88,8 +97,8 @@ def config_get(
     used at runtime). With `--scope user|workspace` it returns that layer's
     explicit value, failing if it is not set there.
     """
+    options = cast(RenderOptions, ctx.obj)
     settings = load_settings()
-    options = render_options(settings)
     try:
         validate_key(key)
     except KeyError:
@@ -116,13 +125,13 @@ def config_get(
 
 @config_app.command("set")
 def config_set(
+    ctx: typer.Context,
     key: Annotated[str, typer.Argument(help="Config key, e.g. embedding.api.endpoint.")],
     value: Annotated[str, typer.Argument(help="Value to set; typed by the config field.")],
     scope: ConfigScope = "workspace",
 ) -> None:
     """Set a config value, inferring its type from the config field."""
-    settings = load_settings()
-    options = render_options(settings)
+    options = cast(RenderOptions, ctx.obj)
     try:
         validate_key(key)
     except KeyError:
@@ -144,12 +153,12 @@ def config_set(
 
 @config_app.command("unset")
 def config_unset(
+    ctx: typer.Context,
     key: Annotated[str, typer.Argument(help="Config key, e.g. embedding.api.endpoint.")],
     scope: ConfigScope = "workspace",
 ) -> None:
     """Unset a config value from the target scope."""
-    settings = load_settings()
-    options = render_options(settings)
+    options = cast(RenderOptions, ctx.obj)
     try:
         validate_key(key)
     except KeyError:
@@ -166,6 +175,6 @@ def config_unset(
 
 
 @config_app.command("path")
-def config_path(scope: ConfigScope = "workspace") -> None:
+def config_path(ctx: typer.Context, scope: ConfigScope = "workspace") -> None:
     """Show the target config file path (does not create the file)."""
-    render_config_path(_target_config_path(scope), options=render_options(load_settings()))
+    render_config_path(_target_config_path(scope), options=cast(RenderOptions, ctx.obj))

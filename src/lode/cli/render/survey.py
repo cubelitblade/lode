@@ -34,9 +34,9 @@ def render_survey(
     ``console`` may be injected (e.g. a recording console) to capture output
     in tests; when omitted a default console is used.
     """
-    console = console or Console()
     if options is None:
         options = RenderOptions()
+    console = console or Console(no_color=options.no_color)
 
     counts_by_status = {
         Status.NEW: result.new,

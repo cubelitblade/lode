@@ -21,6 +21,13 @@ This command only compares files and does not require an embedding endpoint.
     - `<path>`
     Path to a configuration file.
 
+- `--palette`
+    - `vivid|accessible`
+    Color palette for this run.
+
+- `--no-color`
+   Disable color for this run.
+
 - `--json`
    Emit JSON output.
 
@@ -54,6 +61,13 @@ schema is incompatible.
 - `--config`
     - `<path>`
     Path to a configuration file.
+
+- `--palette`
+    - `vivid|accessible`
+    Color palette for this run.
+
+- `--no-color`
+  Disable color for this run.
 
 - `--json`
   Emit JSON output.
@@ -94,6 +108,13 @@ matching, combined by `semantic_factor` / `lexical_factor`.
     - `<path>`
     Path to a configuration file.
 
+- `--palette`
+    - `vivid|accessible`
+    Color palette for this run.
+
+- `--no-color`
+  Disable color for this run.
+
 - `--json`
   Emit JSON output.
 
@@ -133,6 +154,13 @@ return matching candidates.
 - `--config`
     - `<path>`
     Path to a configuration file.
+
+- `--palette`
+    - `vivid|accessible`
+    Color palette for this run.
+
+- `--no-color`
+  Disable color for this run.
 
 - `--json`
   Emit JSON output.
@@ -176,3 +204,10 @@ A bare `lode config` defaults to `show`.
 - `--scope`
     - `user|workspace`
     Config scope.
+
+- `--palette`
+    - `vivid|accessible`
+    Color palette for this run.
+
+- `--no-color`
+   Disable color for this run.

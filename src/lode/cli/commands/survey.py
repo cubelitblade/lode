@@ -15,6 +15,8 @@ import typer
 import lode.cli as _cli
 from lode.cli.commands._common import (
     ConfigArg,
+    NoColorArg,
+    PaletteArg,
     SurveyWorkspaceArg,
     open_store,
     render_options,
@@ -32,6 +34,8 @@ def register(app: typer.Typer) -> None:
 def survey(
     workspace: SurveyWorkspaceArg = Path("."),
     config: ConfigArg = None,
+    palette: PaletteArg = None,
+    no_color: NoColorArg = False,
     as_json: bool = typer.Option(False, "--json", help="Emit JSON output."),
 ) -> None:
     """Detect workspace changes and report stale files.
@@ -39,7 +43,7 @@ def survey(
     This command only compares files and does not require an embedding endpoint.
     """
     settings = load_settings(config)
-    options = render_options(settings)
+    options = render_options(settings, palette, no_color)
     store = open_store(workspace, None, command="survey", as_json=as_json)
     if store is None:
         # No index yet: classify against an empty snapshot (all new),

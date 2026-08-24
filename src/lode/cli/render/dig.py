@@ -38,9 +38,9 @@ def render_dig(
     ``console`` may be injected (e.g. a recording console) to capture output in
     tests.
     """
-    console = console or Console()
     if options is None:
         options = RenderOptions()
+    console = console or Console(no_color=options.no_color)
 
     header = f"Dug {digest}" if radius == 0 else f"Dug {digest} with radius {radius}."
     console.print(

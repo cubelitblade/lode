@@ -36,9 +36,9 @@ def render_mine(
     count-only. Colour comes from ``options.intent_colors``; ``console`` may be
     injected (e.g. a recording console) to capture output in tests.
     """
-    console = console or Console()
     if options is None:
         options = RenderOptions()
+    console = console or Console(no_color=options.no_color)
 
     if result.added == 0 and result.updated == 0 and result.removed == 0 and not result.failed:
         console.print("Nothing to do.", style=options.intent_colors.get(Intent.INFO, ""))

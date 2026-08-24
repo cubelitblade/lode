@@ -8,8 +8,9 @@ import from here instead of re-implementing these.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 import typer
 from rich.console import Console
@@ -111,13 +112,42 @@ def open_store(
         raise typer.Exit(code=1) from exc
 
 
-def render_options(settings: Settings) -> RenderOptions:
-    """Resolve the configured output palette to render options.
+def resolve_render_options(
+    *,
+    configured_palette: str,
+    configured_no_color: bool | None,
+    palette: str | None = None,
+    no_color: bool = False,
+) -> RenderOptions:
+    """Resolve palette + no_color (flag overrides config) to render options.
+
+    ``palette`` (``vivid``/``accessible``) selects ``intent_colors``; ``no_color``
+    is an independent on/off switch applied at the ``Console`` layer. The flag
+    (``--no-color``) wins over config; when neither is set it stays ``None`` so
+    Rich's own ``NO_COLOR`` detection applies.
+    """
+    name = palette if palette is not None else configured_palette
+    preset = render_options_from_preset(name)
+    resolved_no_color: bool | None = True if no_color else configured_no_color
+    return replace(preset, no_color=resolved_no_color)
+
+
+def render_options(
+    settings: Settings,
+    palette: str | None = None,
+    no_color: bool = False,
+) -> RenderOptions:
+    """Resolve the configured output palette (plus flag overrides) to options.
 
     The command layer owns this resolution and hands the render layer a
     ready-made ``RenderOptions``; the render layer never reads config directly.
     """
-    return render_options_from_preset(settings.output.palette)
+    return resolve_render_options(
+        configured_palette=settings.output.palette,
+        configured_no_color=settings.output.no_color,
+        palette=palette,
+        no_color=no_color,
+    )
 
 
 def model_gate(
@@ -234,4 +264,16 @@ DigWorkspaceArg = Annotated[
 ConfigArg = Annotated[
     Path | None,
     typer.Option("--config", help="Path to a configuration file."),
+]
+
+# Shared output options: a per-run palette override and a no-colour switch.
+# Both default to "unset" so the configured value wins unless the user passes
+# them; `--no-color` takes precedence over `--palette`.
+PaletteArg = Annotated[
+    Literal["vivid", "accessible"] | None,
+    typer.Option("--palette", help="Colour palette for this run."),
+]
+NoColorArg = Annotated[
+    bool,
+    typer.Option("--no-color", help="Disable colour for this run."),
 ]

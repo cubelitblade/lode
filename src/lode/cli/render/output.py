@@ -88,8 +88,8 @@ def render_message(
     and rich does not re-colour tokens such as numbers (which would otherwise
     override the ``intent`` colour).
     """
-    console = console or Console()
     if options is None:
         options = RenderOptions()
+    console = console or Console(no_color=options.no_color)
     style = options.intent_colors.get(intent, "")
     console.print(message, style=style, markup=False, highlight=False)
