@@ -27,10 +27,10 @@ from lode.cli.render import (
     render_options_from_preset,
 )
 from lode.cli.render.survey import render_survey
-from lode.ingestion.pipeline import SurveySummary
+from lode.ingestion.pipeline import DetectResult
 
 
-def _render(result: SurveySummary, options: RenderOptions | None = None) -> str:
+def _render(result: DetectResult, options: RenderOptions | None = None) -> str:
     """Render a survey report to plain text via a recording console."""
     console = Console(record=True, force_terminal=False)
     render_survey(Path("."), result, options=options, console=console)
@@ -38,7 +38,7 @@ def _render(result: SurveySummary, options: RenderOptions | None = None) -> str:
 
 
 def test_render_survey_lists_pending_paths() -> None:
-    result = SurveySummary(
+    result = DetectResult.from_paths(
         new_files=["docs/intro.md"],
         changed_files=["README.md"],
         missing_files=["old.txt"],
@@ -51,7 +51,7 @@ def test_render_survey_lists_pending_paths() -> None:
 
 
 def test_render_survey_always_emits_symbols() -> None:
-    result = SurveySummary(new_files=["a.md"], changed_files=["b.md"], missing_files=["c.md"], skipped=1)
+    result = DetectResult.from_paths(new_files=["a.md"], changed_files=["b.md"], missing_files=["c.md"], skipped=1)
     text = _render(result)
     assert "+" in text
     assert "~" in text
@@ -59,20 +59,20 @@ def test_render_survey_always_emits_symbols() -> None:
 
 
 def test_render_survey_rich_default_has_border() -> None:
-    text = _render(SurveySummary(new_files=["a.md"], skipped=1))
+    text = _render(DetectResult.from_paths(new_files=["a.md"], skipped=1))
     assert "╭" in text
     assert "╯" in text
 
 
 def test_render_survey_borderless_has_no_frame() -> None:
-    text = _render(SurveySummary(new_files=["a.md"], skipped=1), RenderOptions(border=Border.NONE))
+    text = _render(DetectResult.from_paths(new_files=["a.md"], skipped=1), RenderOptions(border=Border.NONE))
     assert "╭" not in text
     assert "│" not in text
     assert "a.md" in text
 
 
 def test_render_survey_plain_preset_keeps_symbols() -> None:
-    text = _render(SurveySummary(new_files=["a.md"], skipped=1), render_options_from_preset("plain"))
+    text = _render(DetectResult.from_paths(new_files=["a.md"], skipped=1), render_options_from_preset("plain"))
     assert "+" in text
     assert "a.md" in text
 

@@ -20,7 +20,7 @@ from rich.console import Console
 
 from lode.cli.render import RenderOptions, render_options_from_preset
 from lode.cli.render.prospect import render_prospect
-from lode.index.search import SearchHit
+from lode.index.search import ProspectResult, SearchHit
 from lode.index.store import FileStatus, PathRef
 
 
@@ -40,42 +40,62 @@ def _hit(*, stale: bool = False) -> SearchHit:
     )
 
 
-def _render(hits: list[SearchHit], *, stale_warning: str | None = None, options: RenderOptions | None = None) -> str:
+def _result(hits: list[SearchHit], *, has_stale: bool = False) -> ProspectResult:
+    return ProspectResult(
+        workspace=Path("."),
+        query="entanglement",
+        top_k=5,
+        hits=hits,
+        has_stale=has_stale,
+    )
+
+
+def _render(result: ProspectResult, options: RenderOptions | None = None) -> str:
     """Render a prospect report to plain text via a recording console."""
     console = Console(record=True, force_terminal=False)
-    render_prospect(Path("."), "entanglement", hits, stale_warning=stale_warning, options=options, console=console)
+    render_prospect(result, options=options, console=console)
     return console.export_text()
 
 
 def test_render_prospect_lists_hits_as_cards() -> None:
-    text = _render([_hit()])
+    text = _render(_result([_hit()]))
     assert "#1 · 0.750" in text
     assert "docs/report.txt > Intro (p.3)" in text
     assert "quantum entanglement" in text
 
 
 def test_render_prospect_hides_full_content_address() -> None:
-    text = _render([_hit()])
+    text = _render(_result([_hit()]))
     assert "blake3:" not in text
 
 
 def test_render_prospect_marks_stale_hit() -> None:
-    text = _render([_hit(stale=True)])
+    text = _render(_result([_hit(stale=True)]))
     assert "[stale]" in text
 
 
 def test_render_prospect_dry_hole() -> None:
-    text = _render([])
+    text = _render(_result([]))
     assert "Dry hole: nothing matched." in text
     assert "quantum entanglement" not in text
 
 
-def test_render_prospect_emits_stale_warning() -> None:
-    text = _render([_hit()], stale_warning="Warning: results include stale files; verify them before relying on them.")
+def test_render_prospect_warns_stale_in_results() -> None:
+    text = _render(_result([_hit(stale=True)], has_stale=True))
     assert "results include stale files" in text
 
 
+def test_render_prospect_warns_pending_outside_results() -> None:
+    text = _render(_result([_hit()], has_stale=True))
+    assert "pending changes outside these results" in text
+
+
+def test_render_prospect_no_warning_when_clean() -> None:
+    text = _render(_result([_hit()], has_stale=False))
+    assert "Warning" not in text
+
+
 def test_render_prospect_plain_preset_keeps_output() -> None:
-    text = _render([_hit()], options=render_options_from_preset("plain"))
+    text = _render(_result([_hit()]), options=render_options_from_preset("plain"))
     assert "#1 · 0.750" in text
     assert "quantum entanglement" in text

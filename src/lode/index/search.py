@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
 from lode.embeddings.base import Embedder
 from lode.index.store import FileStatus, PathRef, Store
@@ -50,6 +51,24 @@ class SearchHit:
     def stale(self) -> bool:
         """Whether any referencing path is stale."""
         return any(ref.status is FileStatus.STALE for ref in self.refs)
+
+
+@dataclass(frozen=True, slots=True)
+class ProspectResult:
+    """Aggregated output of a prospect command.
+
+    Carries the query context plus the hits and the library-wide dirty
+    signal, so the render layer (and a future MCP layer) consume one object
+    instead of scattered arguments. ``has_stale`` is the library-level signal
+    (derived from detection: changed or missing files exist), distinct from
+    per-hit ``SearchHit.stale``.
+    """
+
+    workspace: Path
+    query: str
+    top_k: int
+    hits: list[SearchHit]
+    has_stale: bool
 
 
 def search(

@@ -5,13 +5,14 @@ Hermetic: real temp files + FakeEmbedder, no network.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 from lode.index.search import search
 from lode.index.store import FileStatus, Store
-from lode.ingestion.pipeline import FailedFile, survey_workspace, sync
+from lode.ingestion.pipeline import FailedFile, SyncSummary, detect_changes, sync
 from lode.ingestion.split import RecursiveSegmentSplitter
 from tests.fakes import FailingEmbedder, FakeEmbedder, make_docx_bytes
 
@@ -33,10 +34,22 @@ def write(tmp_path: Path, name: str, content: str) -> Path:
 SPLITTER = RecursiveSegmentSplitter(chunk_size=50, chunk_overlap=5)
 
 
+def run_sync(
+    store: Store,
+    tmp_path: Path,
+    embedder: FakeEmbedder | FailingEmbedder,
+    *,
+    report: Callable[[int, int, str], None] | None = None,
+) -> SyncSummary:
+    """detect then sync — the two-stage shape the CLI now uses."""
+    detect = detect_changes(store, tmp_path)
+    return sync(store, tmp_path, embedder, SPLITTER, detect=detect, report=report)
+
+
 def test_sync_indexes_new_files(store: Store, tmp_path: Path) -> None:
     write(tmp_path, "a.txt", "hello world content")
 
-    result = sync(store, tmp_path, FakeEmbedder(), SPLITTER)
+    result = run_sync(store, tmp_path, FakeEmbedder())
 
     assert result.added == 1
     files = store.list_files()
@@ -47,9 +60,9 @@ def test_sync_indexes_new_files(store: Store, tmp_path: Path) -> None:
 
 def test_sync_is_idempotent(store: Store, tmp_path: Path) -> None:
     write(tmp_path, "a.txt", "hello world content")
-    sync(store, tmp_path, FakeEmbedder(), SPLITTER)
+    run_sync(store, tmp_path, FakeEmbedder())
 
-    result = sync(store, tmp_path, FakeEmbedder(), SPLITTER)
+    result = run_sync(store, tmp_path, FakeEmbedder())
 
     assert result.added == 0
     assert result.updated == 0
@@ -61,16 +74,15 @@ def test_sync_reports_progress(store: Store, tmp_path: Path) -> None:
     write(tmp_path, "b.txt", "more content here")
 
     calls: list[tuple[int, int, str]] = []
-    result = sync(
+    result = run_sync(
         store,
         tmp_path,
         FakeEmbedder(),
-        SPLITTER,
         report=lambda done, total, path: calls.append((done, total, path)),
     )
 
     assert result.added == 2
-    # One report before each discovered file (0-based count), then a completion report.
+    # One report before each file to embed (0-based count), then a completion report.
     assert [c[0] for c in calls] == [0, 1, 2]
     assert calls[0][1] == 2 and calls[1][1] == 2
     assert {c[2] for c in calls[:2]} == {"a.txt", "b.txt"}
@@ -78,10 +90,10 @@ def test_sync_reports_progress(store: Store, tmp_path: Path) -> None:
 
 def test_sync_reindexes_changed_file(store: Store, tmp_path: Path) -> None:
     path = write(tmp_path, "a.txt", "hello world content")
-    sync(store, tmp_path, FakeEmbedder(), SPLITTER)
+    run_sync(store, tmp_path, FakeEmbedder())
     path.write_text("totally different text now")
 
-    result = sync(store, tmp_path, FakeEmbedder(), SPLITTER)
+    result = run_sync(store, tmp_path, FakeEmbedder())
 
     assert result.updated == 1
     assert store.get_file("a.txt") is not None
@@ -89,17 +101,17 @@ def test_sync_reindexes_changed_file(store: Store, tmp_path: Path) -> None:
 
 def test_sync_removes_files_gone_from_disk(store: Store, tmp_path: Path) -> None:
     path = write(tmp_path, "a.txt", "hello world content")
-    sync(store, tmp_path, FakeEmbedder(), SPLITTER)
+    run_sync(store, tmp_path, FakeEmbedder())
     path.unlink()
 
-    result = sync(store, tmp_path, FakeEmbedder(), SPLITTER)
+    result = run_sync(store, tmp_path, FakeEmbedder())
     assert result.removed == 1
     assert store.list_files() == []
 
 
 def test_sync_skips_unsupported_formats(store: Store, tmp_path: Path) -> None:
     write(tmp_path, "image.png", "not text at all")
-    result = sync(store, tmp_path, FakeEmbedder(), SPLITTER)
+    result = run_sync(store, tmp_path, FakeEmbedder())
     assert result.skipped == 1
     assert store.list_files() == []
 
@@ -107,12 +119,12 @@ def test_sync_skips_unsupported_formats(store: Store, tmp_path: Path) -> None:
 def test_sync_failure_marks_file_stale_and_keeps_going(store: Store, tmp_path: Path) -> None:
     write(tmp_path, "a.txt", "hello world content")
     write(tmp_path, "b.txt", "second file content")
-    sync(store, tmp_path, FakeEmbedder(), SPLITTER)
+    run_sync(store, tmp_path, FakeEmbedder())
 
     # Change both, then sync with a broken embedder: both fail, both stale.
     (tmp_path / "a.txt").write_text("changed a")
     (tmp_path / "b.txt").write_text("changed b")
-    result = sync(store, tmp_path, FailingEmbedder(), SPLITTER)
+    result = run_sync(store, tmp_path, FailingEmbedder())
 
     assert len(result.failed) == 2
     assert all(isinstance(failure, FailedFile) for failure in result.failed)
@@ -128,16 +140,16 @@ def test_sync_failure_marks_file_stale_and_keeps_going(store: Store, tmp_path: P
 
 def test_sync_retries_stale_files_even_if_unchanged(store: Store, tmp_path: Path) -> None:
     path = write(tmp_path, "a.txt", "hello world content")
-    sync(store, tmp_path, FakeEmbedder(), SPLITTER)
+    run_sync(store, tmp_path, FakeEmbedder())
 
     path.write_text("changed content here")
-    sync(store, tmp_path, FailingEmbedder(), SPLITTER)
+    run_sync(store, tmp_path, FailingEmbedder())
     file_a = store.get_file("a.txt")
     assert file_a is not None
     assert file_a.status is FileStatus.STALE
 
     # Same mtime+size as the failed run, but the retry must still re-embed.
-    result = sync(store, tmp_path, FakeEmbedder(), SPLITTER)
+    result = run_sync(store, tmp_path, FakeEmbedder())
 
     assert result.updated == 1
     file_a = store.get_file("a.txt")
@@ -147,25 +159,25 @@ def test_sync_retries_stale_files_even_if_unchanged(store: Store, tmp_path: Path
 
 def test_survey_detects_changes_without_embedding(store: Store, tmp_path: Path) -> None:
     path = write(tmp_path, "a.txt", "hello world content")
-    sync(store, tmp_path, FakeEmbedder(), SPLITTER)
+    run_sync(store, tmp_path, FakeEmbedder())
     path.write_text("changed!")
 
-    summary = survey_workspace(store, tmp_path)
+    summary = detect_changes(store, tmp_path)
 
     assert summary.changed == 1
     assert summary.pending == 1
     # The embedder was never needed, so even a broken one is fine.
-    survey_workspace(store, tmp_path)
+    detect_changes(store, tmp_path)
 
 
 def test_survey_reports_new_missing_and_skipped(store: Store, tmp_path: Path) -> None:
     indexed = write(tmp_path, "a.txt", "hello world content")
-    sync(store, tmp_path, FakeEmbedder(), SPLITTER)
+    run_sync(store, tmp_path, FakeEmbedder())
     indexed.unlink()
     write(tmp_path, "b.txt", "brand new file")
     write(tmp_path, "pic.png", "nope")
 
-    summary = survey_workspace(store, tmp_path)
+    summary = detect_changes(store, tmp_path)
 
     assert summary.new == 1
     assert summary.missing == 1
@@ -173,25 +185,57 @@ def test_survey_reports_new_missing_and_skipped(store: Store, tmp_path: Path) ->
     assert summary.pending == 2  # new + missing
 
 
-def test_survey_reports_residual_stale_marker_as_unchanged(store: Store, tmp_path: Path) -> None:
+def test_survey_reports_residual_stale_marker_as_changed(store: Store, tmp_path: Path) -> None:
     write(tmp_path, "a.txt", "hello world content")
-    sync(store, tmp_path, FakeEmbedder(), SPLITTER)
+    run_sync(store, tmp_path, FakeEmbedder())
     # Simulate a failed sync that left a stale marker without any disk change.
     store.mark_stale("a.txt")
 
-    summary = survey_workspace(store, tmp_path)
+    summary = detect_changes(store, tmp_path)
 
-    # Content still matches the index, so it is not pending work; sync will
-    # clear the stale marker rather than report it as a separate bucket.
-    assert summary.unchanged == 1
-    assert summary.changed == 0
-    assert summary.pending == 0
+    # Stat matches but the file is still stale: it must be retried, so it is
+    # folded into changed (not unchanged) — this is the C2 fix.
+    assert summary.unchanged == 0
+    assert summary.changed == 1
+    assert summary.pending == 1
+    assert summary.dirty is True
+
+
+def test_detect_marks_changed_stale_and_missing_not(store: Store, tmp_path: Path) -> None:
+    path = write(tmp_path, "a.txt", "hello world content")
+    write(tmp_path, "b.txt", "second file content")
+    run_sync(store, tmp_path, FakeEmbedder())
+    path.write_text("changed content")
+    (tmp_path / "b.txt").unlink()
+
+    summary = detect_changes(store, tmp_path)
+
+    # Changed file is marked stale; missing file is not (no snapshot to flag).
+    file_a = store.get_file("a.txt")
+    assert file_a is not None
+    assert file_a.status is FileStatus.STALE
+    assert summary.changed == 1
+    assert summary.missing == 1
+    assert summary.dirty is True
+
+
+def test_detect_residual_stale_not_remark(store: Store, tmp_path: Path) -> None:
+    write(tmp_path, "a.txt", "hello world content")
+    run_sync(store, tmp_path, FakeEmbedder())
+    store.mark_stale("a.txt")
+
+    detect_changes(store, tmp_path)
+
+    # Residual stale is folded into changed but not re-marked (already stale).
+    file_a = store.get_file("a.txt")
+    assert file_a is not None
+    assert file_a.status is FileStatus.STALE
 
 
 def test_sync_indexes_docx_and_surfaces_heading(store: Store, tmp_path: Path) -> None:
     (tmp_path / "report.docx").write_bytes(make_docx_bytes())
 
-    result = sync(store, tmp_path, FakeEmbedder(), SPLITTER)
+    result = run_sync(store, tmp_path, FakeEmbedder())
 
     assert result.added == 1
     files = store.list_files()

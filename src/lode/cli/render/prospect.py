@@ -11,24 +11,18 @@ stale tag), a preview of the chunk, and a muted digest so ``dig`` can follow it.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
 
 from lode.cli.render.core import Intent, RenderOptions
 from lode.cli.render.output import preview
-from lode.index.search import SearchHit
+from lode.index.search import ProspectResult
 from lode.index.store import FileStatus
 
 
 def render_prospect(
-    workspace: Path,
-    query: str,
-    hits: list[SearchHit],
-    *,
-    stale_warning: str | None = None,
+    result: ProspectResult,
     options: RenderOptions | None = None,
     console: Console | None = None,
 ) -> None:
@@ -40,15 +34,18 @@ def render_prospect(
     single ``Dry hole`` line. ``workspace``/``query`` are carried for a future
     header but are not currently displayed.
 
-    ``stale_warning`` is a precomputed message (from the caller's store scan);
-    when set it is emitted after the cards with ``WARNING`` intent. The border
-    follows ``options.border``; ``console`` may be injected (e.g. a recording
-    console) to capture output in tests.
+    When the library is dirty (``result.has_stale``), a warning is emitted
+    after the cards with ``WARNING`` intent. Two cases keep the message honest
+    about where the risk sits: a stale hit in this result set (verify before
+    trusting), or pending changes elsewhere (refresh keeps the library
+    current). The border follows ``options.border``; ``console`` may be
+    injected (e.g. a recording console) to capture output in tests.
     """
     console = console or Console()
     if options is None:
         options = RenderOptions()
 
+    hits = result.hits
     if not hits:
         console.print(
             "Dry hole: nothing matched.",
@@ -101,9 +98,18 @@ def render_prospect(
             console.print(f"  {short_id}", style=muted_style)
         console.print()
 
-    if stale_warning:
+    if result.has_stale:
+        if any(hit.stale for hit in hits):
+            warning = (
+                "Warning: results include stale files; verify them before relying on them. "
+                "Run `lode mine` to update the index."
+            )
+        else:
+            warning = (
+                "Warning: the index has pending changes outside these results. Run `lode mine` to update the index."
+            )
         console.print(
-            stale_warning,
+            warning,
             style=options.intent_colors.get(Intent.WARNING, ""),
             markup=False,
             highlight=False,

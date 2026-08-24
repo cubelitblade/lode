@@ -9,7 +9,6 @@ the same functions — CLI first, MCP later (PLAN M1).
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -52,13 +51,12 @@ from lode.index import (
     ChunkWithPath,
     DimensionMismatchError,
     EmbedderUnavailableError,
-    FileStatus,
     ModelStatus,
     SchemaVersionError,
     Store,
 )
-from lode.index.search import SearchHit, search
-from lode.ingestion.pipeline import SyncSummary, survey_workspace, sync
+from lode.index.search import ProspectResult, search
+from lode.ingestion.pipeline import DetectResult, SyncSummary, detect_changes, sync
 from lode.ingestion.split import RecursiveSegmentSplitter, SegmentSplitter
 
 # The index lives next to the workspace's own .lode/ directory (PLAN §3).
@@ -157,7 +155,7 @@ def _sync_with_progress(
     workspace: Path,
     embedder: Embedder,
     splitter: SegmentSplitter,
-    ignore_sources: Sequence[str],
+    detect: DetectResult,
 ) -> SyncSummary:
     """Run ``sync`` while showing a live progress bar for observability.
 
@@ -184,30 +182,7 @@ def _sync_with_progress(
         progress.update(task_id, completed=processed, description=path or "done")
 
     with progress:
-        return sync(store, workspace, embedder, splitter, ignore_sources, report=report)
-
-
-def _stale_warning(store: Store, hits: list[SearchHit]) -> str | None:
-    """Build a stale-file warning message, or ``None`` when there are none.
-
-    Two distinct cases keep the message honest about where the risk sits:
-
-    * no stale file shows up in this result set — stale data is lurking
-      elsewhere; refresh keeps the library current;
-    * a stale file does show up — those entries may not reflect the
-      on-disk content, so verify before trusting them.
-
-    The message is returned (not printed) so the render layer owns how it is
-    displayed: ``render_prospect`` emits it with ``WARNING`` intent.
-    """
-    if not any(file.status is FileStatus.STALE for file in store.list_files()):
-        return None
-    if any(hit.stale for hit in hits):
-        return (
-            "Warning: results include stale files; verify them before relying on them. "
-            "Run `lode mine` to update the index."
-        )
-    return "Warning: the index holds stale files outside these results. Run `lode mine` to update the index."
+        return sync(store, workspace, embedder, splitter, detect=detect, report=report)
 
 
 def _render_options(settings: Settings) -> RenderOptions:
@@ -293,7 +268,7 @@ def survey(
             typer.echo(message)
         raise typer.Exit(code=1) from exc
     with store:
-        result = survey_workspace(store, workspace, settings.ignore.sources)
+        result = detect_changes(store, workspace, settings.ignore.sources)
         if as_json:
             echo_json(
                 json_ok(
@@ -358,13 +333,19 @@ def mine(
                 chunk_size=settings.chunking.size,
                 chunk_overlap=settings.chunking.overlap,
             )
+            detect = detect_changes(store, workspace, settings.ignore.sources)
             console = Console()
-            if as_json:
-                result = sync(store, workspace, embedder, splitter, settings.ignore.sources)
+            if detect.pending == 0:
+                # Nothing to embed or prune; skip the progress bar entirely.
+                result = SyncSummary()
+                result.unchanged = detect.unchanged
+                result.skipped = detect.skipped
+            elif as_json:
+                result = sync(store, workspace, embedder, splitter, detect=detect)
             elif console.is_terminal:
-                result = _sync_with_progress(console, store, workspace, embedder, splitter, settings.ignore.sources)
+                result = _sync_with_progress(console, store, workspace, embedder, splitter, detect)
             else:
-                result = sync(store, workspace, embedder, splitter, settings.ignore.sources)
+                result = sync(store, workspace, embedder, splitter, detect=detect)
             if as_json:
                 echo_json(
                     json_ok(
@@ -405,7 +386,11 @@ def prospect(
     config: ConfigArg = None,
     as_json: bool = typer.Option(False, "--json", help="Emit JSON output."),
 ) -> None:
-    """Search the index and show results with source information."""
+    """Search the index and show results with source information.
+
+    Runs a silent detection first so the stale bits are fresh before search
+    reads them — this command writes ``files.status`` (it is not read-only).
+    """
     settings = load_settings(config)
     embedder = build_embedder(settings.embedding)
     options = _render_options(settings)
@@ -423,6 +408,9 @@ def prospect(
     with store:
         if top_k is None:
             top_k = settings.retrieval.top_k
+        # Refresh the stale bits before searching so per-chunk annotation and
+        # the library-wide dirty signal reflect the current workspace.
+        detect = detect_changes(store, workspace, settings.ignore.sources)
         try:
             hits = search(
                 store,
@@ -450,6 +438,13 @@ def prospect(
                 render_message(error, intent=Intent.ERROR)
                 render_message(hint, intent=Intent.INFO)
             raise typer.Exit(code=1) from exc
+        result = ProspectResult(
+            workspace=workspace,
+            query=query,
+            top_k=top_k,
+            hits=hits,
+            has_stale=detect.dirty,
+        )
         if as_json:
             echo_json(
                 json_ok(
@@ -472,7 +467,7 @@ def prospect(
                 )
             )
         else:
-            render_prospect(workspace, query, hits, stale_warning=_stale_warning(store, hits), options=options)
+            render_prospect(result, options=options)
 
 
 @app.command("dig")

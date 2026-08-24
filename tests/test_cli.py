@@ -19,7 +19,7 @@ from lode.cli import app
 from lode.cli.render import PLAIN_INTENT_COLORS, RenderOptions
 from lode.config import EmbeddingConfig
 from lode.ingestion import chunk_digest
-from lode.ingestion.pipeline import SurveySummary
+from lode.ingestion.pipeline import DetectResult
 from tests.fakes import FailingEmbedder, FakeEmbedder
 
 runner = CliRunner()
@@ -119,7 +119,7 @@ def test_survey_uses_configured_palette(tmp_path: Path, monkeypatch: pytest.Monk
 
     def fake_render(
         workspace: Path,
-        result: SurveySummary,
+        result: DetectResult,
         *,
         options: RenderOptions | None = None,
         console: Console | None = None,
@@ -241,7 +241,7 @@ def test_prospect_warns_stale_files_outside_results(tmp_path: Path, monkeypatch:
     # in the result set.
     prospect = runner.invoke(app, ["prospect", "entanglement", str(tmp_path), "--top-k", "1"])
     assert prospect.exit_code == 0, prospect.output
-    assert "stale files outside these results" in prospect.output
+    assert "pending changes outside these results" in prospect.output
     assert "Run `lode mine`" in prospect.output
 
 

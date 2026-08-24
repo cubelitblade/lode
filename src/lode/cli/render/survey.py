@@ -15,12 +15,12 @@ from rich.table import Table
 from rich.text import Text
 
 from lode.cli.render.core import MARKERS, STATUS_INTENT, Intent, RenderOptions, Status
-from lode.ingestion.pipeline import SurveySummary
+from lode.ingestion.pipeline import DetectResult
 
 
 def render_survey(
     workspace: Path,
-    result: SurveySummary,
+    result: DetectResult,
     options: RenderOptions | None = None,
     console: Console | None = None,
 ) -> None:
