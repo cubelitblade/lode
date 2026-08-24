@@ -12,8 +12,9 @@ import pytest
 
 from lode.index.search import search
 from lode.index.store import FileStatus, Store
+from lode.ingestion import Chunk, Segment
 from lode.ingestion.pipeline import FailedFile, SyncSummary, classify, detect_changes, sync
-from lode.ingestion.split import RecursiveSegmentSplitter
+from lode.ingestion.split import RecursiveSegmentSplitter, SegmentSplitter
 from tests.fakes import FailingEmbedder, FakeEmbedder, make_docx_bytes
 
 
@@ -136,6 +137,39 @@ def test_sync_failure_marks_file_stale_and_keeps_going(store: Store, tmp_path: P
     assert file_b is not None
     assert file_a.status is FileStatus.STALE
     assert file_b.status is FileStatus.STALE
+
+
+def test_sync_reraises_unexpected_error(store: Store, tmp_path: Path) -> None:
+    """A programming error in the splitter must propagate, not be swallowed.
+
+    F2: the per-file tolerance only covers *domain* errors (extraction,
+    embedding, store). A bug in the splitter is a coding error — silently
+    downgrading it to a stale marker would hide the regression.
+    """
+    write(tmp_path, "a.txt", "hello world content")
+
+    class _BrokenSplitter(SegmentSplitter):
+        def split_segments(self, segments: list[Segment]) -> list[Chunk]:
+            raise RuntimeError("splitter bug")
+
+    detect = detect_changes(store, tmp_path)
+    with pytest.raises(RuntimeError, match="splitter bug"):
+        sync(store, tmp_path, FakeEmbedder(), _BrokenSplitter(), detect=detect)
+
+
+def test_sync_corrupt_docx_fails_and_keeps_going(store: Store, tmp_path: Path) -> None:
+    """A malformed docx is a domain error: the file fails, the run continues,
+    and it is not a programming error. A brand-new file that fails on first
+    index leaves no row behind (mark_stale on an unknown path is a no-op)."""
+    (tmp_path / "bad.docx").write_bytes(b"this is not a real docx")
+
+    result = run_sync(store, tmp_path, FakeEmbedder())
+
+    assert len(result.failed) == 1
+    assert result.failed[0].path == "bad.docx"
+    assert result.failed[0].error
+    # Never successfully indexed, so no snapshot row exists to flag stale.
+    assert store.get_file("bad.docx") is None
 
 
 def test_sync_retries_stale_files_even_if_unchanged(store: Store, tmp_path: Path) -> None:

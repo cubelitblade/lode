@@ -205,7 +205,7 @@ def test_wrong_vector_count_raises() -> None:
 
     client = httpx.Client(transport=httpx.MockTransport(handler), timeout=5.0)
     emb = OpenAICompatibleEmbedder(client=client, dimension=2)
-    with pytest.raises(ValueError, match="vectors"):
+    with pytest.raises(EmbedderUnavailableError, match="vectors"):
         emb.embed_documents(["a", "b"])
 
 
@@ -215,7 +215,7 @@ def test_empty_model_list_raises() -> None:
 
     client = httpx.Client(transport=httpx.MockTransport(handler), timeout=5.0)
     emb = OpenAICompatibleEmbedder(client=client)
-    with pytest.raises(ValueError, match="no models"):
+    with pytest.raises(EmbedderUnavailableError, match="no models"):
         _ = emb.model_id
 
 

@@ -3,14 +3,14 @@
 `RecursiveSegmentSplitter` windows each segment independently (heading
 boundaries are hard chunk boundaries) and tags the resulting chunks with the
 segment's heading/page. A plain format arrives as a single unstyled segment,
-so its text and seq match the plain `RecursiveTextSplitter` exactly. Note
-that chunk ids are *not* asserted here as a strong regression condition —
-content text and sequence are the contract.
+so its text and seq match the plain `RecursiveTextSplitter` exactly. The
+segment splitter is the single place that builds `Chunk`s, so content
+addressing (digest) is asserted here.
 """
 
 from __future__ import annotations
 
-from lode.ingestion import Segment
+from lode.ingestion import Segment, chunk_digest
 from lode.ingestion.split import RecursiveSegmentSplitter, RecursiveTextSplitter
 
 
@@ -19,10 +19,27 @@ def test_single_segment_matches_recursive_window_text_and_seq() -> None:
     got = RecursiveSegmentSplitter(chunk_size=50, chunk_overlap=5).split_segments([Segment(text=text)])
     expected = RecursiveTextSplitter(chunk_size=50, chunk_overlap=5).split(text)
 
-    assert [c.text for c in got] == [c.text for c in expected]
+    assert [c.text for c in got] == expected
     assert [c.seq for c in got] == list(range(len(got)))
     assert all(c.heading == "" for c in got)
     assert all(c.page is None for c in got)
+
+
+def test_chunk_digests_are_content_addressed() -> None:
+    splitter = RecursiveSegmentSplitter(chunk_size=20, chunk_overlap=5)
+    chunks = splitter.split_segments([Segment(text="one chunk\n\ntwo chunk")])
+    for chunk in chunks:
+        assert chunk.digest == chunk_digest(chunk.text)
+        assert chunk.digest.startswith("blake3:")
+
+
+def test_reordering_keeps_chunk_digests() -> None:
+    # Moving a paragraph around must not change a chunk's digest: it is
+    # derived from the chunk text alone, not its position.
+    splitter = RecursiveSegmentSplitter(chunk_size=10, chunk_overlap=5)
+    a = splitter.split_segments([Segment(text="para one\n\npara two")])
+    b = splitter.split_segments([Segment(text="para two\n\npara one")])
+    assert {c.digest for c in a} == {c.digest for c in b}
 
 
 def test_heading_propagated_to_every_chunk() -> None:

@@ -14,9 +14,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from lode.embeddings.base import Embedder
-from lode.index.store import FileRecord, FileStatus, Store
+from lode.index.store import EmbedderUnavailableError, FileRecord, FileStatus, Store, StoreError
 from lode.ingestion.digest import file_digest
 from lode.ingestion.discover import discover
+from lode.ingestion.errors import ExtractionError
 from lode.ingestion.extract import extract_document, is_supported
 from lode.ingestion.split import SegmentSplitter
 
@@ -243,7 +244,7 @@ def sync(
 
         try:
             segments = extract_document(data, Path(rel_text).suffix)
-        except Exception as exc:
+        except ExtractionError as exc:
             summary.failed.append(FailedFile(path=rel_text, error=str(exc)))
             store.mark_stale(rel_text)
             continue
@@ -259,9 +260,12 @@ def sync(
                 summary.added_files.append(rel_text)
             else:
                 summary.updated_files.append(rel_text)
-        except Exception as exc:
+        except (EmbedderUnavailableError, StoreError) as exc:
             # The old snapshot stays queryable; the file is flagged so search
-            # can tell the user it may be out of date.
+            # can tell the user it may be out of date. Only *domain* errors
+            # are caught here — a programming error (e.g. a bug in the
+            # splitter) must propagate instead of being silently downgraded
+            # to a per-file failure.
             summary.failed.append(FailedFile(path=rel_text, error=str(exc)))
             store.mark_stale(rel_text)
 

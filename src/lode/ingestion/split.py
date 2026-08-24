@@ -1,14 +1,16 @@
 """Chunk model and splitter interface.
 
-A `Splitter` turns extracted text into a sequence of `Chunk`s. Chunk
-identity is content-addressed via `chunk_digest`, so the model and the
-splitter interface must stay stable: downstream layers (index store,
-incremental diff, search) all depend on this shape.
+A `Splitter` turns extracted text into a sequence of text pieces. The
+interface is deliberately generic — text in, pieces out — so it stays
+reusable across future splitter kinds (anchor-based, code-aware, ...).
+Chunk identity (content addressing via `chunk_digest`) and provenance
+(heading/page) are *not* the splitter's concern: they are assembled by
+`RecursiveSegmentSplitter`, the single place that builds `Chunk`s.
 
 The recursive splitter delegates to a vendored copy of LangChain's
 ``RecursiveCharacterTextSplitter`` (see ``lode.ingestion.vendored``).
-This module owns the lode contract on top of it: `Chunk` shape, content
-addressing, separator priority, and input validation.
+This module owns the lode contract on top of it: the piece contract,
+separator priority, and input validation.
 """
 
 from __future__ import annotations
@@ -58,8 +60,8 @@ class Splitter(ABC):
     """
 
     @abstractmethod
-    def split(self, text: str) -> list[Chunk]:
-        """Split text into chunks with sequential positions (0-based)."""
+    def split(self, text: str) -> list[str]:
+        """Split text into text pieces (no provenance, no content addressing)."""
 
 
 class RecursiveTextSplitter(Splitter):
@@ -75,8 +77,9 @@ class RecursiveTextSplitter(Splitter):
       strictly smaller than ``chunk_size``.
 
     Deterministic for a given input. A change in the middle of a file
-    shifts subsequent chunks, but content addressing makes that harmless:
-    unchanged chunk text keeps its id and reuses its embedding.
+    shifts subsequent pieces, but content addressing (applied later by the
+    segment splitter) makes that harmless: unchanged piece text keeps its
+    digest and reuses its embedding.
     """
 
     def __init__(self, *, chunk_size: int = 512, chunk_overlap: int = 64) -> None:
@@ -92,9 +95,8 @@ class RecursiveTextSplitter(Splitter):
             strip_whitespace=False,
         )
 
-    def split(self, text: str) -> list[Chunk]:
-        pieces = self._splitter.split_text(text)
-        return [Chunk(digest=chunk_digest(piece), text=piece, seq=seq) for seq, piece in enumerate(pieces)]
+    def split(self, text: str) -> list[str]:
+        return self._splitter.split_text(text)
 
 
 class SegmentSplitter(ABC):
@@ -135,8 +137,8 @@ class RecursiveSegmentSplitter(SegmentSplitter):
             for piece in self._splitter.split(segment.text):
                 chunks.append(
                     Chunk(
-                        digest=piece.digest,
-                        text=piece.text,
+                        digest=chunk_digest(piece),
+                        text=piece,
                         seq=seq,
                         heading=segment.heading,
                         page=segment.page,

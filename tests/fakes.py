@@ -7,6 +7,7 @@ from io import BytesIO
 from docx import Document
 
 from lode.embeddings.base import Embedder
+from lode.embeddings.errors import EmbedderUnavailableError
 from lode.index.store import FileRecord
 from lode.ingestion import Chunk, chunk_digest
 
@@ -47,13 +48,17 @@ class FakeEmbedder(Embedder):
 
 
 class FailingEmbedder(FakeEmbedder):
-    """Embedder whose embedding requests always fail (endpoint down)."""
+    """Embedder whose embedding requests always fail (endpoint down).
+
+    Raises the same domain error the real client does, so pipeline tests
+    exercise the real failure contract.
+    """
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        raise RuntimeError("embedding endpoint is down")
+        raise EmbedderUnavailableError("embedding endpoint is down")
 
     def embed_query(self, text: str) -> list[float]:
-        raise RuntimeError("embedding endpoint is down")
+        raise EmbedderUnavailableError("embedding endpoint is down")
 
 
 def make_chunks(texts: list[str], *, pages: list[int | None] | None = None) -> tuple[list[Chunk], list[list[float]]]:

@@ -39,6 +39,18 @@ BUSY_TIMEOUT_MS = 5000
 # target is a quoted literal; escape any embedded quotes defensively.
 _VACUUM_INTO = "VACUUM INTO '{}'"
 
+
+def _dense_knn_sql(k: int) -> str:
+    """SQL for a vec0 k-nearest-neighbor query.
+
+    vec0's MATCH syntax takes the limit as a *literal*, not a bound
+    parameter, so ``k`` must be interpolated into the statement. ``int(k)``
+    guarantees the interpolation is a plain integer (never a string or a
+    fragment), keeping the injection surface closed.
+    """
+    return f"SELECT rowid, distance FROM chunk_vectors WHERE embedding MATCH ? AND k = {int(k)} ORDER BY distance"
+
+
 # Shared column list for chunk-with-path queries; `row_to_chunk_path` reads
 # these positions positionally.
 _CHUNK_COLUMNS = "c.id, c.digest, c.text, c.heading, f.path, f.status, c.page, c.seq"
@@ -272,10 +284,7 @@ class Store:
         with self._lock:
             try:
                 rows = self._conn.execute(
-                    # vec0's MATCH syntax takes the limit as a literal, not a
-                    # bound parameter; int() keeps the interpolation safe.
-                    f"SELECT rowid, distance FROM chunk_vectors "
-                    f"WHERE embedding MATCH ? AND k = {int(k)} ORDER BY distance",
+                    _dense_knn_sql(k),
                     (json.dumps(vector),),
                 ).fetchall()
             except sqlite3.OperationalError as exc:

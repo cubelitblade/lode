@@ -115,10 +115,10 @@ class OpenAICompatibleEmbedder(Embedder):
         data = cast(dict[str, Any], resp.json())
         models = data.get("data", [])
         if not models:
-            raise ValueError("GET /v1/models returned no models")
+            raise EmbedderUnavailableError("GET /v1/models returned no models")
         model_id = models[0].get("id")
         if not model_id:
-            raise ValueError("GET /v1/models returned a model without an id")
+            raise EmbedderUnavailableError("GET /v1/models returned a model without an id")
         model_id = str(model_id)
         logger.info("Struck a lode: model=%s", model_id)
         return model_id
@@ -128,7 +128,7 @@ class OpenAICompatibleEmbedder(Embedder):
         resp = self._request("POST", f"{self.base_url}/v1/embeddings", json=payload)
         data = cast(list[dict[str, Any]], resp.json().get("data", []))
         if len(data) != len(texts):
-            raise ValueError(f"/v1/embeddings returned {len(data)} vectors for {len(texts)} inputs")
+            raise EmbedderUnavailableError(f"/v1/embeddings returned {len(data)} vectors for {len(texts)} inputs")
         # The spec says vectors come back in input order, but servers may
         # reorder; index is authoritative, so sort by it.
         ordered = sorted(data, key=lambda item: int(item.get("index", 0)))

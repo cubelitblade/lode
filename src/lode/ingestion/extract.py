@@ -28,6 +28,8 @@ from docx.oxml.ns import qn
 from docx.table import Table
 from docx.text.paragraph import Paragraph
 
+from lode.ingestion.errors import ExtractionError
+
 # Plain-text formats decode directly; docx and pdf are parsed structurally.
 PLAIN_EXTENSIONS = frozenset({".txt", ".md", ".markdown"})
 SUPPORTED_EXTENSIONS = PLAIN_EXTENSIONS | {".docx", ".pdf"}
@@ -81,10 +83,21 @@ def extract_document(data: bytes, suffix: str) -> list[Segment] | None:
     suffix = suffix.lower()
     if suffix in PLAIN_EXTENSIONS:
         return [Segment(text=decode_text(data))]
-    if suffix == ".docx":
-        return _extract_docx(data)
-    if suffix == ".pdf":
-        return _extract_pdf(data)
+    if suffix in (".docx", ".pdf"):
+        # File bytes are untrusted input and the third-party parsers raise a
+        # wide, unbounded set of exception types on malformed documents. This
+        # is the one place a broad catch is correct: it converges that surface
+        # to a single domain error the pipeline can treat as a per-file,
+        # recoverable failure. Plain-text decoding never raises, so it is not
+        # routed through here.
+        try:
+            if suffix == ".docx":
+                return _extract_docx(data)
+            return _extract_pdf(data)
+        except ExtractionError:
+            raise
+        except Exception as exc:
+            raise ExtractionError(f"could not parse {suffix} document: {exc}") from exc
     return None
 
 
