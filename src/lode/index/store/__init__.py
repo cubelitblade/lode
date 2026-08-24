@@ -30,36 +30,43 @@ Design decisions locked here (confirmed against PLAN D2/D6/D7):
   ``VACUUM INTO``.
 
 Layout: ``errors`` (exception hierarchy), ``records`` (enums, dataclasses,
-row mapping), ``schema`` (DDL + triggers), ``store`` (the ``Store`` class).
+row mapping, typed query matches), ``schema`` (DDL + triggers), ``core``
+(the ``Store`` class).
 """
 
 from __future__ import annotations
 
+from lode.index.store.core import BUSY_TIMEOUT_MS, Store
 from lode.index.store.errors import (
     DimensionMismatchError,
     EmbedderUnavailableError,
+    MissingEmbedderError,
     SchemaVersionError,
     StoreError,
 )
 from lode.index.store.records import (
     ChunkWithPath,
+    DenseMatch,
     FileRecord,
     FileStatus,
     ModelStatus,
+    SparseMatch,
 )
 from lode.index.store.schema import SCHEMA_VERSION
-from lode.index.store.store import BUSY_TIMEOUT_MS, Store
 
 __all__ = [
     "BUSY_TIMEOUT_MS",
     "SCHEMA_VERSION",
     "ChunkWithPath",
+    "DenseMatch",
     "DimensionMismatchError",
     "EmbedderUnavailableError",
     "FileRecord",
     "FileStatus",
+    "MissingEmbedderError",
     "ModelStatus",
     "SchemaVersionError",
+    "SparseMatch",
     "Store",
     "StoreError",
 ]

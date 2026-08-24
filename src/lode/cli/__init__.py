@@ -465,7 +465,7 @@ def prospect(
                             "heading": hit.heading,
                             "page": hit.page,
                             "state": "stale" if hit.stale else "fresh",
-                            "digest": hit.chunk_id,
+                            "digest": hit.digest,
                             "preview": preview(hit.text),
                         }
                         for index, hit in enumerate(hits, start=1)
@@ -540,7 +540,7 @@ def _normalize_digest(digest: str) -> str:
 def _chunk_to_json(chunk: ChunkWithPath, *, include_text: bool = True) -> dict[str, Any]:
     """Build a `dig` --json payload for one chunk (omit text for candidates)."""
     data: dict[str, Any] = {
-        "digest": chunk.chunk_id,
+        "digest": chunk.digest,
         "path": chunk.path,
         "heading": chunk.heading,
         "page": chunk.page,
@@ -609,7 +609,7 @@ def _dig(
     else:
         render_dig(
             window_chunks,
-            digest=target.chunk_id.removeprefix("blake3:")[:12],
+            digest=target.digest.removeprefix("blake3:")[:12],
             center_seq=target.seq,
             radius=radius,
             options=options,
@@ -629,7 +629,7 @@ def _window(store: Store, token: str, target: ChunkWithPath, radius: int) -> lis
 
 
 def _echo_provenance(chunk: ChunkWithPath) -> None:
-    short_id = chunk.chunk_id.removeprefix("blake3:")[:12]
+    short_id = chunk.digest.removeprefix("blake3:")[:12]
     heading = f" > {chunk.heading}" if chunk.heading else ""
     page = f" (p.{chunk.page})" if chunk.page is not None else ""
     typer.echo(f"  #{short_id} {chunk.path}{heading}{page}")

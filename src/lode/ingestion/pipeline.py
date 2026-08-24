@@ -188,7 +188,7 @@ def sync(
         known = indexed.get(rel_text)
         if (
             known is not None
-            and known.status is FileStatus.CURRENT
+            and known.status is FileStatus.FRESH
             and known.mtime == stat.st_mtime
             and known.size == stat.st_size
         ):

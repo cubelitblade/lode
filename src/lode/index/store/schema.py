@@ -4,6 +4,12 @@ Owns the DDL: tables, the vec0 virtual table, the FTS5 external-content
 table, and the sync triggers. ``SCHEMA_VERSION`` guards compatibility — a
 database written by an incompatible version is refused at open time and
 requires an explicit rebuild.
+
+The schema separates *content* from *references*: ``contents`` holds each
+unique indexed document once, keyed by its ``blake3:<hex>`` digest (an
+inode), while ``files`` maps workspace paths onto that content. Identical
+files at several paths share one set of chunks/vectors/FTS rows; a content
+row lives until its last referencing path disappears.
 """
 
 from __future__ import annotations
@@ -16,28 +22,26 @@ SCHEMA_VERSION = 1
 
 _TRIGGER_CHUNKS_AI = """
 CREATE TRIGGER chunks_ai AFTER INSERT ON chunks BEGIN
-    INSERT INTO chunks_fts(rowid, text, chunk_id) VALUES (new.id, new.text, new.chunk_id);
+    INSERT INTO chunks_fts(rowid, text) VALUES (new.id, new.text);
 END
 """
 
 _TRIGGER_CHUNKS_AD = """
 CREATE TRIGGER chunks_ad AFTER DELETE ON chunks BEGIN
-    INSERT INTO chunks_fts(chunks_fts, rowid, text, chunk_id)
-    VALUES ('delete', old.id, old.text, old.chunk_id);
+    INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES ('delete', old.id, old.text);
 END
 """
 
 _TRIGGER_CHUNKS_AU = """
 CREATE TRIGGER chunks_au AFTER UPDATE ON chunks BEGIN
-    INSERT INTO chunks_fts(chunks_fts, rowid, text, chunk_id)
-    VALUES ('delete', old.id, old.text, old.chunk_id);
-    INSERT INTO chunks_fts(rowid, text, chunk_id) VALUES (new.id, new.text, new.chunk_id);
+    INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES ('delete', old.id, old.text);
+    INSERT INTO chunks_fts(rowid, text) VALUES (new.id, new.text);
 END
 """
 
 
 def create_schema(conn: sqlite3.Connection, dimension: int) -> None:
-    """Create every table, virtual table, and trigger on a fresh database."""
+    """Create every table, virtual table, index, and trigger on a fresh database."""
     if dimension <= 0:
         raise ValueError(f"dimension must be positive, got {dimension}")
     conn.execute(
@@ -50,31 +54,40 @@ def create_schema(conn: sqlite3.Connection, dimension: int) -> None:
     )
     conn.execute(
         """
+        CREATE TABLE contents (
+            id     INTEGER PRIMARY KEY,
+            digest TEXT NOT NULL UNIQUE
+        )
+        """
+    )
+    conn.execute(
+        """
         CREATE TABLE files (
             id         INTEGER PRIMARY KEY,
             path       TEXT UNIQUE NOT NULL,
-            digest     TEXT NOT NULL,
+            content_id INTEGER NOT NULL REFERENCES contents(id),
             mtime      REAL NOT NULL,
             size       INTEGER NOT NULL,
-            status     TEXT NOT NULL DEFAULT 'current',
-            indexed_at REAL NOT NULL
+            status     TEXT NOT NULL DEFAULT 'fresh'
+                       CHECK (status IN ('fresh', 'stale'))
         )
         """
     )
     conn.execute(
         """
         CREATE TABLE chunks (
-            id       INTEGER PRIMARY KEY,
-            chunk_id TEXT NOT NULL,
-            file_id  INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
-            seq      INTEGER NOT NULL,
-            text     TEXT NOT NULL,
-            heading  TEXT,
-            page     INTEGER,
-            UNIQUE (file_id, seq)
+            id         INTEGER PRIMARY KEY,
+            digest     TEXT NOT NULL,
+            content_id INTEGER NOT NULL REFERENCES contents(id) ON DELETE CASCADE,
+            seq        INTEGER NOT NULL,
+            text       TEXT NOT NULL,
+            heading    TEXT NOT NULL DEFAULT '',
+            page       INTEGER,
+            UNIQUE (content_id, seq)
         )
         """
     )
+    conn.execute("CREATE INDEX idx_chunks_digest ON chunks(digest)")
     conn.execute(
         f"""
         CREATE VIRTUAL TABLE chunk_vectors USING vec0(
@@ -86,7 +99,6 @@ def create_schema(conn: sqlite3.Connection, dimension: int) -> None:
         """
         CREATE VIRTUAL TABLE chunks_fts USING fts5(
             text,
-            chunk_id UNINDEXED,
             content='chunks',
             content_rowid='id'
         )
@@ -103,4 +115,5 @@ def drop_all(conn: sqlite3.Connection) -> None:
     conn.execute("DROP TABLE IF EXISTS chunk_vectors")
     conn.execute("DROP TABLE IF EXISTS chunks")
     conn.execute("DROP TABLE IF EXISTS files")
+    conn.execute("DROP TABLE IF EXISTS contents")
     conn.execute("DROP TABLE IF EXISTS meta")

@@ -18,6 +18,14 @@ class EmbedderUnavailableError(StoreError):
     """The embedder could not provide metadata needed to (re)build the index."""
 
 
+class MissingEmbedderError(StoreError):
+    """Creating or rebuilding the index requires an embedder, but none was given.
+
+    Opening an existing index never needs one; only fresh schema creation
+    does, because it must ask the embedder for its vector dimension.
+    """
+
+
 class DimensionMismatchError(StoreError):
     """A query or insert vector's dimension differs from the index's vec0 schema.
 

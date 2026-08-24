@@ -427,7 +427,7 @@ def _mine_report_with_many_chunks(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     runner.invoke(app, ["mine", str(tmp_path)])
 
     conn = sqlite3.connect(str(tmp_path / ".lode" / "index.db"))
-    row = conn.execute("SELECT chunk_id FROM chunks ORDER BY seq LIMIT 1").fetchone()
+    row = conn.execute("SELECT digest FROM chunks ORDER BY seq LIMIT 1").fetchone()
     conn.close()
     return row[0]
 

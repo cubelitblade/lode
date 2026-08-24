@@ -23,11 +23,11 @@ from lode.index.store import ChunkWithPath, FileStatus
 
 def _chunk(seq: int, *, stale: bool = False, text: str = "full chunk text") -> ChunkWithPath:
     return ChunkWithPath(
-        chunk_id="blake3:0123456789abcdef",
+        digest="blake3:0123456789abcdef",
         text=text,
         heading="Intro",
         path="docs/report.txt",
-        file_status=FileStatus.STALE if stale else FileStatus.CURRENT,
+        file_status=FileStatus.STALE if stale else FileStatus.FRESH,
         page=3,
         seq=seq,
     )

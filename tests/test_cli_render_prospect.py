@@ -25,7 +25,7 @@ from lode.index.search import SearchHit
 
 def _hit(*, stale: bool = False) -> SearchHit:
     return SearchHit(
-        chunk_id="blake3:0123456789abcdef",
+        digest="blake3:0123456789abcdef",
         text="quantum entanglement",
         path="docs/report.txt",
         heading="Intro",

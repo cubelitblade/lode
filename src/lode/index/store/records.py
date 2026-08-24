@@ -19,32 +19,52 @@ class ModelStatus(enum.Enum):
 
 
 class FileStatus(enum.StrEnum):
-    CURRENT = "current"
+    FRESH = "fresh"
     STALE = "stale"
 
 
 @dataclass(frozen=True, slots=True)
 class FileRecord:
-    """Metadata row for one indexed file (mirrors the `files` table)."""
+    """One indexed path joined with its content metadata (mirrors `files` ⋈ `contents`)."""
 
     path: str
     digest: str
     mtime: float
     size: int
-    status: FileStatus = FileStatus.CURRENT
+    status: FileStatus = FileStatus.FRESH
 
 
 @dataclass(frozen=True, slots=True)
 class ChunkWithPath:
-    """Chunk content joined with its file metadata (search-layer payload)."""
+    """Chunk content joined with representative path metadata (search-layer payload)."""
 
-    chunk_id: str
+    digest: str
     text: str
     heading: str
     path: str
     file_status: FileStatus
     page: int | None = None
     seq: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DenseMatch:
+    """One kNN hit: chunk rowid with its L2 distance, ordered nearest first."""
+
+    rowid: int
+    distance: float
+
+
+@dataclass(frozen=True, slots=True)
+class SparseMatch:
+    """One BM25 hit: chunk rowid with its score, ordered best first.
+
+    SQLite BM25 scores are negative and closer to zero means better, so
+    best-first is descending score.
+    """
+
+    rowid: int
+    score: float
 
 
 def row_to_file(row: sqlite3.Row) -> FileRecord:
@@ -61,7 +81,7 @@ def row_to_chunk_path(row: tuple[Any, ...]) -> ChunkWithPath:
     # Every caller selects c.seq as the 8th column (the store connection uses
     # the default row factory, so rows are plain tuples, not sqlite3.Row).
     return ChunkWithPath(
-        chunk_id=row[1],
+        digest=row[1],
         text=row[2],
         heading=row[3],
         path=row[4],

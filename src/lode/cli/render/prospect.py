@@ -68,7 +68,7 @@ def render_prospect(
             source += f" > {hit.heading}"
         if hit.page is not None:
             source += f" (p.{hit.page})"
-        short_id = hit.chunk_id.removeprefix("blake3:")[:12]
+        short_id = hit.digest.removeprefix("blake3:")[:12]
 
         if frame is not None:
             body = Text()

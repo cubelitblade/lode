@@ -42,7 +42,7 @@ def test_sync_indexes_new_files(store: Store, tmp_path: Path) -> None:
     files = store.list_files()
     assert len(files) == 1
     assert files[0].path == "a.txt"
-    assert files[0].status is FileStatus.CURRENT
+    assert files[0].status is FileStatus.FRESH
 
 
 def test_sync_is_idempotent(store: Store, tmp_path: Path) -> None:
@@ -142,7 +142,7 @@ def test_sync_retries_stale_files_even_if_unchanged(store: Store, tmp_path: Path
     assert result.updated == 1
     file_a = store.get_file("a.txt")
     assert file_a is not None
-    assert file_a.status is FileStatus.CURRENT
+    assert file_a.status is FileStatus.FRESH
 
 
 def test_survey_detects_changes_without_embedding(store: Store, tmp_path: Path) -> None:
@@ -197,11 +197,11 @@ def test_sync_indexes_docx_and_surfaces_heading(store: Store, tmp_path: Path) ->
     files = store.list_files()
     assert len(files) == 1
     assert files[0].path == "report.docx"
-    assert files[0].status is FileStatus.CURRENT
+    assert files[0].status is FileStatus.FRESH
 
     # The heading chain is written onto the stored chunks (provenance).
-    rowids = store.dense_search([0.1] * FakeEmbedder().dimension, 10)
-    chunks = store.get_chunks([rowid for rowid, _ in rowids])
+    matches = store.dense_search([0.1] * FakeEmbedder().dimension, 10)
+    chunks = store.get_chunks([match.rowid for match in matches])
     assert "总体报告 / 第三章" in {chunk.heading for chunk in chunks.values()}
 
     # And retrieval surfaces a provenance heading on its hits.

@@ -28,7 +28,7 @@ _FTS_TOKEN = re.compile(r"\w+")
 class SearchHit:
     """One fused retrieval result with its provenance."""
 
-    chunk_id: str
+    digest: str
     text: str
     path: str
     heading: str
@@ -83,7 +83,7 @@ def search(
             continue
         hits.append(
             SearchHit(
-                chunk_id=chunk.chunk_id,
+                digest=chunk.digest,
                 text=chunk.text,
                 path=chunk.path,
                 heading=chunk.heading,
@@ -97,14 +97,14 @@ def search(
 
 def _semantic_scores(store: Store, embedder: Embedder, query: str, k: int) -> dict[int, float]:
     vector = embedder.embed_query(query)
-    return {rowid: _cosine(distance) for rowid, distance in store.dense_search(vector, k)}
+    return {match.rowid: _cosine(match.distance) for match in store.dense_search(vector, k)}
 
 
 def _lexical_scores(store: Store, query: str, k: int) -> dict[int, float]:
     fts_query = _fts_query(query)
     if not fts_query:
         return {}
-    return dict(store.sparse_search(fts_query, k))
+    return {match.rowid: match.score for match in store.sparse_search(fts_query, k)}
 
 
 def _cosine(distance: float) -> float:

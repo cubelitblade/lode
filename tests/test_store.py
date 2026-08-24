@@ -193,7 +193,9 @@ def test_replace_file_with_no_chunks_keeps_file_record(db_path: Path) -> None:
 def test_replace_file_replaces_atomically(db_path: Path) -> None:
     with Store(db_path, FakeEmbedder()) as store:
         store.replace_file(file_record(), *make_chunks(["one", "two"]))
-        store.replace_file(file_record(), *make_chunks(["only"]))
+        # A different content (different digest) replaces the path's snapshot;
+        # the orphaned old content is garbage-collected.
+        store.replace_file(file_record(digest="blake3:bb"), *make_chunks(["only"]))
 
     conn = open_db(db_path)
     assert count(conn, "SELECT count(*) FROM files") == 1
@@ -277,12 +279,12 @@ def test_find_chunks_by_digest_returns_provenance(db_path: Path) -> None:
 
     assert len(found) == 1
     chunk = found[0]
-    assert chunk.chunk_id == "blake3:cccc1111"
+    assert chunk.digest == "blake3:cccc1111"
     assert chunk.text == "content"
     assert chunk.path == "report.pdf"
     assert chunk.heading == "Section 1"
     assert chunk.page == 2
-    assert chunk.file_status is FileStatus.CURRENT
+    assert chunk.file_status is FileStatus.FRESH
 
 
 # -- get_chunk_neighbors ----------------------------------------------------

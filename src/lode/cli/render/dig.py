@@ -60,7 +60,7 @@ def render_dig(
             source += f" > {chunk.heading}"
         if chunk.page is not None:
             source += f" (p.{chunk.page})"
-        short_id = chunk.chunk_id.removeprefix("blake3:")[:12]
+        short_id = chunk.digest.removeprefix("blake3:")[:12]
         seq_label = chunk.seq if chunk.seq is not None else short_id
         title = str(seq_label)
         if chunk.seq == center_seq:
