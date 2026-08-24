@@ -190,6 +190,23 @@ def test_mine_from_scratch_flag_works(tmp_path: Path, monkeypatch: pytest.Monkey
     assert "+ added 1" in mine.output
 
 
+def test_mine_with_no_indexable_files_creates_no_db(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mine with only unsupported files reports Nothing to do. without a db.
+
+    It must not create the index database or touch the embedder when there is
+    nothing to embed.
+    """
+    (tmp_path / "pic.png").write_bytes(b"nope")
+
+    result = runner.invoke(app, ["mine", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    assert "Nothing to do." in result.output
+    assert not (tmp_path / ".lode" / "index.db").exists()
+
+
 def test_mine_uses_chunking_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A long file is split into more chunks with a small chunk_size."""
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)

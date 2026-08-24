@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from rich.console import Console
+from rich.progress import BarColumn, Progress, SpinnerColumn, TaskID, TextColumn
 
 from lode.cli.render import Intent, RenderOptions, render_options_from_preset
 from lode.cli.render.output import echo_json, json_err, render_message
@@ -23,10 +25,13 @@ from lode.embeddings.base import Embedder
 from lode.index import (
     DimensionMismatchError,
     EmbedderUnavailableError,
+    ModelStatus,
     SchemaVersionError,
     Store,
     StoreError,
 )
+from lode.ingestion.pipeline import DetectResult, SyncSummary, sync
+from lode.ingestion.split import SegmentSplitter
 
 # The index lives next to the workspace's own .lode/ directory (PLAN §3).
 INDEX_DB_RELATIVE = Path(".lode") / "index.db"
@@ -128,6 +133,80 @@ def render_options(settings: Settings) -> RenderOptions:
     return render_options_from_preset(settings.output.palette)
 
 
+def model_gate(
+    store: Store,
+    embedder: Embedder,
+    *,
+    from_scratch: bool = False,
+    as_json: bool = False,
+    command: str = "mine",
+) -> None:
+    """Enforce the model/dimension-consistency contract for mine/prospect.
+
+    A mismatch means the index was built with a different model or a different
+    vector dimension than the current embedder reports: querying it is refused
+    and updating it without a from-scratch re-mine would silently keep stale or
+    incompatible vectors. UNKNOWN (embedding endpoint down) does not block —
+    search must keep working (PLAN D7).
+    """
+    if store.model_status is ModelStatus.MISMATCH and not from_scratch:
+        message = (
+            "The index was built with a different model "
+            f"(indexed: {store.stored_model_id!r}). "
+            "Run `lode mine --from-scratch` to re-mine it, or switch back to that model."
+        )
+        block(message, code="model_mismatch", as_json=as_json, command=command)
+
+    if from_scratch:
+        return
+
+    try:
+        current_dimension = embedder.dimension
+    except Exception:
+        # Fault-tolerant like model detection: an unreachable endpoint must not
+        # block search, which can still serve cached data (PLAN D7).
+        return
+    if current_dimension != store.dimension:
+        error, hint = dimension_mismatch_parts(store.dimension, current_dimension)
+        block(error, code="dimension_mismatch", as_json=as_json, command=command, hint=hint)
+
+
+def sync_with_progress(
+    console: Console,
+    store: Store,
+    workspace: Path,
+    embedder: Embedder,
+    splitter: SegmentSplitter,
+    detect: DetectResult,
+) -> SyncSummary:
+    """Run ``sync`` while showing a live progress bar for observability.
+
+    Rich's ``Progress`` needs a TTY, so the caller gates on
+    ``console.is_terminal``. The bar shows the current file being processed, so
+    it is clear the run is advancing rather than stuck on an embedding call.
+    """
+    progress = Progress(
+        SpinnerColumn(),
+        TextColumn("{task.completed}/{task.total}"),
+        BarColumn(),
+        TextColumn("{task.description}"),
+        console=console,
+    )
+    task_id: TaskID | None = None
+
+    def report(processed: int, total: int, path: str) -> None:
+        nonlocal task_id
+        if task_id is None:
+            if total == 0:
+                # Nothing to mine; keep the live display empty.
+                return
+            task_id = progress.add_task("Mining", total=total)
+        progress.update(task_id, completed=processed, description=path or "done")
+
+    with progress:
+        return sync(store, workspace, embedder, splitter, detect=detect, report=report)
+
+
 # Shared workspace argument shape; only the help string varies per command.
 # The default value (".") is set with `=` at the call site, not inside `Argument`.
 SurveyWorkspaceArg = Annotated[
@@ -137,6 +216,15 @@ SurveyWorkspaceArg = Annotated[
         file_okay=False,
         dir_okay=True,
         help="Workspace to inspect.",
+    ),
+]
+MineWorkspaceArg = Annotated[
+    Path,
+    typer.Argument(
+        exists=True,
+        file_okay=False,
+        dir_okay=True,
+        help="Workspace to index.",
     ),
 ]
 

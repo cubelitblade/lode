@@ -13,8 +13,6 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import typer
-from rich.console import Console
-from rich.progress import BarColumn, Progress, SpinnerColumn, TaskID, TextColumn
 
 from lode.cli.commands._common import (
     block,
@@ -31,7 +29,7 @@ from lode.cli.render.config import (
     render_config_value,
 )
 from lode.cli.render.dig import render_dig
-from lode.cli.render.mine import render_mine
+from lode.cli.render.mine import render_mine as render_mine  # re-exported for lode.cli.render_mine
 from lode.cli.render.output import echo_json, json_err, json_ok, preview, render_message
 from lode.cli.render.prospect import render_prospect
 from lode.cli.render.survey import render_survey as render_survey  # re-exported for lode.cli.render_survey
@@ -54,14 +52,12 @@ from lode.embeddings.base import Embedder
 from lode.index import (
     ChunkWithPath,
     DimensionMismatchError,
-    EmbedderUnavailableError,
     ModelStatus,
     SchemaVersionError,
     Store,
 )
 from lode.index.search import ProspectResult, search
-from lode.ingestion.pipeline import DetectResult, SyncSummary, detect_changes, sync
-from lode.ingestion.split import RecursiveSegmentSplitter, SegmentSplitter
+from lode.ingestion.pipeline import detect_changes
 
 # The index lives next to the workspace's own .lode/ directory (PLAN §3).
 INDEX_DB_RELATIVE = Path(".lode") / "index.db"
@@ -112,53 +108,8 @@ def _model_gate(
         block(error, code="dimension_mismatch", as_json=as_json, command=command, hint=hint)
 
 
-def _sync_with_progress(
-    console: Console,
-    store: Store,
-    workspace: Path,
-    embedder: Embedder,
-    splitter: SegmentSplitter,
-    detect: DetectResult,
-) -> SyncSummary:
-    """Run ``sync`` while showing a live progress bar for observability.
-
-    Rich's ``Progress`` needs a TTY, so the caller gates on
-    ``console.is_terminal``. The bar shows the current file being processed, so
-    it is clear the run is advancing rather than stuck on an embedding call.
-    """
-    progress = Progress(
-        SpinnerColumn(),
-        TextColumn("{task.completed}/{task.total}"),
-        BarColumn(),
-        TextColumn("{task.description}"),
-        console=console,
-    )
-    task_id: TaskID | None = None
-
-    def report(processed: int, total: int, path: str) -> None:
-        nonlocal task_id
-        if task_id is None:
-            if total == 0:
-                # Nothing to mine; keep the live display empty.
-                return
-            task_id = progress.add_task("Mining", total=total)
-        progress.update(task_id, completed=processed, description=path or "done")
-
-    with progress:
-        return sync(store, workspace, embedder, splitter, detect=detect, report=report)
-
-
 # Shared workspace argument shape; only the help string varies per command.
 # The default value (".") is set with `=` at the call site, not inside `Argument`.
-MineWorkspaceArg = Annotated[
-    Path,
-    typer.Argument(
-        exists=True,
-        file_okay=False,
-        dir_okay=True,
-        help="Workspace to index.",
-    ),
-]
 ProspectWorkspaceArg = Annotated[
     Path,
     typer.Argument(
@@ -183,89 +134,6 @@ ConfigArg = Annotated[
     Path | None,
     typer.Option("--config", help="Path to a configuration file."),
 ]
-
-
-@app.command("mine")
-@app.command("index", hidden=True)
-def mine(
-    workspace: MineWorkspaceArg = Path("."),
-    from_scratch: bool = typer.Option(
-        False,
-        "--from-scratch",
-        help="Discard the existing index and create a new one from scratch.",
-    ),
-    config: ConfigArg = None,
-    as_json: bool = typer.Option(False, "--json", help="Emit JSON output."),
-) -> None:
-    """Embeds and indexes new or changed files. An embedding endpoint must be configured.
-
-    Use `--from-scratch` when changing the embedding model or when the index
-    schema is incompatible.
-    """
-    settings = load_settings(config)
-    embedder = build_embedder(settings.embedding)
-    options = render_options(settings)
-    try:
-        store = Store(workspace / INDEX_DB_RELATIVE, embedder)
-    except SchemaVersionError as exc:
-        message = f"Index needs a re-mine: {exc}"
-        if as_json:
-            echo_json(json_err("mine", message, code="schema_version"))
-        else:
-            typer.echo(message)
-        raise typer.Exit(code=1) from exc
-
-    try:
-        _model_gate(store, embedder, from_scratch=from_scratch, as_json=as_json, command="mine")
-        with store:
-            if from_scratch:
-                store.rebuild()
-            splitter = RecursiveSegmentSplitter(
-                chunk_size=settings.chunking.size,
-                chunk_overlap=settings.chunking.overlap,
-            )
-            detect = detect_changes(store, workspace, settings.ignore.sources)
-            console = Console()
-            if detect.pending == 0:
-                # Nothing to embed or prune; skip the progress bar entirely.
-                result = SyncSummary()
-                result.unchanged = detect.unchanged
-                result.skipped = detect.skipped
-            elif as_json:
-                result = sync(store, workspace, embedder, splitter, detect=detect)
-            elif console.is_terminal:
-                result = _sync_with_progress(console, store, workspace, embedder, splitter, detect)
-            else:
-                result = sync(store, workspace, embedder, splitter, detect=detect)
-            if as_json:
-                echo_json(
-                    json_ok(
-                        "mine",
-                        workspace=str(workspace),
-                        from_scratch=from_scratch,
-                        summary={
-                            "added": result.added,
-                            "updated": result.updated,
-                            "unchanged": result.unchanged,
-                            "removed": result.removed,
-                            "skipped": result.skipped,
-                        },
-                        paths={
-                            "added": result.added_files,
-                            "updated": result.updated_files,
-                            "removed": result.removed_files,
-                        },
-                        failed=[{"path": failure.path, "error": failure.error} for failure in result.failed],
-                    )
-                )
-            else:
-                render_mine(workspace, result, console=console, options=options)
-    except EmbedderUnavailableError as exc:
-        if as_json:
-            echo_json(json_err("mine", str(exc), code="embedder_unavailable"))
-        else:
-            typer.echo(str(exc))
-        raise typer.Exit(code=1) from exc
 
 
 @app.command("prospect")
@@ -662,9 +530,10 @@ app.add_typer(config_app, name="config")
 # Register the command modules on the shared app. Imported at the bottom so
 # the module-level names above (build_embedder, render_*, ...) are bound
 # before the command modules resolve them through `lode.cli`.
-from lode.cli.commands import survey  # noqa: E402
+from lode.cli.commands import mine, survey  # noqa: E402
 
 survey.register(app)
+mine.register(app)
 
 
 if __name__ == "__main__":
