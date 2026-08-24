@@ -116,10 +116,10 @@ Common commands:
 
 ```bash
 uv sync
-uv run pytest
+uv run ruff format
 uv run ruff check
-uv run ruff format --check
 uv run pyright
+uv run pytest
 ```
 
 ## Code Style
@@ -232,6 +232,10 @@ Rules:
 * Never require external services.
 * Never depend on network availability.
 * Use mock servers for HTTP APIs.
+* Avoid fragile tests. Do not assert complete CLI presentation output
+  (such as exact spacing, colors, borders, or progress rendering).
+  Prefer testing semantic output, command behavior, exit codes, and
+  structured data where possible.
 
 Current HTTP testing approach:
 
