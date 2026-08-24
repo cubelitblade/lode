@@ -76,7 +76,7 @@ class RecursiveTextSplitter(Splitter):
 
     Deterministic for a given input. A change in the middle of a file
     shifts subsequent chunks, but content addressing makes that harmless:
-    unchanged chunk text keeps its id and reuses its embedding (see PLAN D4).
+    unchanged chunk text keeps its id and reuses its embedding.
     """
 
     def __init__(self, *, chunk_size: int = 512, chunk_overlap: int = 64) -> None:

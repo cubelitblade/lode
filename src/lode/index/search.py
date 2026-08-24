@@ -1,9 +1,8 @@
 """Hybrid retrieval: semantic (dense vec0) + lexical (sparse FTS5) fusion.
 
-Per PLAN D5: both sources are scored, min-max normalized, and combined with
-configurable weights. Semantic scores are cosine similarities (vectors are
-L2-normalized, so cosine == dot); lexical scores are BM25, normalized
-per-query to [0, 1] so the two are comparable.
+Both sources are scored, min-max normalized, and combined with configurable
+weights. Semantic scores are cosine similarities (L2-normalized, so cosine
+== dot); lexical scores are BM25, normalized per-query to [0, 1].
 """
 
 from __future__ import annotations
@@ -29,9 +28,9 @@ _FTS_TOKEN = re.compile(r"\w+")
 class SearchHit:
     """One fused retrieval result with its provenance.
 
-    Content is shared by identical files, so a hit carries every path
-    referencing it; ``primary`` picks the representative one for display
-    and ``stale`` reports whether any referencing path is outdated.
+    Content is shared by identical files, so a hit carries every path referencing
+    it; ``primary`` picks the representative one and ``stale`` reports whether any
+    referencing path is outdated.
     """
 
     digest: str
@@ -57,11 +56,9 @@ class SearchHit:
 class ProspectResult:
     """Aggregated output of a prospect command.
 
-    Carries the query context plus the hits and the library-wide dirty
-    signal, so the render layer (and a future MCP layer) consume one object
-    instead of scattered arguments. ``has_stale`` is the library-level signal
-    (derived from detection: changed or missing files exist), distinct from
-    per-hit ``SearchHit.stale``.
+    Carries the query context, the hits, and the library-wide dirty signal
+    (``has_stale``, derived from detection: changed or missing files exist),
+    distinct from per-hit ``SearchHit.stale``.
     """
 
     workspace: Path

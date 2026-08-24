@@ -3,7 +3,7 @@
 The mining metaphor carries the narrative (survey = detect, mine = embed,
 prospect = search); the aliases keep the interface approachable for
 practical use. MCP tools (index_status/reindex/search) are a thin layer on
-the same functions — CLI first, MCP later (PLAN M1).
+the same functions — CLI first, MCP later.
 """
 
 from __future__ import annotations

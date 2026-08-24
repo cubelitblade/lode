@@ -1,10 +1,9 @@
 """Content addressing primitives for chunk deduplication.
 
-A chunk's identity is derived from its normalized text, so unchanged
-content keeps the same `chunk_digest` no matter where it appears or how the
-surrounding file changed (see PLAN: content-addressed storage, D4/D6).
-The normalization rule below is a stability contract: changing it
-invalidates every previously stored digest, so it is locked by tests.
+A chunk's identity is derived from its normalized text, so unchanged content
+keeps the same `chunk_digest` wherever it appears. The normalization rule is
+a stability contract: changing it invalidates every stored digest, so it is
+locked by tests.
 """
 
 from __future__ import annotations
@@ -42,7 +41,7 @@ def chunk_digest(text: str) -> str:
 def file_digest(data: bytes) -> str:
     """File-level content address: ``blake3:<hex>`` of the raw bytes.
 
-    Used for rename detection and change attribution (PLAN D6); unlike
+    Used for rename detection and change attribution; unlike
     ``chunk_digest`` it hashes the raw bytes, not a normalized form.
     """
     return f"{_DIGEST_PREFIX}{blake3.blake3(data).hexdigest()}"

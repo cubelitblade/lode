@@ -47,11 +47,9 @@ _CHUNK_COLUMNS = "c.id, c.digest, c.text, c.heading, f.path, f.status, c.page, c
 class Store:
     """SQLite index store: single connection, WAL, lock-protected.
 
-    Construction opens an existing index or creates a new one. Creating a
-    new index needs an embedder (for the vector dimension) and may reach
-    the network; opening an existing, compatible index never touches the
-    embedder unless its model status is queried — search keeps working
-    without the embedding endpoint (PLAN D7).
+    Creating a new index needs an embedder (for the vector dimension) and may
+    reach the network; opening an existing, compatible index never touches the
+    embedder unless its model status is queried.
     """
 
     def __init__(self, db_path: Path, embedder: Embedder | None = None) -> None:
@@ -142,7 +140,7 @@ class Store:
         """Compare the stored model with the current embedder, fault-tolerantly.
 
         An unreachable embedder maps to `ModelStatus.UNKNOWN`: the store
-        stays open and search can keep serving cached data (PLAN D7).
+        stays open and search can keep serving cached data.
         """
         self._model_checked = True
         stored = self._stored_model_id

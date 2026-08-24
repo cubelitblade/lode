@@ -1,21 +1,10 @@
 """The ingestion pipeline: discovery -> extraction -> chunking -> embedding.
 
-Two explicit actions, mirroring PLAN D7 (detection and update are separate):
-
-* ``detect_changes`` — detect changes and mark files stale. Never touches
-  the embedder, so it works even when the embedding endpoint is down.
-* ``sync`` — the actual update: re-embed the files ``detect_changes`` flagged
-  and clean up files that disappeared. This is the only step that requires
-  the embedder.
-
-``detect_changes`` is the single source of truth for classification: it
-produces both the persistent ``files.status`` bits (consumed by per-chunk
-stale annotation) and the work buckets (consumed by ``sync`` and the
-library-wide dirty signal). ``sync`` never re-classifies — it only consumes
-the buckets it is handed.
-
-Individual file failures never abort the run: the file is marked stale (or
-reported for new files) and the rest of the workspace continues.
+Two explicit actions: ``detect_changes`` (classify and mark stale, never
+touches the embedder) and ``sync`` (re-embed the flagged files and prune
+removed ones; the only step that needs the embedder). ``sync`` consumes the
+buckets ``detect_changes`` computed and never re-classifies. Individual file
+failures never abort the run.
 """
 
 from __future__ import annotations
@@ -36,18 +25,11 @@ from lode.ingestion.split import SegmentSplitter
 class DetectResult:
     """Result of a detection-only pass over the workspace.
 
-    Counts are derived from the per-status path lists, so the summary line
-    and the ``pending`` listing always agree.
-
-    ``changed_files`` includes files whose stat matches the index but that
-    still carry a STALE marker from a previous failed run (residual stale):
-    they must be retried so a transient failure does not leave them stale
-    forever. They are not re-marked here — the marker is already set.
-
-    ``stale_paths`` is the side-effect list: the paths whose stat differs
-    from the index and therefore need their ``files.status`` flipped to
-    STALE. It is produced by ``classify`` and consumed by ``detect_changes``
-    (which applies the markers); it is not part of the work buckets.
+    Counts are derived from the per-status path lists, so the summary and the
+    ``pending`` listing always agree. ``changed_files`` includes residual stale
+    files (stat matches but a previous run failed) so ``sync`` retries them.
+    ``stale_paths`` is the side-effect list produced by ``classify`` and applied
+    by ``detect_changes``; it is not part of the work buckets.
     """
 
     unchanged_files: list[str] = field(default_factory=list[str])
@@ -153,23 +135,16 @@ def classify(
 ) -> DetectResult:
     """Classify the workspace against an index snapshot, with no side effects.
 
-    Pure classification: takes the indexed paths (a ``{path: FileRecord}``
-    snapshot) and the workspace root, and returns the ``DetectResult`` buckets
-    plus the ``stale_paths`` side-effect list. It never touches the store or
+    Pure disk-vs-index stat comparison over a ``{path: FileRecord}`` snapshot.
+    Returns the ``DetectResult`` buckets plus ``stale_paths`` (paths whose stat
+    differs and need their status flipped to STALE). Never touches the store or
     the embedder, so it works with an empty snapshot (no index yet) and with
     the embedding endpoint down.
 
-    Classification is a disk-vs-index stat comparison, with the persistent
-    status consulted to fold residual stale markers into ``changed``:
-
     * ``new`` — on disk but not indexed.
-    * ``changed`` — mtime/size differ from the index; the path is added to
-      ``stale_paths``. Also includes files whose stat matches but that still
-      carry a STALE marker from a previous failed run (residual stale) —
-      these are not re-marked, the marker is already set.
-    * ``unchanged`` — mtime/size match the index and the file is fresh.
-    * ``missing`` — indexed but gone from disk; not marked stale (there is no
-      snapshot to flag), ``sync`` deletes it.
+    * ``changed`` — stat differs (or residual stale marker); added to ``stale_paths``.
+    * ``unchanged`` — stat matches and the file is fresh.
+    * ``missing`` — indexed but gone from disk; ``sync`` deletes it.
     """
     discovered = discover(root, ignore_files)
     on_disk = {rel.as_posix() for rel in discovered}
@@ -207,15 +182,11 @@ def detect_changes(
     root: Path,
     ignore_files: Sequence[str] = (),
 ) -> DetectResult:
-    """Detect workspace changes against the index and mark changed files stale.
+    """Detect workspace changes and mark changed files stale.
 
-    Thin wrapper over ``classify``: it snapshots the index, classifies, then
-    applies the ``stale_paths`` side effects (flipping ``files.status`` to
-    STALE) so search can flag files whose index may be out of date. No content
-    is embedded or replaced here — that is ``sync``'s job.
-
-    With no index yet (an empty snapshot), ``classify`` yields every supported
-    file as ``new`` and no ``stale_paths``; this is the no-index survey path.
+    Thin wrapper over ``classify``: snapshots the index, classifies, then applies
+    the ``stale_paths`` side effects (flipping ``files.status`` to STALE). No
+    content is embedded or replaced here — that is ``sync``'s job.
     """
     indexed = {file.path: file for file in store.list_files()}
     result = classify(indexed, root, ignore_files)
@@ -235,18 +206,11 @@ def sync(
 ) -> SyncSummary:
     """Update the index to match the workspace, consuming a detection result.
 
-    This is the update half of PLAN D7: it never classifies. It only works
-    the buckets ``detect`` already computed — ``new_files`` (added),
-    ``changed_files`` (updated, including residual stale), and
-    ``missing_files`` (removed). It does not read ``unchanged_files``,
-    ``skipped``, or the derived counts; those are presentation concerns.
-
-    ``report`` (optional) is called as ``report(done, total, path)`` before
-    each file is processed — ``done`` is the count already finished, ``total``
-    the number of files to embed (new + changed), and ``path`` the file now
-    being handled. Removed files are pruned after embedding and do not count
-    toward ``total``. It lets the CLI surface progress without the pipeline
-    depending on a concrete UI library.
+    Never classifies: it only works the buckets ``detect`` computed —
+    ``new_files`` (added), ``changed_files`` (updated, including residual
+    stale), and ``missing_files`` (removed). ``report`` (optional) is called as
+    ``report(done, total, path)`` before each file is processed, letting the
+    CLI surface progress without depending on a concrete UI library.
     """
     summary = SyncSummary()
     summary.unchanged = len(detect.unchanged_files)
@@ -297,7 +261,7 @@ def sync(
                 summary.updated_files.append(rel_text)
         except Exception as exc:
             # The old snapshot stays queryable; the file is flagged so search
-            # can tell the user it may be out of date (PLAN D7).
+            # can tell the user it may be out of date.
             summary.failed.append(FailedFile(path=rel_text, error=str(exc)))
             store.mark_stale(rel_text)
 
