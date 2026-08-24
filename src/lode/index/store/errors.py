@@ -7,6 +7,8 @@ package; callers that catch it alongside store errors keep a single import.
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 from lode.embeddings.errors import EmbedderUnavailableError
 
 __all__ = [
@@ -21,12 +23,17 @@ __all__ = [
 class StoreError(Exception):
     """Base class for index store failures."""
 
+    # Stable machine-readable identifier for the CLI/MCP error envelope.
+    code: ClassVar[str] = "store_error"
+
 
 class SchemaVersionError(StoreError):
     """The existing database was created with an incompatible schema.
 
     The store refuses to open; an explicit rebuild is required.
     """
+
+    code: ClassVar[str] = "schema_version"
 
 
 class MissingEmbedderError(StoreError):
@@ -35,6 +42,8 @@ class MissingEmbedderError(StoreError):
     Opening an existing index never needs one; only fresh schema creation
     does, because it must ask the embedder for its vector dimension.
     """
+
+    code: ClassVar[str] = "missing_embedder"
 
 
 class DimensionMismatchError(StoreError):
@@ -45,6 +54,8 @@ class DimensionMismatchError(StoreError):
     written. Carries both widths so callers can present a friendly recovery
     message.
     """
+
+    code: ClassVar[str] = "dimension_mismatch"
 
     def __init__(self, stored_dimension: int, current_dimension: int, *, operation: str) -> None:
         super().__init__(f"{operation} vector has {current_dimension} dimensions; the index expects {stored_dimension}")

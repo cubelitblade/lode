@@ -16,7 +16,12 @@ import typer
 from rich.console import Console
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskID, TextColumn
 
-from lode.cli.render import Intent, RenderOptions, render_options_from_preset
+from lode.cli.commands._common import (
+    block,
+    dimension_mismatch_parts,
+    render_options,
+)
+from lode.cli.render import Intent, RenderOptions
 from lode.cli.render.config import (
     render_config_message,
     render_config_path,
@@ -29,9 +34,8 @@ from lode.cli.render.dig import render_dig
 from lode.cli.render.mine import render_mine
 from lode.cli.render.output import echo_json, json_err, json_ok, preview, render_message
 from lode.cli.render.prospect import render_prospect
-from lode.cli.render.survey import render_survey
+from lode.cli.render.survey import render_survey as render_survey  # re-exported for lode.cli.render_survey
 from lode.config import (
-    Settings,
     build_embedder,
     effective_config,
     get_nested,
@@ -70,47 +74,6 @@ app = typer.Typer(
 )
 
 
-def _block(
-    message: str,
-    *,
-    code: str,
-    as_json: bool,
-    command: str,
-    intent: Intent = Intent.ERROR,
-    hint: str | None = None,
-) -> None:
-    """Emit a blocking error (JSON or human) and exit non-zero.
-
-    Human output renders ``message`` with ``intent`` (default ``ERROR``) and an
-    optional ``hint`` with ``INFO``; JSON output joins the two into one envelope.
-    """
-    if as_json:
-        full = f"{message}\n{hint}" if hint else message
-        echo_json(json_err(command, full, code=code))
-    else:
-        render_message(message, intent=intent)
-        if hint:
-            render_message(hint, intent=Intent.INFO)
-    raise typer.Exit(code=1)
-
-
-def _dimension_mismatch_parts(stored_dimension: int, current_dimension: int) -> tuple[str, str]:
-    """Friendly dimension-mismatch message, split into the (error, hint) parts.
-
-    Human output renders the error with ``ERROR`` and the hint with ``INFO``;
-    JSON output joins the two with a newline.
-    """
-    error = (
-        f"The current lode was driven at {stored_dimension} dimensions, but this model "
-        f"yields {current_dimension}-wide nuggets — they don't sit on the same vein."
-    )
-    hint = (
-        "Re-mine it with `lode mine --from-scratch`, or switch your embedding config "
-        "back to the model/dimension that dug it."
-    )
-    return error, hint
-
-
 def _model_gate(
     store: Store,
     embedder: Embedder,
@@ -133,7 +96,7 @@ def _model_gate(
             f"(indexed: {store.stored_model_id!r}). "
             "Run `lode mine --from-scratch` to re-mine it, or switch back to that model."
         )
-        _block(message, code="model_mismatch", as_json=as_json, command=command)
+        block(message, code="model_mismatch", as_json=as_json, command=command)
 
     if from_scratch:
         return
@@ -145,8 +108,8 @@ def _model_gate(
         # block search, which can still serve cached data (PLAN D7).
         return
     if current_dimension != store.dimension:
-        error, hint = _dimension_mismatch_parts(store.dimension, current_dimension)
-        _block(error, code="dimension_mismatch", as_json=as_json, command=command, hint=hint)
+        error, hint = dimension_mismatch_parts(store.dimension, current_dimension)
+        block(error, code="dimension_mismatch", as_json=as_json, command=command, hint=hint)
 
 
 def _sync_with_progress(
@@ -185,30 +148,8 @@ def _sync_with_progress(
         return sync(store, workspace, embedder, splitter, detect=detect, report=report)
 
 
-def _render_options(settings: Settings) -> RenderOptions:
-    """Resolve the configured output palette to render options.
-
-    The command layer owns this resolution: it loads settings and hands the
-    render layer a ready-made ``RenderOptions``. The render layer never reads
-    config directly.
-
-    TODO(cli-split): fold this into the command-layer palette resolution that
-    will also take a future ``--palette`` flag (flag overrides config).
-    """
-    return render_options_from_preset(settings.output.palette)
-
-
 # Shared workspace argument shape; only the help string varies per command.
 # The default value (".") is set with `=` at the call site, not inside `Argument`.
-SurveyWorkspaceArg = Annotated[
-    Path,
-    typer.Argument(
-        exists=True,
-        file_okay=False,
-        dir_okay=True,
-        help="Workspace to inspect.",
-    ),
-]
 MineWorkspaceArg = Annotated[
     Path,
     typer.Argument(
@@ -244,56 +185,6 @@ ConfigArg = Annotated[
 ]
 
 
-@app.command("survey")
-@app.command("status", hidden=True)
-def survey(
-    workspace: SurveyWorkspaceArg = Path("."),
-    config: ConfigArg = None,
-    as_json: bool = typer.Option(False, "--json", help="Emit JSON output."),
-) -> None:
-    """Detect workspace changes and report stale files.
-
-    This command only compares files and does not require an embedding endpoint.
-    """
-    settings = load_settings(config)
-    embedder = build_embedder(settings.embedding)
-    options = _render_options(settings)
-    try:
-        store = Store(workspace / INDEX_DB_RELATIVE, embedder)
-    except SchemaVersionError as exc:
-        message = f"Index needs a re-mine: {exc}"
-        if as_json:
-            echo_json(json_err("survey", message, code="schema_version"))
-        else:
-            typer.echo(message)
-        raise typer.Exit(code=1) from exc
-    with store:
-        result = detect_changes(store, workspace, settings.ignore.sources)
-        if as_json:
-            echo_json(
-                json_ok(
-                    "survey",
-                    workspace=str(workspace),
-                    summary={
-                        "unchanged": result.unchanged,
-                        "new": result.new,
-                        "changed": result.changed,
-                        "missing": result.missing,
-                        "skipped": result.skipped,
-                        "pending": result.pending,
-                    },
-                    paths={
-                        "new": result.new_files,
-                        "changed": result.changed_files,
-                        "missing": result.missing_files,
-                        "unchanged": result.unchanged_files,
-                    },
-                )
-            )
-        else:
-            render_survey(workspace, result, options=options)
-
-
 @app.command("mine")
 @app.command("index", hidden=True)
 def mine(
@@ -313,7 +204,7 @@ def mine(
     """
     settings = load_settings(config)
     embedder = build_embedder(settings.embedding)
-    options = _render_options(settings)
+    options = render_options(settings)
     try:
         store = Store(workspace / INDEX_DB_RELATIVE, embedder)
     except SchemaVersionError as exc:
@@ -393,7 +284,7 @@ def prospect(
     """
     settings = load_settings(config)
     embedder = build_embedder(settings.embedding)
-    options = _render_options(settings)
+    options = render_options(settings)
     try:
         store = Store(workspace / INDEX_DB_RELATIVE, embedder)
     except SchemaVersionError as exc:
@@ -431,7 +322,7 @@ def prospect(
             # config dimension mirrors the stored value but the model actually
             # emits a different width): surface the friendly recovery message
             # instead of a raw sqlite traceback.
-            error, hint = _dimension_mismatch_parts(exc.stored_dimension, exc.current_dimension)
+            error, hint = dimension_mismatch_parts(exc.stored_dimension, exc.current_dimension)
             if as_json:
                 echo_json(json_err("prospect", f"{error}\n{hint}", code="dimension_mismatch"))
             else:
@@ -500,7 +391,7 @@ def dig(
         raise typer.Exit(code=1)
     settings = load_settings(config)
     embedder = build_embedder(settings.embedding)
-    options = _render_options(settings)
+    options = render_options(settings)
     try:
         store = Store(db_path, embedder)
     except SchemaVersionError as exc:
@@ -653,7 +544,7 @@ def _target_config_path(scope: str) -> Path:
 def _cfg_show() -> None:
     """Print the merged effective configuration as TOML."""
     settings = load_settings()
-    render_config_show(toml_dumps(effective_config(settings)), options=_render_options(settings))
+    render_config_show(toml_dumps(effective_config(settings)), options=render_options(settings))
 
 
 @config_app.callback(invoke_without_command=True)
@@ -684,7 +575,7 @@ def config_get(
     explicit value, failing if it is not set there.
     """
     settings = load_settings()
-    options = _render_options(settings)
+    options = render_options(settings)
     try:
         validate_key(key)
     except KeyError:
@@ -717,7 +608,7 @@ def config_set(
 ) -> None:
     """Set a config value, inferring its type from the config field."""
     settings = load_settings()
-    options = _render_options(settings)
+    options = render_options(settings)
     try:
         validate_key(key)
     except KeyError:
@@ -744,7 +635,7 @@ def config_unset(
 ) -> None:
     """Unset a config value from the target scope."""
     settings = load_settings()
-    options = _render_options(settings)
+    options = render_options(settings)
     try:
         validate_key(key)
     except KeyError:
@@ -763,10 +654,17 @@ def config_unset(
 @config_app.command("path")
 def config_path(scope: ConfigScope = "workspace") -> None:
     """Show the target config file path (does not create the file)."""
-    render_config_path(_target_config_path(scope), options=_render_options(load_settings()))
+    render_config_path(_target_config_path(scope), options=render_options(load_settings()))
 
 
 app.add_typer(config_app, name="config")
+
+# Register the command modules on the shared app. Imported at the bottom so
+# the module-level names above (build_embedder, render_*, ...) are bound
+# before the command modules resolve them through `lode.cli`.
+from lode.cli.commands import survey  # noqa: E402
+
+survey.register(app)
 
 
 if __name__ == "__main__":

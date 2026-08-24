@@ -106,6 +106,29 @@ def test_survey_reports_pending(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     assert "a.txt" in survey.output
 
 
+def test_survey_without_index_reports_all_new_and_creates_no_db(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Survey with no index classifies everything as new without creating a db.
+
+    It must not touch the embedder (no endpoint needed) and must not create
+    the index database — that is mine's job.
+    """
+    (tmp_path / "a.txt").write_text("hello world")
+    (tmp_path / "b.txt").write_text("second file")
+
+    result = runner.invoke(app, ["survey", "--json", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["success"] is True
+    assert payload["summary"]["new"] == 2
+    assert payload["summary"]["pending"] == 2
+    assert payload["summary"]["changed"] == 0
+    # No index database was created by a read-only survey.
+    assert not (tmp_path / ".lode" / "index.db").exists()
+
+
 def test_survey_uses_configured_palette(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The configured output.palette flows into the render options."""
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)

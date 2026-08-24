@@ -8,6 +8,8 @@ errors.
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 
 class EmbedderUnavailableError(Exception):
     """The embedder could not provide metadata or embeddings.
@@ -16,3 +18,6 @@ class EmbedderUnavailableError(Exception):
     an error after retries are exhausted. Carries the underlying cause via
     ``__cause__`` so callers can log or present it.
     """
+
+    # Stable machine-readable identifier for the CLI/MCP error envelope.
+    code: ClassVar[str] = "embedder_unavailable"
