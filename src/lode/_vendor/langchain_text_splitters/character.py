@@ -11,7 +11,8 @@ Pinned to upstream commit ``a2e53fda733c3ccc180b85fbbdb48893d770549f``
 
 Vendored apart from imports: ``typing_extensions.override`` became
 ``typing.override``, and the base classes come from the vendored
-``lode.ingestion.vendored.base`` instead of ``langchain_text_splitters.base``.
+``lode._vendor.langchain_text_splitters.base`` instead of
+``langchain_text_splitters.base``.
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ from __future__ import annotations
 import re
 from typing import Any, Literal, override
 
-from lode.ingestion.vendored.base import Language, TextSplitter
+from lode._vendor.langchain_text_splitters.base import Language, TextSplitter
 
 
 class CharacterTextSplitter(TextSplitter):

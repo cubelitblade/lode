@@ -8,9 +8,10 @@ Chunk identity (content addressing via `chunk_digest`) and provenance
 `RecursiveSegmentSplitter`, the single place that builds `Chunk`s.
 
 The recursive splitter delegates to a vendored copy of LangChain's
-``RecursiveCharacterTextSplitter`` (see ``lode.ingestion.vendored``).
-This module owns the lode contract on top of it: the piece contract,
-separator priority, and input validation.
+``RecursiveCharacterTextSplitter`` (see
+``lode._vendor.langchain_text_splitters``). This module owns the lode
+contract on top of it: the piece contract, separator priority, and input
+validation.
 """
 
 from __future__ import annotations
@@ -18,11 +19,11 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
-from lode.ingestion.digest import chunk_digest
-from lode.ingestion.extract import Segment
-from lode.ingestion.vendored import (
+from lode._vendor.langchain_text_splitters import (
     RecursiveCharacterTextSplitter as _RecursiveCharacterTextSplitter,
 )
+from lode.ingestion.digest import chunk_digest
+from lode.ingestion.extract import Segment
 
 # Separator priority for recursive splitting: paragraph breaks first, then
 # line breaks, then CJK sentence/pause marks, then word spaces, then

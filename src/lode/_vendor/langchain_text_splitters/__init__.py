@@ -9,8 +9,8 @@ See the ``base`` and ``character`` module docstrings for exact provenance
 MIT, Copyright (c) LangChain, Inc.
 """
 
-from lode.ingestion.vendored.base import Language, TextSplitter
-from lode.ingestion.vendored.character import (
+from lode._vendor.langchain_text_splitters.base import Language, TextSplitter
+from lode._vendor.langchain_text_splitters.character import (
     CharacterTextSplitter,
     RecursiveCharacterTextSplitter,
 )
