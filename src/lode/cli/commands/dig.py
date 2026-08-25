@@ -59,7 +59,7 @@ def dig(
     """Fetch a chunk's full text by its digest (content address)."""
     settings = load_settings(config)
     options = render_options(settings, palette, no_color)
-    store = open_store(workspace, None, command="dig", as_json=as_json)
+    store = open_store(workspace, None, command="dig", as_json=as_json, tokenizer=settings.lexical.strategy)
     if store is None:
         message = f"Dry hole: no index at {workspace / '.lode' / 'index.db'}; run `lode mine` first."
         if as_json:

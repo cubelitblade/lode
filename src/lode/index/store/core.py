@@ -19,6 +19,7 @@ from lode.index.store.errors import (
     MissingEmbedderError,
     SchemaVersionError,
     StoreError,
+    TokenizerMismatchError,
 )
 from lode.index.store.records import (
     ChunkWithPath,
@@ -32,6 +33,7 @@ from lode.index.store.records import (
 )
 from lode.index.store.schema import SCHEMA_VERSION, create_schema, drop_all
 from lode.ingestion import Chunk
+from lode.lexical import HELPER_SQL, STRATEGIES
 
 BUSY_TIMEOUT_MS = 5000
 
@@ -64,19 +66,36 @@ class Store:
     embedder unless its model status is queried.
     """
 
-    def __init__(self, db_path: Path, embedder: Embedder | None = None) -> None:
+    def __init__(
+        self,
+        db_path: Path,
+        embedder: Embedder | None = None,
+        tokenizer: str = "unicode61",
+        *,
+        allow_tokenizer_mismatch: bool = False,
+    ) -> None:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._db_path = db_path
         self._embedder = embedder
+        try:
+            self._strategy = STRATEGIES[tokenizer]
+        except KeyError as exc:
+            raise ValueError(f"unknown tokenizer {tokenizer!r}; choose from {', '.join(STRATEGIES)}") from exc
+        self._allow_tokenizer_mismatch = allow_tokenizer_mismatch
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._lock = threading.RLock()
         self._stored_model_id: str | None = None
         self._stored_dimension: int | None = None
+        self._stored_tokenizer: str | None = None
         self._model_status = ModelStatus.UNKNOWN
         self._model_checked = False
 
         try:
             self._configure_connection()
+            # Native tokenizers (e.g. ``simple``) must be loaded before both
+            # table creation and querying an existing table, so setup runs on
+            # every open, not just at build time.
+            self._strategy.setup(self._conn)
             if not self._has_table("meta"):
                 self._initialize()
             else:
@@ -121,12 +140,14 @@ class Store:
                 f"cannot create index: could not determine embedding metadata: {exc}"
             ) from exc
         with self._conn:
-            create_schema(self._conn, dimension)
+            create_schema(self._conn, dimension, self._strategy.tokenize_clause)
             self._set_meta("schema_version", str(SCHEMA_VERSION))
             self._set_meta("model_id", model_id)
             self._set_meta("dimension", str(dimension))
+            self._set_meta("tokenizer", self._strategy.tokenize_clause)
         self._stored_model_id = model_id
         self._stored_dimension = dimension
+        self._stored_tokenizer = self._strategy.tokenize_clause
         self._model_status = ModelStatus.MATCH
         self._model_checked = True
 
@@ -147,6 +168,12 @@ class Store:
             raise SchemaVersionError("database is missing dimension metadata; run an explicit rebuild")
         self._stored_dimension = int(dimension)
         self._stored_model_id = self._meta_get("model_id")
+        # Older databases predate the tokenizer key; default to the historical
+        # behaviour (unicode61) so they keep opening without a rebuild.
+        stored_tokenizer = self._meta_get("tokenizer") or "unicode61"
+        self._stored_tokenizer = stored_tokenizer
+        if stored_tokenizer != self._strategy.tokenize_clause and not self._allow_tokenizer_mismatch:
+            raise TokenizerMismatchError(stored_tokenizer, self._strategy.tokenize_clause)
 
     def _detect_model(self) -> None:
         """Compare the stored model with the current embedder, fault-tolerantly.
@@ -183,6 +210,11 @@ class Store:
         if self._stored_dimension is None:
             raise StoreError("store has no dimension; was it initialized?")
         return self._stored_dimension
+
+    @property
+    def tokenizer(self) -> str | None:
+        """Tokenizer recorded in `meta` at (re)build time."""
+        return self._stored_tokenizer
 
     @property
     def stored_model_id(self) -> str | None:
@@ -294,16 +326,33 @@ class Store:
         return [DenseMatch(int(row[0]), float(row[1])) for row in rows]
 
     def sparse_search(self, query: str, k: int) -> list[SparseMatch]:
-        """k best FTS5 matches for ``query``, best (closest-to-zero BM25) first."""
+        """k best FTS5 matches for ``query``, best (closest-to-zero BM25) first.
+
+        The MATCH expression is built by the configured lexical strategy: a
+        native helper (``simple_query`` / ``jieba_query``) receives the raw
+        query as a bound parameter, otherwise the strategy's ``query`` builds
+        the expression from the text.
+        """
         if k <= 0:
             return []
         with self._lock:
-            rows = self._conn.execute(
-                "SELECT rowid, bm25(chunks_fts) FROM chunks_fts "
-                "WHERE chunks_fts MATCH ? "
-                "ORDER BY bm25(chunks_fts) DESC LIMIT ?",
-                (query, k),
-            ).fetchall()
+            if self._strategy.uses_helper:
+                sql = (
+                    f"SELECT rowid, bm25(chunks_fts) FROM chunks_fts "
+                    f"WHERE chunks_fts MATCH {HELPER_SQL[self._strategy.name]} "
+                    "ORDER BY bm25(chunks_fts) DESC LIMIT ?"
+                )
+                rows = self._conn.execute(sql, (query, k)).fetchall()
+            else:
+                match_arg = self._strategy.query(query)
+                if not match_arg:
+                    return []
+                rows = self._conn.execute(
+                    "SELECT rowid, bm25(chunks_fts) FROM chunks_fts "
+                    "WHERE chunks_fts MATCH ? "
+                    "ORDER BY bm25(chunks_fts) DESC LIMIT ?",
+                    (match_arg, k),
+                ).fetchall()
         return [SparseMatch(int(row[0]), float(row[1])) for row in rows]
 
     def get_chunks(self, rowids: list[int]) -> dict[int, ChunkWithPath]:
@@ -427,12 +476,14 @@ class Store:
             self._conn.execute(_VACUUM_INTO.format(quoted))
             with self._conn:
                 drop_all(self._conn)
-                create_schema(self._conn, dimension)
+                create_schema(self._conn, dimension, self._strategy.tokenize_clause)
                 self._set_meta("schema_version", str(SCHEMA_VERSION))
                 self._set_meta("model_id", model_id)
                 self._set_meta("dimension", str(dimension))
+                self._set_meta("tokenizer", self._strategy.tokenize_clause)
             self._stored_model_id = model_id
             self._stored_dimension = dimension
+            self._stored_tokenizer = self._strategy.tokenize_clause
             self._model_status = ModelStatus.MATCH
             self._model_checked = True
 

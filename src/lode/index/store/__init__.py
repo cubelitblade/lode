@@ -16,6 +16,7 @@ from lode.index.store.errors import (
     MissingEmbedderError,
     SchemaVersionError,
     StoreError,
+    TokenizerMismatchError,
 )
 from lode.index.store.records import (
     ChunkWithPath,
@@ -44,4 +45,5 @@ __all__ = [
     "SparseMatch",
     "Store",
     "StoreError",
+    "TokenizerMismatchError",
 ]

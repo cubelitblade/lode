@@ -53,7 +53,7 @@ def assay(
     settings = load_settings(config)
     embedder = _cli.build_embedder(settings.embedding)
     options = render_options(settings, palette, no_color)
-    store = open_store(workspace, embedder, command="assay", as_json=as_json)
+    store = open_store(workspace, embedder, command="assay", as_json=as_json, tokenizer=settings.lexical.strategy)
     if store is None:
         message = f"Dry hole: no index at {workspace / '.lode' / 'index.db'}; run `lode mine` first."
         if as_json:

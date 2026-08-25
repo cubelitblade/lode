@@ -28,6 +28,7 @@ from lode.index import (
     SchemaVersionError,
     Store,
     StoreError,
+    TokenizerMismatchError,
 )
 from lode.ingestion.pipeline import DetectResult, SyncSummary, sync
 from lode.ingestion.split import SegmentSplitter
@@ -90,6 +91,18 @@ def dimension_mismatch_parts(stored_dimension: int, current_dimension: int) -> t
     return error, hint
 
 
+def tokenizer_mismatch_parts(stored_tokenizer: str, current_tokenizer: str) -> tuple[str, str]:
+    """Friendly tokenizer-mismatch message, split into (error, hint) parts."""
+    error = (
+        f"This index was dug with the {stored_tokenizer} tokenizer, but {current_tokenizer} "
+        "is configured — they don't sit on the same vein."
+    )
+    hint = (
+        "Re-mine it with `lode mine --from-scratch`, or switch your lexical config back to the tokenizer that dug it."
+    )
+    return error, hint
+
+
 def store_failure(exc: Exception, *, command: str, as_json: bool) -> None:
     """Emit a store/embedder failure through the shared blocking exit.
 
@@ -104,6 +117,10 @@ def store_failure(exc: Exception, *, command: str, as_json: bool) -> None:
     if isinstance(exc, SchemaVersionError):
         block(f"Index needs a re-mine: {exc}", code="schema_version", as_json=as_json, command=command)
         return
+    if isinstance(exc, TokenizerMismatchError):
+        error, hint = tokenizer_mismatch_parts(exc.stored_tokenizer, exc.current_tokenizer)
+        block(error, code="tokenizer_mismatch", as_json=as_json, command=command, hint=hint)
+        return
     block(str(exc), code=getattr(exc, "code", "store_error"), as_json=as_json, command=command)
 
 
@@ -113,18 +130,21 @@ def open_store(
     *,
     command: str,
     as_json: bool,
+    tokenizer: str = "unicode61",
+    from_scratch: bool = False,
 ) -> Store | None:
     """Open the workspace index, or return ``None`` if it does not exist yet.
 
     Only opens an existing database — creating one is ``mine``'s job. A missing
     index returns ``None`` so the caller can short-circuit. Schema and embedder
-    failures are emitted through the shared error exit.
+    failures are emitted through the shared error exit. ``from_scratch``
+    tolerates a tokenizer mismatch (the caller is about to rebuild anyway).
     """
     db_path = workspace / INDEX_DB_RELATIVE
     if not db_path.exists():
         return None
     try:
-        return Store(db_path, embedder)
+        return Store(db_path, embedder, tokenizer=tokenizer, allow_tokenizer_mismatch=from_scratch)
     except (StoreError, EmbedderUnavailableError) as exc:
         store_failure(exc, command=command, as_json=as_json)
         raise typer.Exit(code=1) from exc

@@ -8,7 +8,6 @@ similarities (L2-normalized, so cosine == dot); lexical scores are BM25.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,11 +19,6 @@ from lode.index.store import ChunkWithPath, FileStatus, PathRef, Store
 # Retrieve a larger candidate pool than top_k from each source so the fused
 # ranking can still reach the best combined result.
 CANDIDATE_MULTIPLIER = 4
-
-# Word-ish tokens for the FTS5 query. Each token is quoted so punctuation in
-# user queries cannot break the MATCH syntax. CJK runs match as whole tokens
-# with the default unicode61 tokenizer; dense retrieval carries that slack.
-_FTS_TOKEN = re.compile(r"\w+")
 
 
 @dataclass(frozen=True, slots=True)
@@ -298,10 +292,7 @@ def _semantic_scores(store: Store, embedder: Embedder, query: str, k: int) -> di
 
 
 def _lexical_scores(store: Store, query: str, k: int) -> dict[int, float]:
-    fts_query = _fts_query(query)
-    if not fts_query:
-        return {}
-    return {match.rowid: match.score for match in store.sparse_search(fts_query, k)}
+    return {match.rowid: match.score for match in store.sparse_search(query, k)}
 
 
 def _cosine(distance: float) -> float:
@@ -310,8 +301,3 @@ def _cosine(distance: float) -> float:
     For normalized vectors, d^2 = 2 - 2*cos, so cos = 1 - d^2/2.
     """
     return 1.0 - (distance * distance) / 2.0
-
-
-def _fts_query(text: str) -> str:
-    tokens = _FTS_TOKEN.findall(text)
-    return " OR ".join(f'"{token}"' for token in tokens)

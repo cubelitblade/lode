@@ -25,6 +25,7 @@ from lode.index import (
     ModelStatus,
     SchemaVersionError,
     Store,
+    TokenizerMismatchError,
 )
 from lode.ingestion import Chunk, chunk_digest
 
@@ -100,6 +101,66 @@ def test_initialize_records_model_and_dimension(db_path: Path) -> None:
         assert store.dimension == 7
         assert store.stored_model_id == "m1"
         assert store.model_status is ModelStatus.MATCH
+
+
+def test_initialize_records_tokenizer(db_path: Path) -> None:
+    with Store(db_path, FakeEmbedder(), tokenizer="trigram") as store:
+        assert store.tokenizer == "trigram"
+
+    conn = open_db(db_path)
+    row = conn.execute("SELECT value FROM meta WHERE key = 'tokenizer'").fetchone()
+    conn.close()
+    assert row is not None
+    assert row[0] == "trigram"
+
+
+def test_unknown_tokenizer_raises(db_path: Path) -> None:
+    with pytest.raises(ValueError, match="unknown tokenizer"):
+        Store(db_path, FakeEmbedder(), tokenizer="bogus")
+
+
+def test_tokenizer_mismatch_refuses_to_open(db_path: Path) -> None:
+    with Store(db_path, FakeEmbedder(), tokenizer="trigram"):
+        pass
+
+    with pytest.raises(TokenizerMismatchError) as excinfo:
+        Store(db_path, FakeEmbedder(), tokenizer="unicode61")
+    assert excinfo.value.stored_tokenizer == "trigram"
+    assert excinfo.value.current_tokenizer == "unicode61"
+
+
+def test_tokenizer_mismatch_allowed_for_rebuild(db_path: Path) -> None:
+    with Store(db_path, FakeEmbedder(), tokenizer="trigram"):
+        pass
+
+    # A from-scratch rebuild tolerates the mismatch so it can re-create the
+    # index with the newly configured tokenizer.
+    with Store(db_path, FakeEmbedder(), tokenizer="unicode61", allow_tokenizer_mismatch=True) as store:
+        assert store.tokenizer == "trigram"
+        store.rebuild()
+        assert store.tokenizer == "unicode61"
+
+
+def test_same_tokenizer_reopens(db_path: Path) -> None:
+    with Store(db_path, FakeEmbedder(), tokenizer="trigram"):
+        pass
+
+    with Store(db_path, FakeEmbedder(), tokenizer="trigram") as store:
+        assert store.tokenizer == "trigram"
+
+
+def test_legacy_db_without_tokenizer_defaults_to_unicode61(db_path: Path) -> None:
+    with Store(db_path, FakeEmbedder()):
+        pass
+
+    # Simulate a database written before the tokenizer key existed.
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("DELETE FROM meta WHERE key = 'tokenizer'")
+    conn.commit()
+    conn.close()
+
+    with Store(db_path, FakeEmbedder()) as store:
+        assert store.tokenizer == "unicode61"
 
 
 def test_reopen_uses_stored_dimension_without_touching_embedder(db_path: Path) -> None:
@@ -188,6 +249,16 @@ def test_replace_file_with_no_chunks_keeps_file_record(db_path: Path) -> None:
     with Store(db_path, FakeEmbedder()) as store:
         store.replace_file(file_record(), [], [])
         assert store.get_file("a.txt") is not None
+
+
+def test_trigram_tokenizer_queries_by_3grams(db_path: Path) -> None:
+    with Store(db_path, FakeEmbedder(), tokenizer="trigram") as store:
+        store.replace_file(file_record(), *make_chunks(["hello world"]))
+
+    # A 3-gram present in the text matches; one absent from it does not.
+    with Store(db_path, FakeEmbedder(), tokenizer="trigram") as store:
+        assert [m.rowid for m in store.sparse_search("hel", 10)] == [1]
+        assert store.sparse_search("xyz", 10) == []
 
 
 def test_replace_file_replaces_atomically(db_path: Path) -> None:
@@ -342,6 +413,21 @@ def test_rebuild_snapshots_then_resets(db_path: Path) -> None:
     conn = sqlite3.connect(str(backup))
     assert count(conn, "SELECT count(*) FROM files") == 1
     conn.close()
+
+
+def test_rebuild_records_tokenizer(db_path: Path) -> None:
+    with Store(db_path, FakeEmbedder(), tokenizer="trigram") as store:
+        store.replace_file(file_record(), *make_chunks(["hello world"]))
+
+    with Store(db_path, FakeEmbedder(), tokenizer="trigram") as store:
+        store.rebuild()
+        assert store.tokenizer == "trigram"
+
+    conn = open_db(db_path)
+    row = conn.execute("SELECT value FROM meta WHERE key = 'tokenizer'").fetchone()
+    conn.close()
+    assert row is not None
+    assert row[0] == "trigram"
 
 
 def test_rebuild_with_unreachable_embedder_changes_nothing(db_path: Path) -> None:

@@ -67,7 +67,14 @@ def mine(
     settings = load_settings(config)
     embedder = _cli.build_embedder(settings.embedding)
     options = render_options(settings, palette, no_color)
-    store = open_store(workspace, embedder, command="mine", as_json=as_json)
+    store = open_store(
+        workspace,
+        embedder,
+        command="mine",
+        as_json=as_json,
+        tokenizer=settings.lexical.strategy,
+        from_scratch=from_scratch,
+    )
     if store is None:
         # No index yet: classify against an empty snapshot. If there is
         # nothing to embed, report Nothing to do. without creating a database
@@ -80,7 +87,7 @@ def mine(
             _emit_mine(workspace, result, from_scratch, as_json, options)
             return
         try:
-            store = Store(workspace / INDEX_DB_RELATIVE, embedder)
+            store = Store(workspace / INDEX_DB_RELATIVE, embedder, tokenizer=settings.lexical.strategy)
         except (StoreError, EmbedderUnavailableError) as exc:
             store_failure(exc, command="mine", as_json=as_json)
             raise typer.Exit(code=1) from exc

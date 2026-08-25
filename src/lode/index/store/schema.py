@@ -40,7 +40,7 @@ END
 """
 
 
-def create_schema(conn: sqlite3.Connection, dimension: int) -> None:
+def create_schema(conn: sqlite3.Connection, dimension: int, tokenize_clause: str = "unicode61") -> None:
     """Create every table, virtual table, index, and trigger on a fresh database."""
     if dimension <= 0:
         raise ValueError(f"dimension must be positive, got {dimension}")
@@ -96,9 +96,10 @@ def create_schema(conn: sqlite3.Connection, dimension: int) -> None:
         """
     )
     conn.execute(
-        """
+        f"""
         CREATE VIRTUAL TABLE chunks_fts USING fts5(
             text,
+            tokenize='{tokenize_clause}',
             content='chunks',
             content_rowid='id'
         )

@@ -69,6 +69,9 @@ DEFAULT_RRF_K = 60
 DEFAULT_CHUNK_SIZE = 1024
 DEFAULT_CHUNK_OVERLAP = 128
 
+# Default lexical tokenizer; kept as the historical behaviour.
+DEFAULT_TOKENIZER = "unicode61"
+
 
 class EmbeddingApiConfig(BaseModel):
     """Transport settings for the embedding HTTP backend."""
@@ -151,6 +154,19 @@ class ChunkingConfig(BaseModel):
     overlap: int = DEFAULT_CHUNK_OVERLAP
 
 
+class LexicalConfig(BaseModel):
+    """Settings for the FTS5 tokenizer.
+
+    ``strategy`` selects the lexical strategy: ``unicode61`` (SQLite default),
+    ``trigram`` (CJK-friendly 3-grams), or the native ``simple`` / ``jieba``
+    (when the shared library is available). ``simple`` and ``jieba`` share the
+    same index tokenizer, so switching between them does not require a re-mine;
+    any other change does.
+    """
+
+    strategy: Literal["unicode61", "trigram", "simple", "jieba"] = DEFAULT_TOKENIZER
+
+
 class IgnoreConfig(BaseModel):
     """Settings for file-discovery ignore rules.
 
@@ -215,6 +231,7 @@ class Settings(BaseSettings):
     output: OutputConfig = OutputConfig()
     norm: NormConfig = NormConfig()
     fusion: FusionConfig = FusionConfig()
+    lexical: LexicalConfig = LexicalConfig()
 
     @classmethod
     def settings_customise_sources(
@@ -335,7 +352,7 @@ def unset_nested(data: dict[str, Any], key: str) -> bool:
 
 # Sections a user may read/write via `lode config`; excludes internal fields
 # such as `config_files`.
-CONFIG_SECTIONS = ("embedding", "retrieval", "chunking", "ignore", "output", "norm", "fusion")
+CONFIG_SECTIONS = ("embedding", "retrieval", "chunking", "ignore", "output", "norm", "fusion", "lexical")
 
 # Boolean tokens accepted by `lode config set <key> <bool-value>`.
 _BOOL_TRUE = frozenset({"true", "1", "yes", "y", "on"})

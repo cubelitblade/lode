@@ -17,6 +17,7 @@ __all__ = [
     "MissingEmbedderError",
     "SchemaVersionError",
     "StoreError",
+    "TokenizerMismatchError",
 ]
 
 
@@ -34,6 +35,25 @@ class SchemaVersionError(StoreError):
     """
 
     code: ClassVar[str] = "schema_version"
+
+
+class TokenizerMismatchError(StoreError):
+    """The configured tokenizer differs from the one the index was built with.
+
+    The FTS5 table's ``tokenize=`` clause is fixed at build time, so a
+    different tokenizer cannot be served from the existing index; an explicit
+    rebuild is required. Carries both names so callers can present a friendly
+    recovery message.
+    """
+
+    code: ClassVar[str] = "tokenizer_mismatch"
+
+    def __init__(self, stored_tokenizer: str, current_tokenizer: str) -> None:
+        super().__init__(
+            f"index was built with tokenizer {stored_tokenizer!r}, but {current_tokenizer!r} is configured"
+        )
+        self.stored_tokenizer = stored_tokenizer
+        self.current_tokenizer = current_tokenizer
 
 
 class MissingEmbedderError(StoreError):

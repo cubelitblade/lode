@@ -19,6 +19,7 @@ from lode.index.store import (
     SchemaVersionError,
     Store,
     StoreError,
+    TokenizerMismatchError,
 )
 
 __all__ = [
@@ -38,4 +39,5 @@ __all__ = [
     "SoftmaxNorm",
     "Store",
     "StoreError",
+    "TokenizerMismatchError",
 ]

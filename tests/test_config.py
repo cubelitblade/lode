@@ -41,6 +41,7 @@ def test_defaults_without_file_or_env(tmp_path: Path, monkeypatch: pytest.Monkey
     assert settings.chunking == config.ChunkingConfig()
     assert settings.ignore == config.IgnoreConfig()
     assert settings.output == config.OutputConfig()
+    assert settings.lexical == config.LexicalConfig()
 
 
 def test_default_path_reads_partial_section(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -311,6 +312,32 @@ def test_norm_fusion_invalid_type_raises(tmp_path: Path, monkeypatch: pytest.Mon
         config.load_settings()
 
 
+def test_lexical_defaults() -> None:
+    settings = config.Settings()
+    assert settings.lexical.strategy == config.DEFAULT_TOKENIZER
+
+
+def test_lexical_from_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    _write_toml(tmp_path / ".lode" / "config.toml", '[lexical]\nstrategy = "trigram"\n')
+    settings = config.load_settings()
+    assert settings.lexical.strategy == "trigram"
+
+
+def test_lexical_from_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("LODE_LEXICAL__STRATEGY", "jieba")
+    settings = config.load_settings()
+    assert settings.lexical.strategy == "jieba"
+
+
+def test_lexical_invalid_type_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    _write_toml(tmp_path / ".lode" / "config.toml", '[lexical]\nstrategy = "bogus"\n')
+    with pytest.raises(ValidationError):
+        config.load_settings()
+
+
 def test_build_plan_linear_minmax() -> None:
     plan = config.build_plan(config.NormConfig(), config.FusionConfig())
     assert isinstance(plan.norm, MinmaxNorm)
@@ -347,11 +374,12 @@ def test_validate_key_accepts_leaf_keys() -> None:
     config.validate_key("fusion.type")
     config.validate_key("fusion.linear.semantic_factor")
     config.validate_key("fusion.rrf.k")
+    config.validate_key("lexical.strategy")
 
 
 def test_validate_key_rejects_sections_and_unknown() -> None:
     # Whole sections are not settable leaves.
-    for key in ("embedding", "embedding.api", "retrieval", "chunking", "ignore", "norm", "fusion"):
+    for key in ("embedding", "embedding.api", "retrieval", "chunking", "ignore", "norm", "fusion", "lexical"):
         with pytest.raises(KeyError):
             config.validate_key(key)
     # Unknown/invalid keys.
@@ -373,6 +401,7 @@ def test_parse_value_types() -> None:
     assert config.parse_value("fusion.type", "rrf") == "rrf"
     assert config.parse_value("fusion.linear.semantic_factor", "0.5") == 0.5
     assert config.parse_value("fusion.rrf.k", "100") == 100
+    assert config.parse_value("lexical.strategy", "trigram") == "trigram"
 
 
 def test_parse_value_rejects_bad_types() -> None:

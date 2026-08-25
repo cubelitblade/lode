@@ -111,6 +111,19 @@ overlap = 128
 # `.lodeignore` is always supported and does not need to be listed here.
 sources = [".gitignore"]
 
+
+[lexical]
+
+# FTS5 tokenizer used for keyword/full-text matching.
+# Options:
+# - `unicode61`: SQLite default (word-ish tokens). Default.
+# - `trigram`: 3-grams, better for CJK substring matching.
+# - `simple`: native extension (Han characters + pinyin).
+# - `jieba`: word-level matching on the `simple` index.
+# `simple` and `jieba` share the same index tokenizer, so switching between
+# them does not require a re-mine; any other change does.
+strategy = "unicode61"
+
 [output]
 
 # Color palette used for terminal output.

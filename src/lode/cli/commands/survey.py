@@ -44,7 +44,7 @@ def survey(
     """
     settings = load_settings(config)
     options = render_options(settings, palette, no_color)
-    store = open_store(workspace, None, command="survey", as_json=as_json)
+    store = open_store(workspace, None, command="survey", as_json=as_json, tokenizer=settings.lexical.strategy)
     if store is None:
         # No index yet: classify against an empty snapshot (all new),
         # without creating a database or touching the embedder.
