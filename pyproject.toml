@@ -31,7 +31,12 @@ packages = ["src/lode"]
 
 [dependency-groups]
 dev = ["pyright>=1.1.411", "pytest>=9.1.1", "ruff>=0.16.3"]
-bench = ["datasets>=3.0.0", "huggingface_hub>=0.30.0", "pyarrow>=18.0.0", "pandas>=2.2.0"]
+bench = [
+    "datasets>=3.0.0",
+    "huggingface_hub>=0.30.0",
+    "pyarrow>=18.0.0",
+    "pandas>=2.2.0",
+]
 
 [tool.ruff]
 target-version = "py313"
