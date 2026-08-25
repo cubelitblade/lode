@@ -25,7 +25,7 @@ from lode.cli.commands._common import (
 )
 from lode.cli.render import Intent
 from lode.cli.render.output import echo_json, json_err, json_ok, preview, render_message
-from lode.config import load_settings
+from lode.config import build_plan, load_settings
 from lode.index import DimensionMismatchError
 from lode.index.search import ProspectResult, search
 from lode.ingestion.pipeline import detect_changes
@@ -74,8 +74,7 @@ def prospect(
                 store,
                 embedder,
                 query,
-                semantic_weight=settings.retrieval.semantic_factor,
-                lexical_weight=settings.retrieval.lexical_factor,
+                plan=build_plan(settings.norm, settings.fusion),
                 top_k=top_k,
             )
         except ValueError as exc:

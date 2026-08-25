@@ -15,6 +15,7 @@ from pydantic import ValidationError
 
 from lode import config
 from lode.embeddings.openai_compat import OpenAICompatibleEmbedder
+from lode.index.ranking import LinearFusion, MinmaxNorm, RrfFusion, SoftmaxNorm
 
 
 @pytest.fixture(autouse=True)
@@ -250,7 +251,7 @@ def test_env_without_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setenv("LODE_RETRIEVAL__TOP_K", "25")
     settings = config.load_settings()
     assert settings.retrieval.top_k == 25
-    assert settings.retrieval.semantic_factor == config.DEFAULT_SEMANTIC_FACTOR
+    assert settings.fusion.linear.semantic_factor == config.DEFAULT_SEMANTIC_FACTOR
 
 
 def test_explicit_kwargs_win_over_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -268,20 +269,89 @@ def test_build_embedder_from_settings() -> None:
     assert embedder.base_url == "http://localhost:9999"
 
 
+def test_norm_fusion_defaults() -> None:
+    settings = config.Settings()
+    assert settings.norm.type == "minmax"
+    assert settings.norm.softmax.temperature == config.DEFAULT_SOFTMAX_TEMPERATURE
+    assert settings.fusion.type == "linear"
+    assert settings.fusion.linear.semantic_factor == config.DEFAULT_SEMANTIC_FACTOR
+    assert settings.fusion.linear.lexical_factor == config.DEFAULT_LEXICAL_FACTOR
+    assert settings.fusion.rrf.k == config.DEFAULT_RRF_K
+
+
+def test_norm_fusion_from_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    _write_toml(
+        tmp_path / ".lode" / "config.toml",
+        """
+[norm]
+type = "softmax"
+
+[norm.softmax]
+temperature = 2.0
+
+[fusion]
+type = "rrf"
+
+[fusion.rrf]
+k = 100
+""",
+    )
+    settings = config.load_settings()
+    assert settings.norm.type == "softmax"
+    assert settings.norm.softmax.temperature == 2.0
+    assert settings.fusion.type == "rrf"
+    assert settings.fusion.rrf.k == 100
+
+
+def test_norm_fusion_invalid_type_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    _write_toml(tmp_path / ".lode" / "config.toml", '[norm]\ntype = "bogus"\n')
+    with pytest.raises(ValidationError):
+        config.load_settings()
+
+
+def test_build_plan_linear_minmax() -> None:
+    plan = config.build_plan(config.NormConfig(), config.FusionConfig())
+    assert isinstance(plan.norm, MinmaxNorm)
+    assert isinstance(plan.fusion, LinearFusion)
+    assert plan.fusion.weights == {"semantic": 0.7, "lexical": 0.3}
+
+
+def test_build_plan_softmax() -> None:
+    norm = config.NormConfig(type="softmax", softmax=config.SoftmaxNormConfig(temperature=2.0))
+    plan = config.build_plan(norm, config.FusionConfig())
+    assert isinstance(plan.norm, SoftmaxNorm)
+    assert plan.norm.temperature == 2.0
+
+
+def test_build_plan_rrf_skips_norm() -> None:
+    fusion = config.FusionConfig(type="rrf", rrf=config.RrfFusionConfig(k=100))
+    plan = config.build_plan(config.NormConfig(), fusion)
+    assert plan.norm is None
+    assert isinstance(plan.fusion, RrfFusion)
+    assert plan.fusion.k == 100
+
+
 # -- helpers for the `lode config` CLI -----------------------------------------
 
 
 def test_validate_key_accepts_leaf_keys() -> None:
     config.validate_key("embedding.model")
     config.validate_key("embedding.api.endpoint")
-    config.validate_key("retrieval.semantic_factor")
+    config.validate_key("retrieval.top_k")
     config.validate_key("chunking.size")
     config.validate_key("ignore.sources")
+    config.validate_key("norm.type")
+    config.validate_key("norm.softmax.temperature")
+    config.validate_key("fusion.type")
+    config.validate_key("fusion.linear.semantic_factor")
+    config.validate_key("fusion.rrf.k")
 
 
 def test_validate_key_rejects_sections_and_unknown() -> None:
     # Whole sections are not settable leaves.
-    for key in ("embedding", "embedding.api", "retrieval", "chunking", "ignore"):
+    for key in ("embedding", "embedding.api", "retrieval", "chunking", "ignore", "norm", "fusion"):
         with pytest.raises(KeyError):
             config.validate_key(key)
     # Unknown/invalid keys.
@@ -298,6 +368,11 @@ def test_parse_value_types() -> None:
     assert config.parse_value("embedding.l2_normalize", "1") is True
     assert config.parse_value("ignore.sources", ".gitignore, docs") == [".gitignore", "docs"]
     assert config.parse_value("ignore.sources", '["a", "b"]') == ["a", "b"]
+    assert config.parse_value("norm.type", "softmax") == "softmax"
+    assert config.parse_value("norm.softmax.temperature", "2.0") == 2.0
+    assert config.parse_value("fusion.type", "rrf") == "rrf"
+    assert config.parse_value("fusion.linear.semantic_factor", "0.5") == 0.5
+    assert config.parse_value("fusion.rrf.k", "100") == 100
 
 
 def test_parse_value_rejects_bad_types() -> None:

@@ -13,10 +13,19 @@ from pathlib import Path
 
 import pytest
 
+from lode.index.ranking import LinearFusion, MinmaxNorm, RetrievalPlan, RrfFusion
 from lode.index.search import explain, search
 from lode.index.store import Store
 from lode.ingestion import chunk_digest
 from tests.fakes import FakeEmbedder, file_record, make_chunks
+
+
+def _linear_plan(semantic: float, lexical: float) -> RetrievalPlan:
+    """A min-max + linear plan with the given weights (the default shape)."""
+    return RetrievalPlan(
+        norm=MinmaxNorm(),
+        fusion=LinearFusion(weights={"semantic": semantic, "lexical": lexical}),
+    )
 
 
 @pytest.fixture
@@ -32,8 +41,7 @@ def test_search_returns_hits_with_provenance(seeded_store: Store) -> None:
         seeded_store,
         FakeEmbedder(),
         "fox",
-        semantic_weight=0.6,
-        lexical_weight=0.4,
+        plan=_linear_plan(0.6, 0.4),
         top_k=5,
     )
 
@@ -54,8 +62,7 @@ def test_search_exposes_page_metadata(seeded_store: Store) -> None:
         seeded_store,
         FakeEmbedder(),
         "page",
-        semantic_weight=0.6,
-        lexical_weight=0.4,
+        plan=_linear_plan(0.6, 0.4),
         top_k=5,
     )
 
@@ -69,8 +76,7 @@ def test_sparse_only_weight_uses_bm25(seeded_store: Store) -> None:
         seeded_store,
         FakeEmbedder(),
         "fox",
-        semantic_weight=0.0,
-        lexical_weight=1.0,
+        plan=_linear_plan(0.0, 1.0),
         top_k=5,
     )
 
@@ -83,8 +89,7 @@ def test_dense_only_weight_uses_knn(seeded_store: Store) -> None:
         seeded_store,
         FakeEmbedder(),
         "quantum",
-        semantic_weight=1.0,
-        lexical_weight=0.0,
+        plan=_linear_plan(1.0, 0.0),
         top_k=5,
     )
 
@@ -99,8 +104,7 @@ def test_search_respects_top_k(seeded_store: Store) -> None:
         seeded_store,
         FakeEmbedder(),
         "fox",
-        semantic_weight=0.6,
-        lexical_weight=0.4,
+        plan=_linear_plan(0.6, 0.4),
         top_k=1,
     )
     assert len(hits) == 1
@@ -113,8 +117,7 @@ def test_search_flags_stale_files(seeded_store: Store, tmp_path: Path) -> None:
         seeded_store,
         FakeEmbedder(),
         "fox",
-        semantic_weight=0.6,
-        lexical_weight=0.4,
+        plan=_linear_plan(0.6, 0.4),
         top_k=5,
     )
 
@@ -126,8 +129,7 @@ def test_search_empty_query_returns_nothing(seeded_store: Store) -> None:
         seeded_store,
         FakeEmbedder(),
         "   ",
-        semantic_weight=0.6,
-        lexical_weight=0.4,
+        plan=_linear_plan(0.6, 0.4),
         top_k=5,
     )
     assert hits == []
@@ -140,8 +142,7 @@ def test_search_unmatched_query_returns_only_zero_score_filtered(seeded_store: S
         seeded_store,
         FakeEmbedder(),
         "zzzzznope",
-        semantic_weight=0.0,
-        lexical_weight=1.0,
+        plan=_linear_plan(0.0, 1.0),
         top_k=5,
     )
     assert hits == []
@@ -153,8 +154,7 @@ def test_both_factors_zero_raise(seeded_store: Store) -> None:
             seeded_store,
             FakeEmbedder(),
             "fox",
-            semantic_weight=0.0,
-            lexical_weight=0.0,
+            plan=_linear_plan(0.0, 0.0),
             top_k=5,
         )
 
@@ -166,8 +166,7 @@ def test_sum_zero_but_not_both_zero_is_allowed(seeded_store: Store) -> None:
         seeded_store,
         FakeEmbedder(),
         "fox",
-        semantic_weight=0.5,
-        lexical_weight=-0.5,
+        plan=_linear_plan(0.5, -0.5),
         top_k=5,
     )
     assert isinstance(hits, list)
@@ -187,8 +186,7 @@ def test_explain_hit_matches_search_score(seeded_store: Store) -> None:
         FakeEmbedder(),
         "fox",
         rowid,
-        semantic_weight=0.6,
-        lexical_weight=0.4,
+        plan=_linear_plan(0.6, 0.4),
         top_k=5,
     )
 
@@ -202,8 +200,7 @@ def test_explain_hit_matches_search_score(seeded_store: Store) -> None:
         seeded_store,
         FakeEmbedder(),
         "fox",
-        semantic_weight=0.6,
-        lexical_weight=0.4,
+        plan=_linear_plan(0.6, 0.4),
         top_k=5,
     )
     hit = next(h for h in hits if h.digest == chunk_digest(text))
@@ -220,8 +217,7 @@ def test_explain_reports_rank_outside_top_k(seeded_store: Store) -> None:
         FakeEmbedder(),
         "fox",
         rowid,
-        semantic_weight=0.6,
-        lexical_weight=0.4,
+        plan=_linear_plan(0.6, 0.4),
         top_k=1,
     )
 
@@ -240,13 +236,12 @@ def test_explain_lexical_miss_is_none(seeded_store: Store) -> None:
         FakeEmbedder(),
         "fox",
         rowid,
-        semantic_weight=0.6,
-        lexical_weight=0.4,
+        plan=_linear_plan(0.6, 0.4),
         top_k=5,
     )
 
     assert explanation.lexical_raw is None
-    assert explanation.lexical_norm is None
+    assert explanation.lexical_prepared is None
     assert explanation.semantic_raw is not None
 
 
@@ -258,13 +253,12 @@ def test_explain_disabled_source_is_none(seeded_store: Store) -> None:
         FakeEmbedder(),
         "fox",
         rowid,
-        semantic_weight=0.0,
-        lexical_weight=1.0,
+        plan=_linear_plan(0.0, 1.0),
         top_k=5,
     )
 
     assert explanation.semantic_raw is None
-    assert explanation.semantic_norm is None
+    assert explanation.semantic_prepared is None
     assert explanation.lexical_raw is not None
 
 
@@ -278,8 +272,7 @@ def test_explain_zero_combined_not_in_results(seeded_store: Store) -> None:
         FakeEmbedder(),
         "fox",
         rowid,
-        semantic_weight=0.6,
-        lexical_weight=0.4,
+        plan=_linear_plan(0.6, 0.4),
         top_k=5,
     )
 
@@ -295,7 +288,42 @@ def test_explain_unknown_rowid_raises(seeded_store: Store) -> None:
             FakeEmbedder(),
             "fox",
             9999,
-            semantic_weight=0.6,
-            lexical_weight=0.4,
+            plan=_linear_plan(0.6, 0.4),
             top_k=5,
         )
+
+
+def test_rrf_search_ranks_by_position(seeded_store: Store) -> None:
+    # RRF skips normalization and ranks by reciprocal rank. "fox" matches
+    # a.txt lexically and densely, so it should rank first.
+    plan = RetrievalPlan(norm=None, fusion=RrfFusion(k=60))
+    hits = search(
+        seeded_store,
+        FakeEmbedder(),
+        "fox",
+        plan=plan,
+        top_k=5,
+    )
+
+    assert hits
+    assert hits[0].primary.path == "a.txt"
+    assert hits[0].score > 0
+
+
+def test_rrf_explain_skips_norm(seeded_store: Store) -> None:
+    text = "the quick brown fox jumps"
+    rowid = _rowid(seeded_store, text)
+    plan = RetrievalPlan(norm=None, fusion=RrfFusion(k=60))
+    explanation = explain(
+        seeded_store,
+        FakeEmbedder(),
+        "fox",
+        rowid,
+        plan=plan,
+        top_k=5,
+    )
+
+    assert explanation.plan.norm is None
+    assert explanation.semantic_prepared == explanation.semantic_raw
+    assert explanation.lexical_prepared == explanation.lexical_raw
+    assert explanation.in_results

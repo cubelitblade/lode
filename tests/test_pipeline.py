@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from lode.index.ranking import LinearFusion, MinmaxNorm, RetrievalPlan
 from lode.index.search import search
 from lode.index.store import FileStatus, Store
 from lode.ingestion import Chunk, Segment
@@ -318,6 +319,7 @@ def test_sync_indexes_docx_and_surfaces_heading(store: Store, tmp_path: Path) ->
     assert "总体报告 / 第三章" in {chunk.heading for chunk in chunks.values()}
 
     # And retrieval surfaces a provenance heading on its hits.
-    hits = search(store, FakeEmbedder(), "总体", semantic_weight=0.6, lexical_weight=0.4, top_k=5)
+    plan = RetrievalPlan(norm=MinmaxNorm(), fusion=LinearFusion(weights={"semantic": 0.6, "lexical": 0.4}))
+    hits = search(store, FakeEmbedder(), "总体", plan=plan, top_k=5)
     assert hits
     assert any(hit.heading for hit in hits)

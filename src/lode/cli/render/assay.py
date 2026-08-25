@@ -6,7 +6,9 @@ output so callers that do not care about styling get the existing behaviour.
 
 ``assay`` explains why one chunk scored as it did: it shows the query, the
 chunk's source location, and a score table breaking the result down into its
-semantic and lexical contributions and the combined score.
+semantic and lexical contributions, the fusion, and the combined score. The
+table is data-driven from the ``RetrievalPlan`` so swapping the norm or fusion
+algorithm does not require render changes.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ from rich.table import Table
 from rich.text import Text
 
 from lode.cli.render.core import Intent, RenderOptions
+from lode.index.ranking import LinearFusion, RetrievalPlan, RrfFusion
 from lode.index.search import ScoreExplanation
 
 
@@ -30,16 +33,17 @@ def render_assay(
     """Render a human-readable score explanation as a table.
 
     The table has one row per signal (``semantic``, ``lexical``) with columns
-    for the min-max normalization, the factor, and the weighted contribution,
-    followed by the combined ranking score. The whole report is wrapped in a
-    bordered panel (matching the other commands); ``console`` may be injected
-    (e.g. a recording console) to capture output in tests.
+    for the normalization, the factor, and the weighted contribution, plus a
+    fusion row, followed by the combined ranking score. The whole report is
+    wrapped in a bordered panel (matching the other commands); ``console`` may
+    be injected (e.g. a recording console) to capture output in tests.
     """
     if options is None:
         options = RenderOptions()
     console = console or Console(no_color=options.no_color)
 
     chunk = explanation.chunk
+    plan = explanation.plan
     info_style = options.intent_colors.get(Intent.INFO, "")
 
     source = chunk.primary.path
@@ -57,18 +61,9 @@ def render_assay(
     table.add_column("Factor", justify="left")
     table.add_column("Contribution", justify="left")
 
-    table.add_row(
-        "semantic",
-        _normalization(explanation.semantic_raw, explanation.semantic_norm),
-        _factor(explanation.semantic_weight),
-        _contribution(explanation.semantic_norm, explanation.semantic_weight),
-    )
-    table.add_row(
-        "lexical",
-        _normalization(explanation.lexical_raw, explanation.lexical_norm),
-        _factor(explanation.lexical_weight),
-        _contribution(explanation.lexical_norm, explanation.lexical_weight),
-    )
+    table.add_row("semantic", *_signal_cells(explanation, plan, "semantic"))
+    table.add_row("lexical", *_signal_cells(explanation, plan, "lexical"))
+    table.add_row("fusion", _fusion_cell(plan), "", "")
 
     frame = options.box
     if frame is not None:
@@ -102,11 +97,45 @@ def render_assay(
         )
 
 
-def _normalization(raw: float | None, norm: float | None) -> str:
-    """The min-max normalization cell: ``raw -> norm``, or ``n/a`` when absent."""
-    if raw is None or norm is None:
+def _signal_cells(
+    explanation: ScoreExplanation,
+    plan: RetrievalPlan,
+    source: str,
+) -> tuple[str, str, str]:
+    """The normalization, factor, and contribution cells for one signal.
+
+    When the plan skips normalization (RRF ranks by position), the
+    normalization cell explains the skip and factor/contribution are ``n/a``
+    (RRF has no per-source weights).
+    """
+    raw = explanation.semantic_raw if source == "semantic" else explanation.lexical_raw
+    prepared = explanation.semantic_prepared if source == "semantic" else explanation.lexical_prepared
+    if plan.norm is None:
+        return ("skipped (RRF ranks by position)", "n/a", "n/a")
+    norm_cell = _normalization(raw, prepared, plan.norm.name)
+    if isinstance(plan.fusion, LinearFusion):
+        weight = plan.fusion.weights.get(source, 0.0)
+        return (norm_cell, _factor(weight), _contribution(prepared, weight))
+    return (norm_cell, "n/a", "n/a")
+
+
+def _fusion_cell(plan: RetrievalPlan) -> str:
+    """The fusion row cell: algorithm name plus its parameters."""
+    if isinstance(plan.fusion, LinearFusion):
+        weights = plan.fusion.weights
+        semantic = weights.get("semantic", 0.0)
+        lexical = weights.get("lexical", 0.0)
+        return f"linear (semantic {semantic}, lexical {lexical})"
+    if isinstance(plan.fusion, RrfFusion):
+        return f"rrf (k={plan.fusion.k})"
+    return plan.fusion.name
+
+
+def _normalization(raw: float | None, prepared: float | None, norm_name: str) -> str:
+    """The normalization cell: ``<norm>: raw -> prepared``, or ``n/a`` when absent."""
+    if raw is None or prepared is None:
         return "n/a"
-    return f"min-max: {raw:.4f} -> {norm:.4f}"
+    return f"{norm_name}: {raw:.4f} -> {prepared:.4f}"
 
 
 def _factor(weight: float) -> str:
@@ -114,7 +143,7 @@ def _factor(weight: float) -> str:
     return f"× {weight}"  # noqa: RUF001 — intentional multiplication-sign glyph
 
 
-def _contribution(norm: float | None, weight: float) -> str:
-    """The contribution cell: normalized score times its factor."""
-    value = (norm if norm is not None else 0.0) * weight
+def _contribution(prepared: float | None, weight: float) -> str:
+    """The contribution cell: prepared score times its factor."""
+    value = (prepared if prepared is not None else 0.0) * weight
     return f"{value:.4f}"

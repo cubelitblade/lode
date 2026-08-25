@@ -35,6 +35,14 @@ from pydantic_settings import (
 
 from lode.embeddings.base import Embedder
 from lode.embeddings.openai_compat import OpenAICompatibleEmbedder
+from lode.index.ranking import (
+    LinearFusion,
+    MinmaxNorm,
+    Norm,
+    RetrievalPlan,
+    RrfFusion,
+    SoftmaxNorm,
+)
 
 # Environment variables are read with this prefix, e.g. LODE_EMBEDDING__MODEL.
 ENV_PREFIX = "LODE_"
@@ -53,6 +61,9 @@ PROJECT_CONFIG_PATHS = (
 DEFAULT_SEMANTIC_FACTOR = 0.7
 DEFAULT_LEXICAL_FACTOR = 0.3
 DEFAULT_TOP_K = 10
+# Defaults for pluggable ranking (norm + fusion).
+DEFAULT_SOFTMAX_TEMPERATURE = 1.0
+DEFAULT_RRF_K = 60
 
 # Defaults for text chunking; consumed by the ingestion pipeline.
 DEFAULT_CHUNK_SIZE = 1024
@@ -82,9 +93,49 @@ class EmbeddingConfig(BaseModel):
 class RetrievalConfig(BaseModel):
     """Settings for hybrid retrieval. Reserved for M2 — not read yet."""
 
+    top_k: int = DEFAULT_TOP_K
+
+
+class SoftmaxNormConfig(BaseModel):
+    """Softmax normalization parameters; only used when ``norm.type == "softmax"``."""
+
+    temperature: float = DEFAULT_SOFTMAX_TEMPERATURE
+
+
+class NormConfig(BaseModel):
+    """Normalization selector plus all parameter tables.
+
+    ``type`` picks which parameter table is read at assembly time; the other
+    tables are always present but ignored ("only loaded when type = ...").
+    """
+
+    type: Literal["minmax", "softmax"] = "minmax"
+    softmax: SoftmaxNormConfig = SoftmaxNormConfig()
+
+
+class LinearFusionConfig(BaseModel):
+    """Linear weighted-sum fusion parameters; only used when ``fusion.type == "linear"``."""
+
     semantic_factor: float = DEFAULT_SEMANTIC_FACTOR
     lexical_factor: float = DEFAULT_LEXICAL_FACTOR
-    top_k: int = DEFAULT_TOP_K
+
+
+class RrfFusionConfig(BaseModel):
+    """Reciprocal rank fusion parameters; only used when ``fusion.type == "rrf"``."""
+
+    k: int = DEFAULT_RRF_K
+
+
+class FusionConfig(BaseModel):
+    """Fusion selector plus all parameter tables.
+
+    ``type`` picks which parameter table is read at assembly time; the other
+    tables are always present but ignored ("only loaded when type = ...").
+    """
+
+    type: Literal["linear", "rrf"] = "linear"
+    linear: LinearFusionConfig = LinearFusionConfig()
+    rrf: RrfFusionConfig = RrfFusionConfig()
 
 
 class ChunkingConfig(BaseModel):
@@ -162,6 +213,8 @@ class Settings(BaseSettings):
     chunking: ChunkingConfig = ChunkingConfig()
     ignore: IgnoreConfig = IgnoreConfig()
     output: OutputConfig = OutputConfig()
+    norm: NormConfig = NormConfig()
+    fusion: FusionConfig = FusionConfig()
 
     @classmethod
     def settings_customise_sources(
@@ -282,7 +335,7 @@ def unset_nested(data: dict[str, Any], key: str) -> bool:
 
 # Sections a user may read/write via `lode config`; excludes internal fields
 # such as `config_files`.
-CONFIG_SECTIONS = ("embedding", "retrieval", "chunking", "ignore", "output")
+CONFIG_SECTIONS = ("embedding", "retrieval", "chunking", "ignore", "output", "norm", "fusion")
 
 # Boolean tokens accepted by `lode config set <key> <bool-value>`.
 _BOOL_TRUE = frozenset({"true", "1", "yes", "y", "on"})
@@ -432,3 +485,25 @@ def build_embedder(cfg: EmbeddingConfig) -> Embedder:
             normalize=cfg.l2_normalize,
         )
     raise ValueError(f"Unknown embedding provider: {cfg.api.type!r}")
+
+
+def build_plan(norm_cfg: NormConfig, fusion_cfg: FusionConfig) -> RetrievalPlan:
+    """Assemble the retrieval plan selected by config.
+
+    RRF ranks by position, so normalization is skipped entirely (``norm`` is
+    ``None``); min-max and softmax are monotonic, so the rank is identical
+    whether computed on raw or normalized scores. For linear fusion the
+    selected norm is applied per source.
+    """
+    if fusion_cfg.type == "rrf":
+        return RetrievalPlan(norm=None, fusion=RrfFusion(k=fusion_cfg.rrf.k))
+    fusion = LinearFusion(
+        weights={
+            "semantic": fusion_cfg.linear.semantic_factor,
+            "lexical": fusion_cfg.linear.lexical_factor,
+        }
+    )
+    norm: Norm | None = (
+        SoftmaxNorm(temperature=norm_cfg.softmax.temperature) if norm_cfg.type == "softmax" else MinmaxNorm()
+    )
+    return RetrievalPlan(norm=norm, fusion=fusion)

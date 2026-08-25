@@ -1,17 +1,20 @@
 """Hybrid retrieval: semantic (dense vec0) + lexical (sparse FTS5) fusion.
 
-Both sources are scored, min-max normalized, and combined with configurable
-weights. Semantic scores are cosine similarities (L2-normalized, so cosine
-== dot); lexical scores are BM25, normalized per-query to [0, 1].
+Both sources are scored, then combined by a pluggable ``RetrievalPlan``: a
+per-source ``Norm`` (min-max, softmax) followed by a cross-source ``Fusion``
+(weighted linear sum, reciprocal rank fusion). Semantic scores are cosine
+similarities (L2-normalized, so cosine == dot); lexical scores are BM25.
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
 from lode.embeddings.base import Embedder
+from lode.index.ranking import LinearFusion, RetrievalPlan
 from lode.index.store import ChunkWithPath, FileStatus, PathRef, Store
 
 # Retrieve a larger candidate pool than top_k from each source so the fused
@@ -73,15 +76,16 @@ class _Candidates:
     """Intermediate per-source scores for one query, before ranking.
 
     ``*_raw`` are the un-normalized per-source scores (cosine for semantic,
-    BM25 for lexical); ``*_norm`` are their min-max normalized forms; and
-    ``combined`` is the weighted fusion. ``search`` ranks from ``combined``;
+    BM25 for lexical); ``*_prepared`` are their values after the plan's norm
+    (or the raw values when the plan skips normalization, e.g. RRF); and
+    ``combined`` is the fusion output. ``search`` ranks from ``combined``;
     ``explain`` reads the per-source values for a single chunk.
     """
 
     semantic_raw: dict[int, float]
     lexical_raw: dict[int, float]
-    semantic_norm: dict[int, float]
-    lexical_norm: dict[int, float]
+    semantic_prepared: dict[int, float]
+    lexical_prepared: dict[int, float]
     combined: dict[int, float]
 
 
@@ -89,21 +93,22 @@ class _Candidates:
 class ScoreExplanation:
     """Why one chunk scored as it did for a query.
 
-    ``*_raw``/``*_norm`` are ``None`` when that source did not return the
-    chunk in its candidate pool (e.g. no lexical match, or the weight is
-    zero so the source was not queried). ``*_pool_rank`` is the chunk's rank
-    within that source's candidate pool (by raw score, descending), or
-    ``None`` when it is not in the pool; ``*_pool_size`` is the pool's actual
-    size. ``rank`` is the chunk's true rank across all scored rows (not
-    truncated to ``top_k``); ``in_results`` reports whether it actually made
-    the returned top-``top_k``.
+    ``*_raw``/``*_prepared`` are ``None`` when that source did not return the
+    chunk in its candidate pool (e.g. no lexical match, or the source is
+    disabled). ``*_pool_rank`` is the chunk's rank within that source's
+    candidate pool (by raw score, descending), or ``None`` when it is not in
+    the pool; ``*_pool_size`` is the pool's actual size. ``rank`` is the
+    chunk's true rank across all scored rows (not truncated to ``top_k``);
+    ``in_results`` reports whether it actually made the returned top-``top_k``.
+    ``plan`` is the retrieval path that produced the scores (the flow context
+    ``assay`` reads to explain them).
     """
 
     chunk: ChunkWithPath
     semantic_raw: float | None
     lexical_raw: float | None
-    semantic_norm: float | None
-    lexical_norm: float | None
+    semantic_prepared: float | None
+    lexical_prepared: float | None
     semantic_pool_rank: int | None
     lexical_pool_rank: int | None
     semantic_pool_size: int
@@ -111,8 +116,7 @@ class ScoreExplanation:
     combined: float
     rank: int | None
     in_results: bool
-    semantic_weight: float
-    lexical_weight: float
+    plan: RetrievalPlan
     top_k: int
 
 
@@ -121,17 +125,15 @@ def search(
     embedder: Embedder,
     query: str,
     *,
-    semantic_weight: float,
-    lexical_weight: float,
+    plan: RetrievalPlan,
     top_k: int,
 ) -> list[SearchHit]:
-    """Hybrid search: weighted fusion of semantic and lexical results."""
+    """Hybrid search: fusion of semantic and lexical results per ``plan``."""
     candidates = _score_candidates(
         store,
         embedder,
         query,
-        semantic_weight=semantic_weight,
-        lexical_weight=lexical_weight,
+        plan=plan,
         top_k=top_k,
     )
     if top_k <= 0 or not query.strip():
@@ -171,8 +173,7 @@ def _score_candidates(
     embedder: Embedder,
     query: str,
     *,
-    semantic_weight: float,
-    lexical_weight: float,
+    plan: RetrievalPlan,
     top_k: int,
 ) -> _Candidates:
     """Score every candidate chunk for a query, before ranking.
@@ -180,28 +181,45 @@ def _score_candidates(
     Shared by ``search`` (which ranks from ``combined``) and ``explain``
     (which reads the per-source values for one chunk), so the two never
     drift apart. An empty query or non-positive ``top_k`` yields empty
-    candidates; both-zero weights raise.
+    candidates; a linear plan with both weights zero raises.
     """
     if top_k <= 0 or not query.strip():
         return _Candidates({}, {}, {}, {}, {})
-    if semantic_weight == 0 and lexical_weight == 0:
-        raise ValueError(
-            "You can't discover an ore without a prospecting tool.\n"
-            "Hint: at least one of `semantic_factor` and `lexical_factor` must be non-zero."
-        )
+    if isinstance(plan.fusion, LinearFusion):
+        weights = plan.fusion.weights
+        if weights.get("semantic", 0.0) == 0 and weights.get("lexical", 0.0) == 0:
+            raise ValueError(
+                "You can't discover an ore without a prospecting tool.\n"
+                "Hint: at least one of `semantic_factor` and `lexical_factor` must be non-zero."
+            )
     pool = top_k * CANDIDATE_MULTIPLIER
 
-    semantic_raw = _semantic_scores(store, embedder, query, pool) if semantic_weight != 0 else {}
-    lexical_raw = _lexical_scores(store, query, pool) if lexical_weight != 0 else {}
-    semantic_norm = _minmax(semantic_raw)
-    lexical_norm = _minmax(lexical_raw)
+    semantic_raw = _semantic_scores(store, embedder, query, pool) if _source_enabled(plan, "semantic") else {}
+    lexical_raw = _lexical_scores(store, query, pool) if _source_enabled(plan, "lexical") else {}
+    prepared = _prepare(plan, {"semantic": semantic_raw, "lexical": lexical_raw})
+    semantic_prepared = prepared["semantic"]
+    lexical_prepared = prepared["lexical"]
 
-    combined: dict[int, float] = {}
-    for rowid in semantic_norm.keys() | lexical_norm.keys():
-        combined[rowid] = semantic_weight * semantic_norm.get(rowid, 0.0) + lexical_weight * lexical_norm.get(
-            rowid, 0.0
-        )
-    return _Candidates(semantic_raw, lexical_raw, semantic_norm, lexical_norm, combined)
+    combined = plan.fusion.fuse(prepared)
+    return _Candidates(semantic_raw, lexical_raw, semantic_prepared, lexical_prepared, combined)
+
+
+def _source_enabled(plan: RetrievalPlan, source: str) -> bool:
+    """Whether a source is queried at all.
+
+    For linear fusion a zero weight disables the source (short-circuit, kept
+    from the pre-plan behaviour); RRF always queries every source.
+    """
+    if isinstance(plan.fusion, LinearFusion):
+        return plan.fusion.weights.get(source, 0.0) != 0
+    return True
+
+
+def _prepare(plan: RetrievalPlan, raw: Mapping[str, dict[int, float]]) -> dict[str, dict[int, float]]:
+    """Apply the plan's norm per source, or pass raw through when skipped."""
+    if plan.norm is None:
+        return dict(raw)
+    return {source: plan.norm.normalize(scores) for source, scores in raw.items()}
 
 
 def explain(
@@ -210,8 +228,7 @@ def explain(
     query: str,
     rowid: int,
     *,
-    semantic_weight: float,
-    lexical_weight: float,
+    plan: RetrievalPlan,
     top_k: int,
 ) -> ScoreExplanation:
     """Explain why one chunk scored as it did for a query.
@@ -223,8 +240,7 @@ def explain(
         store,
         embedder,
         query,
-        semantic_weight=semantic_weight,
-        lexical_weight=lexical_weight,
+        plan=plan,
         top_k=top_k,
     )
     chunk = store.get_chunks([rowid]).get(rowid)
@@ -233,8 +249,8 @@ def explain(
 
     semantic_raw = candidates.semantic_raw.get(rowid)
     lexical_raw = candidates.lexical_raw.get(rowid)
-    semantic_norm = candidates.semantic_norm.get(rowid)
-    lexical_norm = candidates.lexical_norm.get(rowid)
+    semantic_prepared = candidates.semantic_prepared.get(rowid)
+    lexical_prepared = candidates.lexical_prepared.get(rowid)
     combined = candidates.combined.get(rowid, 0.0)
 
     semantic_pool_rank = _pool_rank(candidates.semantic_raw, rowid)
@@ -254,8 +270,8 @@ def explain(
         chunk=chunk,
         semantic_raw=semantic_raw,
         lexical_raw=lexical_raw,
-        semantic_norm=semantic_norm,
-        lexical_norm=lexical_norm,
+        semantic_prepared=semantic_prepared,
+        lexical_prepared=lexical_prepared,
         semantic_pool_rank=semantic_pool_rank,
         lexical_pool_rank=lexical_pool_rank,
         semantic_pool_size=semantic_pool_size,
@@ -263,8 +279,7 @@ def explain(
         combined=combined,
         rank=rank,
         in_results=in_results,
-        semantic_weight=semantic_weight,
-        lexical_weight=lexical_weight,
+        plan=plan,
         top_k=top_k,
     )
 
@@ -295,18 +310,6 @@ def _cosine(distance: float) -> float:
     For normalized vectors, d^2 = 2 - 2*cos, so cos = 1 - d^2/2.
     """
     return 1.0 - (distance * distance) / 2.0
-
-
-def _minmax(scores: dict[int, float]) -> dict[int, float]:
-    """Min-max normalize to [0, 1]; a single value maps to 1.0."""
-    if not scores:
-        return {}
-    lo = min(scores.values())
-    hi = max(scores.values())
-    span = hi - lo
-    if span == 0.0:
-        return {rowid: 1.0 for rowid in scores}
-    return {rowid: (score - lo) / span for rowid, score in scores.items()}
 
 
 def _fts_query(text: str) -> str:

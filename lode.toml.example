@@ -49,7 +49,32 @@ timeout = 60.0
 # Larger values provide more candidates but may reduce readability.
 top_k = 10
 
-# Weight factors used to combine semantic and lexical retrieval scores.
+
+[norm]
+
+# Score normalization applied per source before fusion.
+# Options:
+# - `minmax`: min-max normalize each source's scores to [0, 1].
+# - `softmax`: softmax over each source's scores (uses `[norm.softmax]`).
+# When fusion is `rrf`, normalization is skipped (RRF ranks by position).
+type = "minmax"
+
+[norm.softmax]
+# Only loaded when norm.type = "softmax".
+# Higher temperature flattens the distribution; lower sharpens it.
+temperature = 1.0
+
+
+[fusion]
+
+# How per-source scores are combined.
+# Options:
+# - `linear`: weighted sum (uses `[fusion.linear]`).
+# - `rrf`: reciprocal rank fusion (uses `[fusion.rrf]`).
+type = "linear"
+
+[fusion.linear]
+# Only loaded when fusion.type = "linear".
 # Final score:
 #   score = semantic_score * semantic_factor
 #          + lexical_score * lexical_factor
@@ -61,6 +86,11 @@ top_k = 10
 # They must not both be zero.
 semantic_factor = 0.7
 lexical_factor = 0.3
+
+[fusion.rrf]
+# Only loaded when fusion.type = "rrf".
+# Rank constant: each source contributes 1 / (k + rank) per matching chunk.
+k = 60
 
 
 [chunking]

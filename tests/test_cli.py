@@ -653,13 +653,17 @@ def test_assay_json_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
         "seq",
         "semantic",
         "lexical",
+        "norm",
+        "fusion",
         "combined",
         "rank",
         "in_results",
         "top_k",
     }
-    assert set(explanation["semantic"]) == {"raw", "normalized", "pool_rank", "pool_size", "weight"}
-    assert set(explanation["lexical"]) == {"raw", "normalized", "pool_rank", "pool_size", "weight"}
+    assert set(explanation["semantic"]) == {"raw", "prepared", "pool_rank", "pool_size"}
+    assert set(explanation["lexical"]) == {"raw", "prepared", "pool_rank", "pool_size"}
+    assert explanation["norm"] == {"name": "min-max"}
+    assert explanation["fusion"] == {"name": "linear"}
     assert explanation["semantic"]["raw"] is not None
     assert explanation["lexical"]["raw"] is not None
     assert explanation["in_results"] is True
@@ -944,7 +948,9 @@ def test_prospect_json_empty_hits(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     # Lexical-only retrieval so a query absent from the doc yields no hits
     # (the fake embedder always scores densely, which would mask the empty case).
     (tmp_path / ".lode").mkdir()
-    (tmp_path / ".lode" / "config.toml").write_text("[retrieval]\nsemantic_factor = 0\nlexical_factor = 1\n")
+    (tmp_path / ".lode" / "config.toml").write_text(
+        '[fusion]\ntype = "linear"\n\n[fusion.linear]\nsemantic_factor = 0\nlexical_factor = 1\n'
+    )
     runner.invoke(app, ["mine", str(tmp_path)])
 
     # An existing index with no matching content yields empty hits.
@@ -991,8 +997,10 @@ def test_prospect_json_invalid_query(tmp_path: Path, monkeypatch: pytest.MonkeyP
     monkeypatch.chdir(tmp_path)
     runner.invoke(app, ["mine", str(tmp_path)])
 
-    # Both retrieval factors zero -> search refuses to run.
-    (tmp_path / ".lode" / "config.toml").write_text("[retrieval]\nsemantic_factor = 0.0\nlexical_factor = 0.0\n")
+    # Both linear fusion factors zero -> search refuses to run.
+    (tmp_path / ".lode" / "config.toml").write_text(
+        '[fusion]\ntype = "linear"\n\n[fusion.linear]\nsemantic_factor = 0.0\nlexical_factor = 0.0\n'
+    )
 
     result = runner.invoke(app, ["prospect", "hello", "--json", str(tmp_path)])
     assert result.exit_code != 0

@@ -88,7 +88,8 @@ lode prospect QUERY [OPTIONS] [workspace]
 Aliases: `lode search`
 
 Performs hybrid retrieval: semantic similarity (vector) + BM25 lexical
-matching, combined by `semantic_factor` / `lexical_factor`.
+matching, combined by the configured `[norm]` / `[fusion]` plan (default:
+min-max normalization + linear weighted fusion).
 
 ### Options
 
@@ -180,9 +181,9 @@ lode assay QUERY DIGEST [OPTIONS] [workspace]
 Aliases: `lode analyze`
 
 Reuses the same hybrid scoring as `prospect` (semantic + BM25, combined by
-`semantic_factor` / `lexical_factor`) and breaks down the chunk's score into
-its per-source raw and normalized values, the weighted fusion, and its rank.
-A chunk that did not make the results is explained as ranked outside `top_k`
+the configured `[norm]` / `[fusion]` plan) and breaks down the chunk's score
+into its per-source raw and prepared values, the fusion, and its rank. A
+chunk that did not make the results is explained as ranked outside `top_k`
 or as having a zero combined score.
 
 The digest may be the full `blake3:<hex>`, a bare hex, or the short prefix
@@ -223,9 +224,9 @@ return matching candidates.
 
 ### Output
 
-Displays the query, the chunk's source location, per-source raw and normalized
-scores with their weights, the combined score, and the chunk's rank (or why it
-is not in the results).
+Displays the query, the chunk's source location, per-source raw and prepared
+scores with their normalization, the fusion, the combined score, and the
+chunk's rank (or why it is not in the results).
 
 ## lode config
 

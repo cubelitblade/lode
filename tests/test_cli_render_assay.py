@@ -18,6 +18,7 @@ from rich.console import Console
 
 from lode.cli.render import RenderOptions
 from lode.cli.render.assay import render_assay
+from lode.index.ranking import LinearFusion, MinmaxNorm, RetrievalPlan, RrfFusion
 from lode.index.search import ScoreExplanation
 from lode.index.store import ChunkWithPath, FileStatus, PathRef
 
@@ -26,12 +27,16 @@ def _explanation(
     *,
     semantic_raw: float | None = 0.9,
     lexical_raw: float | None = -5.0,
-    semantic_norm: float | None = 1.0,
-    lexical_norm: float | None = 0.5,
+    semantic_prepared: float | None = 1.0,
+    lexical_prepared: float | None = 0.5,
     combined: float = 0.8,
-    semantic_weight: float = 0.7,
-    lexical_weight: float = 0.3,
+    plan: RetrievalPlan | None = None,
 ) -> ScoreExplanation:
+    if plan is None:
+        plan = RetrievalPlan(
+            norm=MinmaxNorm(),
+            fusion=LinearFusion(weights={"semantic": 0.7, "lexical": 0.3}),
+        )
     return ScoreExplanation(
         chunk=ChunkWithPath(
             digest="blake3:0123456789abcdef",
@@ -43,8 +48,8 @@ def _explanation(
         ),
         semantic_raw=semantic_raw,
         lexical_raw=lexical_raw,
-        semantic_norm=semantic_norm,
-        lexical_norm=lexical_norm,
+        semantic_prepared=semantic_prepared,
+        lexical_prepared=lexical_prepared,
         semantic_pool_rank=1,
         lexical_pool_rank=3,
         semantic_pool_size=40,
@@ -52,8 +57,7 @@ def _explanation(
         combined=combined,
         rank=1,
         in_results=True,
-        semantic_weight=semantic_weight,
-        lexical_weight=lexical_weight,
+        plan=plan,
         top_k=5,
     )
 
@@ -91,6 +95,19 @@ def test_render_assay_shows_factor_and_contribution() -> None:
     assert "0.1500" in text
 
 
+def test_render_assay_shows_fusion_row() -> None:
+    text = _render(_explanation())
+    assert "linear (semantic 0.7, lexical 0.3)" in text
+
+
+def test_render_assay_rrf_skips_normalization() -> None:
+    plan = RetrievalPlan(norm=None, fusion=RrfFusion(k=60))
+    text = _render(_explanation(plan=plan))
+    assert "skipped (RRF ranks by position)" in text
+    assert "rrf (k=60)" in text
+    assert "min-max" not in text
+
+
 def test_render_assay_shows_ranking_score() -> None:
     text = _render(_explanation())
     assert "Ranking score: 0.8000" in text
@@ -102,12 +119,12 @@ def test_render_assay_hides_full_content_address() -> None:
 
 
 def test_render_assay_marks_absent_source() -> None:
-    text = _render(_explanation(lexical_raw=None, lexical_norm=None))
+    text = _render(_explanation(lexical_raw=None, lexical_prepared=None))
     assert "n/a" in text
 
 
 def test_render_assay_disabled_source_contributes_zero() -> None:
-    text = _render(_explanation(semantic_raw=None, semantic_norm=None, semantic_weight=0.0))
+    text = _render(_explanation(semantic_raw=None, semantic_prepared=None))
     assert "n/a" in text
     assert "0.0000" in text
 

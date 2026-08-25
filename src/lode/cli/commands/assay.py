@@ -27,7 +27,7 @@ from lode.cli.commands._common import (
 )
 from lode.cli.render import Intent, RenderOptions
 from lode.cli.render.output import echo_json, json_err, json_ok, render_message
-from lode.config import Settings, load_settings
+from lode.config import Settings, build_plan, load_settings
 from lode.embeddings.base import Embedder
 from lode.index import DimensionMismatchError, Store
 from lode.index.search import ScoreExplanation, explain
@@ -131,8 +131,7 @@ def _assay(
             embedder,
             query,
             rowids[0],
-            semantic_weight=settings.retrieval.semantic_factor,
-            lexical_weight=settings.retrieval.lexical_factor,
+            plan=build_plan(settings.norm, settings.fusion),
             top_k=resolved_top_k,
         )
     except ValueError as exc:
@@ -193,6 +192,7 @@ def _candidate_json(store: Store, rowid: int) -> dict[str, Any]:
 def _explanation_json(explanation: ScoreExplanation) -> dict[str, Any]:
     """JSON payload for a score explanation."""
     chunk = explanation.chunk
+    plan = explanation.plan
     return {
         "digest": chunk.digest,
         "paths": [{"path": ref.path, "state": ref.status.value} for ref in chunk.refs],
@@ -201,18 +201,18 @@ def _explanation_json(explanation: ScoreExplanation) -> dict[str, Any]:
         "seq": chunk.seq,
         "semantic": {
             "raw": explanation.semantic_raw,
-            "normalized": explanation.semantic_norm,
+            "prepared": explanation.semantic_prepared,
             "pool_rank": explanation.semantic_pool_rank,
             "pool_size": explanation.semantic_pool_size,
-            "weight": explanation.semantic_weight,
         },
         "lexical": {
             "raw": explanation.lexical_raw,
-            "normalized": explanation.lexical_norm,
+            "prepared": explanation.lexical_prepared,
             "pool_rank": explanation.lexical_pool_rank,
             "pool_size": explanation.lexical_pool_size,
-            "weight": explanation.lexical_weight,
         },
+        "norm": {"name": plan.norm.name if plan.norm is not None else None},
+        "fusion": {"name": plan.fusion.name},
         "combined": explanation.combined,
         "rank": explanation.rank,
         "in_results": explanation.in_results,
