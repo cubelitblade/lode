@@ -21,7 +21,7 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TaskID, TextColumn
 
 from lode.cli.render import Intent, RenderOptions, render_options_from_preset
 from lode.cli.render.output import echo_json, json_err, render_message
-from lode.config import Settings, load_settings
+from lode.config import DEFAULT_TOKENIZER, Settings, load_settings
 from lode.embeddings.base import Embedder
 from lode.index import (
     EmbedderUnavailableError,
@@ -142,7 +142,7 @@ def open_store(
     *,
     command: str,
     as_json: bool,
-    tokenizer: str = "unicode61",
+    tokenizer: str = DEFAULT_TOKENIZER,
     from_scratch: bool = False,
 ) -> Store | None:
     """Open the workspace index, or return ``None`` if it does not exist yet.

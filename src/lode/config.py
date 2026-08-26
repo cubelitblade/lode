@@ -70,7 +70,7 @@ DEFAULT_CHUNK_SIZE = 1024
 DEFAULT_CHUNK_OVERLAP = 128
 
 # Default lexical tokenizer; kept as the historical behaviour.
-DEFAULT_TOKENIZER = "unicode61"
+DEFAULT_TOKENIZER = "simple"
 
 
 class EmbeddingApiConfig(BaseModel):

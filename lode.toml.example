@@ -116,13 +116,13 @@ sources = [".gitignore"]
 
 # FTS5 tokenizer used for keyword/full-text matching.
 # Options:
-# - `unicode61`: SQLite default (word-ish tokens). Default.
+# - `unicode61`: SQLite default (word-ish tokens).
 # - `trigram`: 3-grams, better for CJK substring matching.
-# - `simple`: native extension (Han characters + pinyin).
+# - `simple`: native extension (Han characters + pinyin). Default.
 # - `jieba`: word-level matching on the `simple` index.
 # `simple` and `jieba` share the same index tokenizer, so switching between
 # them does not require a re-mine; any other change does.
-strategy = "unicode61"
+strategy = "simple"
 
 [output]
 
