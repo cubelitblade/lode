@@ -22,7 +22,6 @@ from lode.cli.commands._common import (
     ProspectWorkspaceArg,
     fail_with,
     load_settings_or_fail,
-    model_gate,
     normalize_digest,
     open_store,
     render_options,
@@ -67,7 +66,6 @@ def assay(
             index_path=str(workspace / INDEX_DB_RELATIVE),
         )
 
-    model_gate(store, embedder, as_json=as_json, command="assay")
     with store:
         # Refresh the stale bits so per-chunk provenance reflects the current
         # workspace (single dependency: only the status update, not the dirty

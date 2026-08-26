@@ -21,7 +21,6 @@ from lode.cli.commands._common import (
     ProspectWorkspaceArg,
     fail_with,
     load_settings_or_fail,
-    model_gate,
     open_store,
     render_options,
     store_failure,
@@ -66,7 +65,6 @@ def prospect(
             index_path=str(workspace / INDEX_DB_RELATIVE),
         )
 
-    model_gate(store, embedder, as_json=as_json, command="prospect")
     with store:
         if top_k is None:
             top_k = settings.retrieval.top_k

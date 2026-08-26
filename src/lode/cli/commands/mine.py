@@ -5,6 +5,10 @@ one that may reach the embedding endpoint for the vector dimension). With no
 index yet it classifies against an empty snapshot first: if there is nothing
 to embed it reports ``Nothing to do.`` without creating a database or
 touching the embedder; otherwise it creates the index and syncs.
+
+``--from-scratch`` is the single mismatch exemption: it snapshots the old
+database to ``<db>.bak``, removes it, and re-mines every file under the
+current configuration — no mismatched index is ever opened.
 """
 
 from __future__ import annotations
@@ -22,7 +26,6 @@ from lode.cli.commands._common import (
     NoColorArg,
     PaletteArg,
     load_settings_or_fail,
-    model_gate,
     open_store,
     render_options,
     store_failure,
@@ -32,7 +35,7 @@ from lode.cli.render import RenderOptions
 from lode.cli.render.output import echo_json, json_ok
 from lode.config import Settings
 from lode.embeddings.base import Embedder
-from lode.index import EmbedderUnavailableError, Store, StoreError
+from lode.index import EmbedderUnavailableError, Store, StoreError, reset_index
 from lode.ingestion.pipeline import (
     DetectResult,
     SyncSummary,
@@ -62,20 +65,24 @@ def mine(
 ) -> None:
     """Embeds and indexes new or changed files. An embedding endpoint must be configured.
 
-    Use `--from-scratch` when changing the embedding model or when the index
-    schema is incompatible.
+    Use `--from-scratch` when the index no longer matches your configuration
+    (embedding model, dimension, tokenizer) or its schema is incompatible;
+    it snapshots the old index to `<index>.bak` and re-mines everything.
     """
     settings = load_settings_or_fail(config, command="mine", as_json=as_json)
     embedder = _cli.build_embedder(settings.embedding)
     options = render_options(settings, palette, no_color)
-    store = open_store(
-        workspace,
-        embedder,
-        command="mine",
-        as_json=as_json,
-        tokenizer=settings.lexical.strategy,
-        from_scratch=from_scratch,
-    )
+    db_path = workspace / INDEX_DB_RELATIVE
+    if from_scratch and db_path.exists():
+        # The one exemption path: destroy the index (after snapshotting it)
+        # so every file is re-mined under the current configuration. A failed
+        # reset leaves the old index intact.
+        try:
+            reset_index(db_path, embedder, tokenizer=settings.lexical.strategy)
+        except (StoreError, EmbedderUnavailableError) as exc:
+            store_failure(exc, command="mine", as_json=as_json)
+
+    store = open_store(workspace, embedder, command="mine", as_json=as_json, tokenizer=settings.lexical.strategy)
     if store is None:
         # No index yet: classify against an empty snapshot. If there is
         # nothing to embed, report Nothing to do. without creating a database
@@ -88,7 +95,7 @@ def mine(
             _emit_mine(workspace, result, from_scratch, as_json, options)
             return
         try:
-            store = Store(workspace / INDEX_DB_RELATIVE, embedder, tokenizer=settings.lexical.strategy)
+            store = Store(db_path, embedder, tokenizer=settings.lexical.strategy)
         except (StoreError, EmbedderUnavailableError) as exc:
             store_failure(exc, command="mine", as_json=as_json)
         # A fresh database has no stored model to gate against.
@@ -98,10 +105,7 @@ def mine(
         _emit_mine(workspace, result, from_scratch, as_json, options)
         return
 
-    model_gate(store, embedder, from_scratch=from_scratch, as_json=as_json, command="mine")
     with store:
-        if from_scratch:
-            store.rebuild()
         splitter = _splitter(settings)
         detect = detect_changes(store, workspace, settings.ignore.sources)
         result = _run_sync(store, workspace, embedder, splitter, detect, as_json, no_color=options.no_color)

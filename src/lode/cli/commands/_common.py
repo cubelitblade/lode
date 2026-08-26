@@ -25,9 +25,10 @@ from lode.config import DEFAULT_TOKENIZER, Settings, load_settings
 from lode.embeddings.base import Embedder
 from lode.index import (
     EmbedderUnavailableError,
-    ModelStatus,
     Store,
     StoreError,
+    check_index_compatibility,
+    read_index_meta,
 )
 from lode.ingestion.pipeline import DetectResult, SyncSummary, sync
 from lode.ingestion.split import SegmentSplitter
@@ -143,20 +144,27 @@ def open_store(
     command: str,
     as_json: bool,
     tokenizer: str = DEFAULT_TOKENIZER,
-    from_scratch: bool = False,
 ) -> Store | None:
     """Open the workspace index, or return ``None`` if it does not exist yet.
 
-    Only opens an existing database — creating one is ``mine``'s job. A missing
-    index returns ``None`` so the caller can short-circuit. Schema and embedder
-    failures are emitted through the shared error exit. ``from_scratch``
-    tolerates a tokenizer mismatch (the caller is about to rebuild anyway).
+    Only opens an existing database — creating one is ``mine``'s job. Before
+    a ``Store`` is constructed, the index header is classified against the
+    current configuration; any mismatch (schema version, model, dimension,
+    tokenizer) exits through the shared failure path with its friendly
+    template. Callers that need to destroy a mismatched index (e.g.
+    ``mine --from-scratch``) must do so *before* calling this function.
     """
     db_path = workspace / INDEX_DB_RELATIVE
     if not db_path.exists():
         return None
+    meta = read_index_meta(db_path)
+    issues = check_index_compatibility(meta, embedder=embedder, tokenizer=tokenizer)
+    if issues:
+        issue = issues[0]
+        text = require_error_text(issue.code, **issue.fields)
+        block(text.error, code=issue.code, as_json=as_json, command=command, hint=text.hint or None)
     try:
-        return Store(db_path, embedder, tokenizer=tokenizer, allow_tokenizer_mismatch=from_scratch)
+        return Store(db_path, embedder, tokenizer=tokenizer, meta=meta)
     except (StoreError, EmbedderUnavailableError) as exc:
         store_failure(exc, command=command, as_json=as_json)
 
@@ -197,42 +205,6 @@ def render_options(
         palette=palette,
         no_color=no_color,
     )
-
-
-def model_gate(
-    store: Store,
-    embedder: Embedder,
-    *,
-    from_scratch: bool = False,
-    as_json: bool = False,
-    command: str = "mine",
-) -> None:
-    """Enforce the model/dimension-consistency contract for mine/prospect.
-
-    A mismatch means the index was built with a different model or dimension:
-    querying is refused and updating without a from-scratch re-mine would keep
-    incompatible vectors. UNKNOWN (embedding endpoint down) does not block.
-    """
-    if store.model_status is ModelStatus.MISMATCH and not from_scratch:
-        fail_with("model_mismatch", command=command, as_json=as_json, stored_model_id=store.stored_model_id)
-
-    if from_scratch:
-        return
-
-    try:
-        current_dimension = embedder.dimension
-    except Exception:
-        # Fault-tolerant like model detection: an unreachable endpoint must not
-        # block search, which can still serve cached data.
-        return
-    if current_dimension != store.dimension:
-        fail_with(
-            "dimension_mismatch",
-            command=command,
-            as_json=as_json,
-            stored_dimension=store.dimension,
-            current_dimension=current_dimension,
-        )
 
 
 def sync_with_progress(

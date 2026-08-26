@@ -4,6 +4,7 @@ Owns the single SQLite connection, the vec0 virtual table (dense vectors),
 the FTS5 external-content table (sparse/BM25), and the triggers that keep
 the FTS index in sync with `chunks`. Layout: `errors` (exceptions),
 `records` (enums, dataclasses, row mapping), `schema` (DDL + triggers),
+`meta` (header inspection, compatibility classification, wholesale reset),
 `core` (the `Store` class).
 """
 
@@ -17,6 +18,13 @@ from lode.index.store.errors import (
     SchemaVersionError,
     StoreError,
     TokenizerMismatchError,
+)
+from lode.index.store.meta import (
+    IndexIssue,
+    IndexMeta,
+    check_index_compatibility,
+    read_index_meta,
+    reset_index,
 )
 from lode.index.store.records import (
     ChunkWithPath,
@@ -38,6 +46,8 @@ __all__ = [
     "EmbedderUnavailableError",
     "FileRecord",
     "FileStatus",
+    "IndexIssue",
+    "IndexMeta",
     "MissingEmbedderError",
     "ModelStatus",
     "PathRef",
@@ -46,4 +56,7 @@ __all__ = [
     "Store",
     "StoreError",
     "TokenizerMismatchError",
+    "check_index_compatibility",
+    "read_index_meta",
+    "reset_index",
 ]

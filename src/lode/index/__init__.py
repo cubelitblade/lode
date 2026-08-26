@@ -15,11 +15,16 @@ from lode.index.store import (
     EmbedderUnavailableError,
     FileRecord,
     FileStatus,
+    IndexIssue,
+    IndexMeta,
     ModelStatus,
     SchemaVersionError,
     Store,
     StoreError,
     TokenizerMismatchError,
+    check_index_compatibility,
+    read_index_meta,
+    reset_index,
 )
 
 __all__ = [
@@ -29,6 +34,8 @@ __all__ = [
     "EmbedderUnavailableError",
     "FileRecord",
     "FileStatus",
+    "IndexIssue",
+    "IndexMeta",
     "LinearFusion",
     "MinmaxNorm",
     "ModelStatus",
@@ -40,4 +47,7 @@ __all__ = [
     "Store",
     "StoreError",
     "TokenizerMismatchError",
+    "check_index_compatibility",
+    "read_index_meta",
+    "reset_index",
 ]

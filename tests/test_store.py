@@ -26,7 +26,11 @@ from lode.index import (
     SchemaVersionError,
     Store,
     TokenizerMismatchError,
+    check_index_compatibility,
+    read_index_meta,
+    reset_index,
 )
+from lode.index.store.schema import SCHEMA_VERSION
 from lode.ingestion import Chunk, chunk_digest
 
 DIM = 4
@@ -129,16 +133,57 @@ def test_tokenizer_mismatch_refuses_to_open(db_path: Path) -> None:
     assert excinfo.value.current_tokenizer == "unicode61"
 
 
-def test_tokenizer_mismatch_allowed_for_rebuild(db_path: Path) -> None:
-    with Store(db_path, FakeEmbedder(), tokenizer="trigram"):
-        pass
+def test_reset_index_snapshots_and_removes(db_path: Path) -> None:
+    with Store(db_path, FakeEmbedder(model_id="m1")) as store:
+        store.replace_file(file_record(), *make_chunks(["hello world"]))
 
-    # A from-scratch rebuild tolerates the mismatch so it can re-create the
-    # index with the newly configured tokenizer.
-    with Store(db_path, FakeEmbedder(), tokenizer="unicode61", allow_tokenizer_mismatch=True) as store:
+    reset_index(db_path, FakeEmbedder(model_id="m2", dimension=8), tokenizer="unicode61")
+
+    # The index no longer exists — a fresh Store picks up the new config.
+    with Store(db_path, FakeEmbedder(model_id="m2", dimension=8)) as store:
+        assert store.dimension == 8
+        assert store.stored_model_id == "m2"
+        assert store.list_files() == []
+
+    # The old database survived the reset as a snapshot.
+    backup = Path(str(db_path) + ".bak")
+    assert backup.exists()
+    conn = sqlite3.connect(str(backup))
+    assert count(conn, "SELECT count(*) FROM files") == 1
+    conn.close()
+
+
+def test_reset_index_records_tokenizer(db_path: Path) -> None:
+    with Store(db_path, FakeEmbedder(), tokenizer="trigram") as store:
+        store.replace_file(file_record(), *make_chunks(["hello world"]))
+
+    reset_index(db_path, FakeEmbedder(), tokenizer="trigram")
+
+    with Store(db_path, FakeEmbedder(), tokenizer="trigram") as store:
         assert store.tokenizer == "trigram"
-        store.rebuild()
-        assert store.tokenizer == "unicode61"
+
+    conn = open_db(db_path)
+    row = conn.execute("SELECT value FROM meta WHERE key = 'tokenizer'").fetchone()
+    conn.close()
+    assert row is not None
+    assert row[0] == "trigram"
+
+
+def test_reset_index_with_unreachable_embedder_changes_nothing(db_path: Path) -> None:
+    with Store(db_path, FakeEmbedder(model_id="m1")) as store:
+        store.replace_file(file_record(), *make_chunks(["hello world"]))
+
+    with pytest.raises(EmbedderUnavailableError):
+        reset_index(db_path, FakeEmbedder(fail_model_id=True), tokenizer="unicode61")
+    # Nothing was dropped and no backup was written.
+    with Store(db_path, FakeEmbedder(model_id="m1")) as store:
+        assert store.list_files() == [file_record()]
+    assert not Path(str(db_path) + ".bak").exists()
+
+
+def test_reset_index_unknown_tokenizer_is_rejected(db_path: Path) -> None:
+    with pytest.raises(ValueError, match="unknown tokenizer"):
+        reset_index(db_path, FakeEmbedder(), tokenizer="bogus")
 
 
 def test_same_tokenizer_reopens(db_path: Path) -> None:
@@ -392,54 +437,112 @@ def test_get_chunk_neighbors_same_heading(db_path: Path) -> None:
         assert store.get_chunk_neighbors("zzzz", 1) == []
 
 
-# -- rebuild ----------------------------------------------------------------
+# -- check_index_compatibility / read_index_meta ------------------------------
 
 
-def test_rebuild_snapshots_then_resets(db_path: Path) -> None:
-    with Store(db_path, FakeEmbedder(model_id="m1")) as store:
+def test_read_index_meta_returns_header(db_path: Path) -> None:
+    with Store(db_path, FakeEmbedder(model_id="m1"), tokenizer="trigram") as store:
         store.replace_file(file_record(), *make_chunks(["hello world"]))
 
-    backup = Path(str(db_path) + ".bak")
-    with Store(db_path, FakeEmbedder(model_id="m2", dimension=8)) as store:
-        assert store.model_status is ModelStatus.MISMATCH
-        store.rebuild()
-        assert store.model_status is ModelStatus.MATCH
-        assert store.dimension == 8
-        assert store.stored_model_id == "m2"
-        assert store.list_files() == []
+    meta = read_index_meta(db_path)
+    assert meta is not None
+    assert meta.schema_version == str(SCHEMA_VERSION)
+    assert meta.model_id == "m1"
+    assert meta.dimension == str(DIM)
+    assert meta.tokenizer == "trigram"
 
-    # The old database survived the rebuild as a snapshot.
-    assert backup.exists()
-    conn = sqlite3.connect(str(backup))
-    assert count(conn, "SELECT count(*) FROM files") == 1
+
+def test_read_index_meta_missing_file() -> None:
+    assert read_index_meta(Path("/nonexistent/index.db")) is None
+
+
+def test_read_index_meta_no_meta_table(db_path: Path) -> None:
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("CREATE TABLE dummy (x)")
     conn.close()
+    assert read_index_meta(db_path) is None
 
 
-def test_rebuild_records_tokenizer(db_path: Path) -> None:
-    with Store(db_path, FakeEmbedder(), tokenizer="trigram") as store:
-        store.replace_file(file_record(), *make_chunks(["hello world"]))
+def test_check_index_compatibility_returns_nothing_when_match(db_path: Path) -> None:
+    with Store(db_path, FakeEmbedder(model_id="m1"), tokenizer="unicode61"):
+        pass
+    meta = read_index_meta(db_path)
+    issues = check_index_compatibility(meta, embedder=FakeEmbedder(model_id="m1", dimension=4), tokenizer="unicode61")
+    assert issues == ()
 
-    with Store(db_path, FakeEmbedder(), tokenizer="trigram") as store:
-        store.rebuild()
-        assert store.tokenizer == "trigram"
 
-    conn = open_db(db_path)
-    row = conn.execute("SELECT value FROM meta WHERE key = 'tokenizer'").fetchone()
+def test_check_index_compatibility_detects_model_mismatch(db_path: Path) -> None:
+    with Store(db_path, FakeEmbedder(model_id="m1")):
+        pass
+    meta = read_index_meta(db_path)
+    issues = check_index_compatibility(meta, embedder=FakeEmbedder(model_id="m2"), tokenizer="unicode61")
+    assert len(issues) == 1
+    assert issues[0].code == "model_mismatch"
+    assert issues[0].fields["stored_model_id"] == "m1"
+
+
+def test_check_index_compatibility_detects_dimension_mismatch(db_path: Path) -> None:
+    with Store(db_path, FakeEmbedder(model_id="m1", dimension=4)):
+        pass
+    meta = read_index_meta(db_path)
+    issues = check_index_compatibility(meta, embedder=FakeEmbedder(model_id="m1", dimension=8), tokenizer="unicode61")
+    assert len(issues) == 1
+    assert issues[0].code == "dimension_mismatch"
+
+
+def test_check_index_compatibility_detects_tokenizer_mismatch(db_path: Path) -> None:
+    with Store(db_path, FakeEmbedder(), tokenizer="trigram"):
+        pass
+    meta = read_index_meta(db_path)
+    issues = check_index_compatibility(meta, embedder=FakeEmbedder(), tokenizer="unicode61")
+    assert len(issues) == 1
+    assert issues[0].code == "tokenizer_mismatch"
+
+
+def test_check_index_compatibility_skips_model_when_unreachable(db_path: Path) -> None:
+    with Store(db_path, FakeEmbedder(model_id="m1")):
+        pass
+    meta = read_index_meta(db_path)
+    issues = check_index_compatibility(meta, embedder=FakeEmbedder(fail_model_id=True), tokenizer="unicode61")
+    # model_id is unreachable -> not reported as issue
+    assert all(i.code != "model_mismatch" for i in issues)
+
+
+def test_check_index_compatibility_schema_version_is_top_priority(db_path: Path) -> None:
+    with Store(db_path, FakeEmbedder()):
+        pass
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("UPDATE meta SET value = '999' WHERE key = 'schema_version'")
+    conn.commit()
     conn.close()
-    assert row is not None
-    assert row[0] == "trigram"
+    meta = read_index_meta(db_path)
+    issues = check_index_compatibility(meta, embedder=FakeEmbedder(), tokenizer="unicode61")
+    assert len(issues) == 1
+    assert issues[0].code == "schema_version"
 
 
-def test_rebuild_with_unreachable_embedder_changes_nothing(db_path: Path) -> None:
-    with Store(db_path, FakeEmbedder(model_id="m1")) as store:
-        store.replace_file(file_record(), *make_chunks(["hello world"]))
+def test_store_meta_param_bypasses_db_metadata_read(db_path: Path) -> None:
+    """Passing ``meta`` to Store skips ``_load_metadata``.
 
-    with Store(db_path, FakeEmbedder(fail_model_id=True)) as store:
-        with pytest.raises(EmbedderUnavailableError):
-            store.rebuild()
-        # Nothing was dropped and no backup was written.
-        assert store.list_files() == [file_record()]
-        assert not Path(str(db_path) + ".bak").exists()
+    To prove the bypass, corrupt the schema version *after* reading the
+    original header — a direct ``_load_metadata`` would choke on it, while
+    ``_apply_metadata`` (fed the uncorrupted header) succeeds.
+    """
+    with Store(db_path, FakeEmbedder()):
+        pass
+    meta = read_index_meta(db_path)
+    assert meta is not None
+    # Corrupt the DB so _load_metadata would see incompatible schema version.
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("UPDATE meta SET value = '999' WHERE key = 'schema_version'")
+    conn.commit()
+    conn.close()
+    # Store with meta should succeed (uses _apply_metadata, never reads DB).
+    with Store(db_path, FakeEmbedder(), meta=meta) as store:
+        assert store.dimension == 4  # original FakeEmbedder dimension
+    # Store without meta should fail (reads corrupted schema_version from DB).
+    with pytest.raises(SchemaVersionError):
+        Store(db_path, FakeEmbedder())
 
 
 # -- pragmas ----------------------------------------------------------------

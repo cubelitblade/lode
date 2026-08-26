@@ -21,6 +21,7 @@ from lode.index.store.errors import (
     StoreError,
     TokenizerMismatchError,
 )
+from lode.index.store.meta import IndexMeta
 from lode.index.store.records import (
     ChunkWithPath,
     DenseMatch,
@@ -31,15 +32,11 @@ from lode.index.store.records import (
     chunk_from_rows,
     row_to_file,
 )
-from lode.index.store.schema import SCHEMA_VERSION, create_schema, drop_all
+from lode.index.store.schema import SCHEMA_VERSION, create_schema
 from lode.ingestion import Chunk
 from lode.lexical import HELPER_SQL, STRATEGIES
 
 BUSY_TIMEOUT_MS = 5000
-
-# SQLite does not accept parameter binding for DDL, so the VACUUM INTO
-# target is a quoted literal; escape any embedded quotes defensively.
-_VACUUM_INTO = "VACUUM INTO '{}'"
 
 
 def _dense_knn_sql(k: int) -> str:
@@ -70,9 +67,9 @@ class Store:
         self,
         db_path: Path,
         embedder: Embedder | None = None,
-        tokenizer: str = "unicode61",
         *,
-        allow_tokenizer_mismatch: bool = False,
+        tokenizer: str = "unicode61",
+        meta: IndexMeta | None = None,
     ) -> None:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._db_path = db_path
@@ -81,7 +78,6 @@ class Store:
             self._strategy = STRATEGIES[tokenizer]
         except KeyError as exc:
             raise ValueError(f"unknown tokenizer {tokenizer!r}; choose from {', '.join(STRATEGIES)}") from exc
-        self._allow_tokenizer_mismatch = allow_tokenizer_mismatch
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._lock = threading.RLock()
         self._stored_model_id: str | None = None
@@ -99,7 +95,7 @@ class Store:
             if not self._has_table("meta"):
                 self._initialize()
             else:
-                self._load_metadata()
+                self._load_metadata(meta)
         except Exception:
             self._conn.close()
             raise
@@ -151,32 +147,45 @@ class Store:
         self._model_status = ModelStatus.MATCH
         self._model_checked = True
 
-    def _load_metadata(self) -> None:
-        """Read schema version and embedding metadata from an existing database.
+    def _load_metadata(self, meta: IndexMeta | None = None) -> None:
+        """Populate stored metadata from an ``IndexMeta`` or the database.
 
-        Deliberately does not touch the embedder: the dimension comes from
-        `meta`, so an unreachable embedding endpoint cannot block opening.
+        When *meta* is provided (the ``open_store`` path) the values are
+        taken directly from the pre-read header, avoiding a redundant
+        database round-trip.  When *meta* is ``None`` (direct ``Store``
+        construction) the ``meta`` table is read instead.
         """
-        version = self._meta_get("schema_version")
+        if meta is not None:
+            version = meta.schema_version
+            dimension_str = meta.dimension
+            model_id = meta.model_id
+            stored_tokenizer = meta.tokenizer or "unicode61"
+        else:
+            version = self._meta_get("schema_version")
+            dimension_str = self._meta_get("dimension")
+            model_id = self._meta_get("model_id")
+            # Older databases predate the tokenizer key; default to the
+            # historical behaviour (unicode61) so they keep opening.
+            stored_tokenizer = self._meta_get("tokenizer") or "unicode61"
+
         if version != str(SCHEMA_VERSION):
+            # Map None to "unknown" so the error message reads naturally
+            # (mirrors check_index_compatibility's convention).
+            stored = version if version is not None else "unknown"
             raise SchemaVersionError(
-                f"database schema version {version!r} is incompatible with "
+                f"database schema version {stored!r} is incompatible with "
                 f"supported version {SCHEMA_VERSION}; run an explicit rebuild",
-                stored_version=version,
+                stored_version=stored,
             )
-        dimension = self._meta_get("dimension")
-        if dimension is None:
+        if dimension_str is None:
             raise SchemaVersionError(
                 "database is missing dimension metadata; run an explicit rebuild",
                 stored_version=version,
             )
-        self._stored_dimension = int(dimension)
-        self._stored_model_id = self._meta_get("model_id")
-        # Older databases predate the tokenizer key; default to the historical
-        # behaviour (unicode61) so they keep opening without a rebuild.
-        stored_tokenizer = self._meta_get("tokenizer") or "unicode61"
+        self._stored_dimension = int(dimension_str)
+        self._stored_model_id = model_id
         self._stored_tokenizer = stored_tokenizer
-        if stored_tokenizer != self._strategy.tokenize_clause and not self._allow_tokenizer_mismatch:
+        if stored_tokenizer != self._strategy.tokenize_clause:
             raise TokenizerMismatchError(stored_tokenizer, self._strategy.tokenize_clause)
 
     def _detect_model(self) -> None:
@@ -456,40 +465,6 @@ class Store:
                 (path,),
             ).fetchone()
         return row_to_file(row) if row is not None else None
-
-    def rebuild(self) -> None:
-        """Drop everything (files included) and re-create the schema.
-
-        The old database is snapshotted to ``<db_path>.bak`` first (via
-        ``VACUUM INTO``) so a mistaken rebuild can be recovered manually.
-        Requires an embedder to report the dimension; if none is available,
-        nothing is changed.
-        """
-        with self._lock:
-            embedder = self._require_embedder()
-            try:
-                dimension = embedder.dimension
-                model_id = embedder.model_id
-            except Exception as exc:
-                raise EmbedderUnavailableError(
-                    f"cannot rebuild index: could not determine embedding metadata: {exc}"
-                ) from exc
-            backup_path = Path(f"{self._db_path}.bak")
-            backup_path.unlink(missing_ok=True)
-            quoted = backup_path.as_posix().replace("'", "''")
-            self._conn.execute(_VACUUM_INTO.format(quoted))
-            with self._conn:
-                drop_all(self._conn)
-                create_schema(self._conn, dimension, self._strategy.tokenize_clause)
-                self._set_meta("schema_version", str(SCHEMA_VERSION))
-                self._set_meta("model_id", model_id)
-                self._set_meta("dimension", str(dimension))
-                self._set_meta("tokenizer", self._strategy.tokenize_clause)
-            self._stored_model_id = model_id
-            self._stored_dimension = dimension
-            self._stored_tokenizer = self._strategy.tokenize_clause
-            self._model_status = ModelStatus.MATCH
-            self._model_checked = True
 
     def close(self) -> None:
         with self._lock:

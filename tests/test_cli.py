@@ -882,6 +882,50 @@ def test_mine_json_schema_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     assert payload["error"]["code"] == "schema_version"
 
 
+def test_mine_from_scratch_schema_version_exempt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """--from-scratch exempts schema_version mismatch: old db is reset, then re-mined."""
+    monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
+    (tmp_path / "a.txt").write_text("hello world")
+    runner.invoke(app, ["mine", str(tmp_path)])
+
+    # Corrupt schema version so a plain open would refuse.
+    conn = sqlite3.connect(str(tmp_path / ".lode" / "index.db"))
+    try:
+        conn.execute("UPDATE meta SET value = ? WHERE key = 'schema_version'", ("999",))
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = runner.invoke(app, ["mine", "--from-scratch", "--json", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["success"] is True
+    assert payload["from_scratch"] is True
+    assert payload["summary"]["added"] == 1
+
+
+def test_mine_from_scratch_tokenizer_mismatch_exempt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """--from-scratch exempts tokenizer mismatch: old db is reset, then re-mined."""
+    monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
+    (tmp_path / "a.txt").write_text("hello world")
+    # Build an index with trigram tokenizer.
+    (tmp_path / "lode.toml").write_text('[lexical]\nstrategy = "trigram"\n')
+    runner.invoke(app, ["mine", str(tmp_path)])
+
+    # Switch back to default (simple) without --from-scratch → blocked.
+    (tmp_path / "lode.toml").write_text('[lexical]\nstrategy = "simple"\n')
+    result = runner.invoke(app, ["mine", str(tmp_path)])
+    assert result.exit_code != 0
+
+    # Switch with --from-scratch → reset and re-mine.
+    result = runner.invoke(app, ["mine", "--from-scratch", "--json", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["success"] is True
+    assert payload["from_scratch"] is True
+    assert payload["summary"]["added"] == 1
+
+
 def test_prospect_json_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
     text = "The experiment showed strong quantum entanglement in the third group."
