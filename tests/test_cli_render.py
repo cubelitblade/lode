@@ -49,6 +49,12 @@ def test_render_survey_lists_pending_paths() -> None:
     assert "old.txt" in text
 
 
+def test_render_survey_lists_renamed_pair() -> None:
+    result = DetectResult.from_paths(renamed_files=[("old.txt", "new.txt")])
+    text = _render(result)
+    assert "old.txt -> new.txt" in text
+
+
 def test_render_survey_always_emits_symbols() -> None:
     result = DetectResult.from_paths(new_files=["a.md"], changed_files=["b.md"], missing_files=["c.md"], skipped=1)
     text = _render(result)

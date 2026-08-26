@@ -7,6 +7,7 @@ output so callers that do not care about styling get the existing behaviour.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 
 from rich.console import Console
@@ -14,8 +15,18 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from lode.cli.render.core import MARKERS, STATUS_INTENT, Intent, RenderOptions, Status
+from lode.cli.render.core import MARKERS, STATUS_INTENT, Entry, Intent, RenderOptions, Status, entry_label
 from lode.ingestion.pipeline import DetectResult
+
+
+def _pending_entries(result: DetectResult) -> Sequence[tuple[Status, Sequence[Entry]]]:
+    """Pending work grouped by status, in display order."""
+    return [
+        (Status.NEW, result.new_files),
+        (Status.CHANGED, result.changed_files),
+        (Status.RENAMED, result.renamed_files),
+        (Status.MISSING, result.missing_files),
+    ]
 
 
 def render_survey(
@@ -45,7 +56,13 @@ def render_survey(
         Status.UNCHANGED: result.unchanged,
         Status.SKIPPED: result.skipped,
     }
-    display_order = (Status.NEW, Status.CHANGED, Status.MISSING, Status.UNCHANGED, Status.SKIPPED)
+    display_order = (
+        Status.NEW,
+        Status.CHANGED,
+        Status.MISSING,
+        Status.UNCHANGED,
+        Status.SKIPPED,
+    )
     counts = Text()
     for index, status in enumerate(display_order):
         if index:
@@ -70,19 +87,18 @@ def render_survey(
         console.print(indented_counts)
 
     if result.pending:
-        header = f"Pending sync ({result.pending} files)"
+        header = f"Pending sync ({result.pending} changes)"
         if frame is not None:
             pending = Table(box=None, show_header=False)
             pending.add_column("Change", width=1, justify="center")
             pending.add_column("Path")
-            for status, paths in (
-                (Status.NEW, result.new_files),
-                (Status.CHANGED, result.changed_files),
-                (Status.MISSING, result.missing_files),
-            ):
+            for status, entries in _pending_entries(result):
                 style = options.intent_colors.get(STATUS_INTENT[status], "")
-                for path in paths:
-                    pending.add_row(Text(MARKERS[status], style=style), Text(path, style=style))
+                for entry in entries:
+                    pending.add_row(
+                        Text(MARKERS[status], style=style),
+                        Text(entry_label(entry), style=style),
+                    )
             console.print()
             console.print(
                 Panel(pending, title=header, title_align="left", border_style=options.border_style, box=frame)
@@ -90,14 +106,10 @@ def render_survey(
         else:
             console.print()
             console.print(header)
-            for status, paths in (
-                (Status.NEW, result.new_files),
-                (Status.CHANGED, result.changed_files),
-                (Status.MISSING, result.missing_files),
-            ):
+            for status, entries in _pending_entries(result):
                 style = options.intent_colors.get(STATUS_INTENT[status], "")
-                for path in paths:
-                    console.print(f"  {MARKERS[status]} {path}", style=style)
+                for entry in entries:
+                    console.print(f"  {MARKERS[status]} {entry_label(entry)}", style=style)
         hint_indent = " " if frame is not None else "  "
         console.print()
         console.print(

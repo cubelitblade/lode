@@ -11,6 +11,7 @@ plus a table of the changed files. When there is nothing to do, a single
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 
 from rich.console import Console
@@ -18,8 +19,18 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from lode.cli.render.core import MARKERS, STATUS_INTENT, Intent, RenderOptions, Status
+from lode.cli.render.core import MARKERS, STATUS_INTENT, Entry, Intent, RenderOptions, Status, entry_label
 from lode.ingestion.pipeline import SyncSummary
+
+
+def _processed_entries(result: SyncSummary) -> Sequence[tuple[Status, Sequence[Entry]]]:
+    """Processed work grouped by status, in display order."""
+    return [
+        (Status.NEW, result.added_files),
+        (Status.CHANGED, result.updated_files),
+        (Status.RENAMED, result.renamed_files),
+        (Status.MISSING, result.removed_files),
+    ]
 
 
 def render_mine(
@@ -40,7 +51,7 @@ def render_mine(
         options = RenderOptions()
     console = console or Console(no_color=options.no_color)
 
-    if result.added == 0 and result.updated == 0 and result.removed == 0 and not result.failed:
+    if result.added == 0 and result.updated == 0 and result.removed == 0 and result.renamed == 0 and not result.failed:
         console.print("Nothing to do.", style=options.intent_colors.get(Intent.INFO, ""))
         return
 
@@ -79,20 +90,19 @@ def render_mine(
         indented_counts.append_text(counts)
         console.print(indented_counts)
 
-    if result.added or result.updated or result.removed:
-        header = f"Processed files ({result.added + result.updated + result.removed})"
+    if result.added or result.updated or result.removed or result.renamed:
+        header = f"Processed files ({result.added + result.updated + result.removed + result.renamed})"
         if frame is not None:
             changed = Table(box=None, show_header=False)
             changed.add_column("Change", width=1, justify="center")
             changed.add_column("Path")
-            for status, paths in (
-                (Status.NEW, result.added_files),
-                (Status.CHANGED, result.updated_files),
-                (Status.MISSING, result.removed_files),
-            ):
+            for status, entries in _processed_entries(result):
                 style = options.intent_colors.get(STATUS_INTENT[status], "")
-                for path in paths:
-                    changed.add_row(Text(MARKERS[status], style=style), Text(path, style=style))
+                for entry in entries:
+                    changed.add_row(
+                        Text(MARKERS[status], style=style),
+                        Text(entry_label(entry), style=style),
+                    )
             console.print()
             console.print(
                 Panel(changed, title=header, title_align="left", border_style=options.border_style, box=frame)
@@ -100,14 +110,10 @@ def render_mine(
         else:
             console.print()
             console.print(header)
-            for status, paths in (
-                (Status.NEW, result.added_files),
-                (Status.CHANGED, result.updated_files),
-                (Status.MISSING, result.removed_files),
-            ):
+            for status, entries in _processed_entries(result):
                 style = options.intent_colors.get(STATUS_INTENT[status], "")
-                for path in paths:
-                    console.print(f"  {MARKERS[status]} {path}", style=style)
+                for entry in entries:
+                    console.print(f"  {MARKERS[status]} {entry_label(entry)}", style=style)
 
     if result.failed:
         error_style = options.intent_colors.get(STATUS_INTENT[Status.FAILED], "")

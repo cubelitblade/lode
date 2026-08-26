@@ -26,6 +26,14 @@ from enum import StrEnum
 
 from rich import box
 
+# Change-list entries are plain paths except renames, which carry ``(old, new)``.
+type Entry = str | tuple[str, str]
+
+
+def entry_label(entry: Entry) -> str:
+    """Display label for a change-list entry; renames render as ``old -> new``."""
+    return f"{entry[0]} -> {entry[1]}" if isinstance(entry, tuple) else entry
+
 
 class Status(StrEnum):
     """Data state/outcome of an indexed file, as reported by survey/mine.
@@ -38,6 +46,7 @@ class Status(StrEnum):
     NEW = "new"
     CHANGED = "changed"
     MISSING = "missing"
+    RENAMED = "renamed"
     UNCHANGED = "unchanged"
     SKIPPED = "skipped"
     FAILED = "failed"
@@ -88,6 +97,10 @@ MARKERS: Mapping[Status, str] = {
     Status.NEW: "+",
     Status.CHANGED: "~",
     Status.MISSING: "-",
+    # A rename does not touch content, so it carries no change glyph; the
+    # ``old -> new`` pair itself is the signal. Placeholder kept intentionally
+    # blank for now.
+    Status.RENAMED: " ",
     Status.UNCHANGED: "=",
     Status.SKIPPED: "○",
     Status.FAILED: "×",  # noqa: RUF001 — intentional multiplication-sign glyph for errors
@@ -98,6 +111,7 @@ STATUS_INTENT: Mapping[Status, Intent] = {
     Status.NEW: Intent.SUCCESS,
     Status.CHANGED: Intent.WARNING,
     Status.MISSING: Intent.ERROR,
+    Status.RENAMED: Intent.WARNING,
     Status.UNCHANGED: Intent.MUTED,
     Status.SKIPPED: Intent.MUTED,
     Status.FAILED: Intent.ERROR,

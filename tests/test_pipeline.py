@@ -111,6 +111,72 @@ def test_sync_removes_files_gone_from_disk(store: Store, tmp_path: Path) -> None
     assert store.list_files() == []
 
 
+def test_detect_and_sync_report_exact_content_rename(store: Store, tmp_path: Path) -> None:
+    path = write(tmp_path, "a.txt", "hello world content")
+    run_sync(store, tmp_path, FakeEmbedder())
+
+    path.rename(tmp_path / "b.txt")
+    detect = detect_changes(store, tmp_path)
+
+    # Identical content under a new path is a rename, not new + missing.
+    assert detect.renamed_files == [("a.txt", "b.txt")]
+    assert detect.new_files == []
+    assert detect.missing_files == []
+    assert detect.pending == 1
+    assert detect.dirty is False
+
+    class CountingEmbedder(FakeEmbedder):
+        embed_calls = 0
+
+        def embed_documents(self, texts: list[str]) -> list[list[float]]:
+            CountingEmbedder.embed_calls += 1
+            return super().embed_documents(texts)
+
+    result = sync(store, tmp_path, CountingEmbedder(), SPLITTER, detect=detect)
+
+    assert result.renamed_files == [("a.txt", "b.txt")]
+    assert result.added == 0
+    assert result.updated == 0
+    assert result.removed == 0
+    # Zero embedding cost: the indexed content is re-pointed, not rebuilt.
+    assert CountingEmbedder.embed_calls == 0
+    files = {file.path: file for file in store.list_files()}
+    assert set(files) == {"b.txt"}
+    assert all(file.status is FileStatus.FRESH for file in files.values())
+
+
+def test_rename_pairing_leaves_unmatched_paths_in_place(store: Store, tmp_path: Path) -> None:
+    path = write(tmp_path, "a.txt", "hello world content")
+    run_sync(store, tmp_path, FakeEmbedder())
+
+    # a.txt is gone; b.txt is an identical copy (rename), c.txt is brand-new.
+    path.unlink()
+    write(tmp_path, "b.txt", "hello world content")
+    write(tmp_path, "c.txt", "something else entirely")
+
+    detect = detect_changes(store, tmp_path)
+    assert detect.renamed_files == [("a.txt", "b.txt")]
+    assert detect.new_files == ["c.txt"]
+    assert detect.missing_files == []
+
+    result = sync(store, tmp_path, FakeEmbedder(), SPLITTER, detect=detect)
+    assert [pair for pair in result.renamed_files] == [("a.txt", "b.txt")]
+    assert result.added_files == ["c.txt"]
+    assert result.removed == 0
+    assert {file.path for file in store.list_files()} == {"b.txt", "c.txt"}
+
+
+def test_changed_file_is_never_paired_as_rename(store: Store, tmp_path: Path) -> None:
+    path = write(tmp_path, "a.txt", "hello world content")
+    run_sync(store, tmp_path, FakeEmbedder())
+
+    # Same path, different content: changed, not renamed.
+    path.write_text("totally different text now")
+    detect = detect_changes(store, tmp_path)
+    assert detect.renamed_files == []
+    assert detect.changed_files == ["a.txt"]
+
+
 def test_sync_skips_unsupported_formats(store: Store, tmp_path: Path) -> None:
     write(tmp_path, "image.png", "not text at all")
     result = run_sync(store, tmp_path, FakeEmbedder())

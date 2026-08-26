@@ -37,6 +37,9 @@ class DetectResult:
     new_files: list[str] = field(default_factory=list[str])
     changed_files: list[str] = field(default_factory=list[str])
     missing_files: list[str] = field(default_factory=list[str])
+    # ``(old, new)`` pairs whose content digests match exactly; both paths are
+    # excluded from ``new_files``/``missing_files`` so buckets never overlap.
+    renamed_files: list[tuple[str, str]] = field(default_factory=list[tuple[str, str]])
     skipped: int = 0  # on disk, unsupported format
     stale_paths: list[str] = field(default_factory=list[str])
 
@@ -48,6 +51,7 @@ class DetectResult:
         new_files: list[str] | None = None,
         changed_files: list[str] | None = None,
         missing_files: list[str] | None = None,
+        renamed_files: list[tuple[str, str]] | None = None,
         skipped: int = 0,
         stale_paths: list[str] | None = None,
     ) -> DetectResult:
@@ -57,6 +61,7 @@ class DetectResult:
             new_files=new_files or [],
             changed_files=changed_files or [],
             missing_files=missing_files or [],
+            renamed_files=renamed_files or [],
             skipped=skipped,
             stale_paths=stale_paths or [],
         )
@@ -78,9 +83,13 @@ class DetectResult:
         return len(self.missing_files)
 
     @property
+    def renamed(self) -> int:
+        return len(self.renamed_files)
+
+    @property
     def pending(self) -> int:
-        """Work for the next ``sync``: new + changed + missing."""
-        return self.new + self.changed + self.missing
+        """Work for the next ``sync``: new + changed + missing + renamed."""
+        return self.new + self.changed + self.missing + self.renamed
 
     @property
     def dirty(self) -> bool:
@@ -112,6 +121,7 @@ class SyncSummary:
     added_files: list[str] = field(default_factory=list[str])
     updated_files: list[str] = field(default_factory=list[str])
     removed_files: list[str] = field(default_factory=list[str])
+    renamed_files: list[tuple[str, str]] = field(default_factory=list[tuple[str, str]])
     unchanged: int = 0
     skipped: int = 0
     failed: list[FailedFile] = field(default_factory=list[FailedFile])
@@ -127,6 +137,10 @@ class SyncSummary:
     @property
     def removed(self) -> int:
         return len(self.removed_files)
+
+    @property
+    def renamed(self) -> int:
+        return len(self.renamed_files)
 
 
 def classify(
@@ -146,6 +160,10 @@ def classify(
     * ``changed`` — stat differs (or residual stale marker); added to ``stale_paths``.
     * ``unchanged`` — stat matches and the file is fresh.
     * ``missing`` — indexed but gone from disk; ``sync`` deletes it.
+    * ``renamed`` — a ``new`` path whose content digest equals an indexed
+      ``missing`` path; reported as ``(old, new)`` and excluded from both
+      buckets. Pairing is 1:1 and deterministic (paths sorted); leftovers
+      stay in their original buckets.
     """
     discovered = discover(root, ignore_files)
     on_disk = {rel.as_posix() for rel in discovered}
@@ -175,7 +193,57 @@ def classify(
         if path not in on_disk:
             summary.missing_files.append(path)
 
+    _pair_renames(summary, indexed, root)
     return summary
+
+
+def _digest_if_readable(path: Path) -> str | None:
+    """Content digest of a file, or ``None`` when it cannot be read."""
+    try:
+        return file_digest(path.read_bytes())
+    except OSError:
+        return None
+
+
+def _pair_renames(
+    summary: DetectResult,
+    indexed: Mapping[str, FileRecord],
+    root: Path,
+) -> None:
+    """Fold exact-content moves out of new/missing into renamed pairs.
+
+    Only the new files are read (one digest each); the missing side already
+    carries its digest in the index snapshot. A new file whose digest matches
+    a missing path is a move: the content is already indexed, so ``sync`` can
+    re-point it with :meth:`Store.reference_file` at zero embedding cost.
+    """
+    if not summary.new_files or not summary.missing_files:
+        return
+
+    missing_by_digest: dict[str, list[str]] = {}
+    for path in sorted(summary.missing_files):
+        missing_by_digest.setdefault(indexed[path].digest, []).append(path)
+
+    paired: list[tuple[str, str]] = []
+    kept_new: list[str] = []
+    consumed: set[str] = set()
+    for rel_text in sorted(summary.new_files):
+        old: str | None = None
+        digest = _digest_if_readable(root / rel_text)
+        if digest is not None:
+            candidates = missing_by_digest.get(digest, [])
+            if candidates:
+                old = candidates.pop(0)
+        if old is None:
+            kept_new.append(rel_text)
+        else:
+            consumed.add(old)
+            paired.append((old, rel_text))
+
+    if paired:
+        summary.renamed_files = paired
+        summary.new_files = kept_new
+        summary.missing_files = [path for path in summary.missing_files if path not in consumed]
 
 
 def detect_changes(
@@ -208,16 +276,44 @@ def sync(
     """Update the index to match the workspace, consuming a detection result.
 
     Never classifies: it only works the buckets ``detect`` computed —
-    ``new_files`` (added), ``changed_files`` (updated, including residual
-    stale), and ``missing_files`` (removed). ``report`` (optional) is called as
-    ``report(done, total, path)`` before each file is processed, letting the
-    CLI surface progress without depending on a concrete UI library.
+    ``renamed_files`` (re-pointed at zero embedding cost), ``new_files``
+    (added), ``changed_files`` (updated, including residual stale), and
+    ``missing_files`` (removed). ``report`` (optional) is called as
+    ``report(done, total, path)`` before each embedded file is processed,
+    letting the CLI surface progress without depending on a concrete UI
+    library.
     """
     summary = SyncSummary()
     summary.unchanged = len(detect.unchanged_files)
     summary.skipped = detect.skipped
 
-    to_embed = [*detect.new_files, *detect.changed_files]
+    # Renames first: they are pure re-pointings and never need the embedder.
+    # A digest that no longer resolves (snapshot changed under us) falls back
+    # to a full embed for the new path plus pruning of the old one.
+    rename_fallbacks: list[str] = []
+    fallback_removals: list[str] = []
+    for old, new in detect.renamed_files:
+        try:
+            data = (root / new).read_bytes()
+            stat = (root / new).stat()
+        except OSError as exc:
+            summary.failed.append(FailedFile(path=new, error=f"could not read file: {exc}"))
+            store.remove_file(old)
+            continue
+        record = FileRecord(path=new, digest=file_digest(data), mtime=stat.st_mtime, size=stat.st_size)
+        if store.reference_file(record):
+            summary.renamed_files.append((old, new))
+            # Drop the old path reference only after the new one claims the
+            # content, so the shared content can never be GC'd in between.
+            store.remove_file(old)
+        else:
+            rename_fallbacks.append(new)
+            fallback_removals.append(old)
+
+    to_embed = [*detect.new_files, *rename_fallbacks, *detect.changed_files]
+    # Rename fallbacks were never indexed under their new path, so they count
+    # as additions even though they are not in ``detect.new_files``.
+    added_paths = frozenset([*detect.new_files, *rename_fallbacks])
     total = len(to_embed)
     for idx, rel_text in enumerate(to_embed, start=1):
         path = root / rel_text
@@ -236,7 +332,7 @@ def sync(
         if store.reference_file(record):
             # Identical content is already indexed (a copy elsewhere):
             # reuse it instead of re-extracting and re-embedding.
-            if rel_text in detect.new_files:
+            if rel_text in added_paths:
                 summary.added_files.append(rel_text)
             else:
                 summary.updated_files.append(rel_text)
@@ -256,7 +352,7 @@ def sync(
             chunks = splitter.split_segments(segments)
             vectors = embedder.embed_documents([chunk.text for chunk in chunks])
             store.replace_file(record, chunks, vectors)
-            if rel_text in detect.new_files:
+            if rel_text in added_paths:
                 summary.added_files.append(rel_text)
             else:
                 summary.updated_files.append(rel_text)
@@ -269,7 +365,7 @@ def sync(
             summary.failed.append(FailedFile(path=rel_text, error=str(exc)))
             store.mark_stale(rel_text)
 
-    for rel_text in detect.missing_files:
+    for rel_text in [*detect.missing_files, *fallback_removals]:
         store.remove_file(rel_text)
         summary.removed_files.append(rel_text)
 

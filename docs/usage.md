@@ -34,7 +34,8 @@ This command only compares files and does not require an embedding endpoint.
 ### Output
 
 Displays workspace status summary and affected files. Prefixes indicate file changes:
-`+` new, `~` changed, `-` missing.
+`+` new, `~` changed, `-` missing. A file moved without content changes is
+reported as a rename (`old -> new`).
 
 ## lode mine
 
@@ -75,7 +76,8 @@ schema is incompatible.
 ### Output
 
 Displays indexing summary and affected paths. Prefixes indicate changes:
-`+` added, `~` updated, `-` removed.
+`+` added, `~` updated, `-` removed. A file moved without content changes is
+re-pointed at zero embedding cost and reported as a rename (`old -> new`).
 
 ## lode prospect
 

@@ -39,11 +39,20 @@ def test_render_mine_reports_counts() -> None:
         skipped=1,
     )
     text = _render(result)
-    assert "+ added 1" in text
-    assert "~ updated 1" in text
-    assert "- removed 1" in text
-    assert "= unchanged 2" in text
-    assert "○ skipped 1" in text
+    # Normalize whitespace: panel wrapping may split a "marker label count"
+    # group across lines, but the tokens stay adjacent in reading order.
+    flat = " ".join(text.split())
+    assert "+ added 1" in flat
+    assert "~ updated 1" in flat
+    assert "- removed 1" in flat
+    assert "= unchanged 2" in flat
+    assert "○ skipped 1" in flat
+
+
+def test_render_mine_reports_renamed() -> None:
+    result = SyncSummary(renamed_files=[("old.txt", "new.txt")])
+    text = _render(result)
+    assert "old.txt -> new.txt" in text
 
 
 def test_render_mine_lists_changed_paths() -> None:

@@ -773,13 +773,54 @@ def test_survey_json_reports_changes(tmp_path: Path, monkeypatch: pytest.MonkeyP
         "new": 1,
         "changed": 1,
         "missing": 0,
+        "renamed": 0,
         "skipped": 0,
         "pending": 2,
     }
     assert payload["paths"]["new"] == ["b.txt"]
     assert payload["paths"]["changed"] == ["a.txt"]
     assert payload["paths"]["missing"] == []
+    assert payload["paths"]["renamed"] == []
     assert payload["paths"]["unchanged"] == []
+
+
+def test_survey_json_reports_rename(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
+    (tmp_path / "a.txt").write_text("hello world")
+    runner.invoke(app, ["mine", str(tmp_path)])
+
+    (tmp_path / "a.txt").rename(tmp_path / "b.txt")
+
+    result = runner.invoke(app, ["survey", "--json", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+
+    assert payload["summary"]["renamed"] == 1
+    assert payload["summary"]["new"] == 0
+    assert payload["summary"]["missing"] == 0
+    assert payload["paths"]["renamed"] == [{"from": "a.txt", "to": "b.txt"}]
+    assert payload["paths"]["new"] == []
+    assert payload["paths"]["missing"] == []
+
+
+def test_mine_json_reports_rename(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
+    (tmp_path / "a.txt").write_text("hello world")
+    runner.invoke(app, ["mine", str(tmp_path)])
+
+    (tmp_path / "a.txt").rename(tmp_path / "b.txt")
+
+    result = runner.invoke(app, ["mine", "--json", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+
+    assert payload["success"] is True
+    assert payload["summary"]["renamed"] == 1
+    assert payload["summary"]["added"] == 0
+    assert payload["summary"]["removed"] == 0
+    assert payload["paths"]["renamed"] == [{"from": "a.txt", "to": "b.txt"}]
+    assert payload["paths"]["added"] == []
+    assert payload["paths"]["removed"] == []
 
 
 def test_survey_json_error_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -818,10 +859,18 @@ def test_mine_json_reports_changes(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     assert payload["schema_version"] == 1
     assert payload["from_scratch"] is False
     assert payload["workspace"] == str(tmp_path)
-    assert payload["summary"] == {"added": 2, "updated": 0, "unchanged": 0, "removed": 0, "skipped": 0}
+    assert payload["summary"] == {
+        "added": 2,
+        "updated": 0,
+        "unchanged": 0,
+        "removed": 0,
+        "renamed": 0,
+        "skipped": 0,
+    }
     assert set(payload["paths"]["added"]) == {"a.txt", "b.txt"}
     assert payload["paths"]["updated"] == []
     assert payload["paths"]["removed"] == []
+    assert payload["paths"]["renamed"] == []
     assert payload["failed"] == []
 
 

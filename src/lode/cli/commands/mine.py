@@ -163,12 +163,14 @@ def _emit_mine(
                     "updated": result.updated,
                     "unchanged": result.unchanged,
                     "removed": result.removed,
+                    "renamed": result.renamed,
                     "skipped": result.skipped,
                 },
                 paths={
                     "added": result.added_files,
                     "updated": result.updated_files,
                     "removed": result.removed_files,
+                    "renamed": [{"from": old, "to": new} for old, new in result.renamed_files],
                 },
                 failed=[{"path": failure.path, "error": failure.error} for failure in result.failed],
             )

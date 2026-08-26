@@ -62,6 +62,7 @@ def survey(
                     "new": result.new,
                     "changed": result.changed,
                     "missing": result.missing,
+                    "renamed": result.renamed,
                     "skipped": result.skipped,
                     "pending": result.pending,
                 },
@@ -69,6 +70,7 @@ def survey(
                     "new": result.new_files,
                     "changed": result.changed_files,
                     "missing": result.missing_files,
+                    "renamed": [{"from": old, "to": new} for old, new in result.renamed_files],
                     "unchanged": result.unchanged_files,
                 },
             )
