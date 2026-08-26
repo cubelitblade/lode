@@ -1,7 +1,7 @@
 """Load the DuRetrieval dataset (corpus, queries, qrels).
 
 The dataset is fetched through ``datasets`` and cached by HuggingFace; nothing
-is persisted by this benchmark beyond that cache.
+is persisted by this evaluation beyond that cache.
 """
 
 from __future__ import annotations

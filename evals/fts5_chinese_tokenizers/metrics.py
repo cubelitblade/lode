@@ -6,8 +6,10 @@ relevant rowids for a query. ``k`` bounds how many of the top results count.
 
 from __future__ import annotations
 
+from collections.abc import Set as AbstractSet
 
-def recall_at_k(retrieved: list[int], relevant: set[int], k: int) -> float:
+
+def recall_at_k(retrieved: list[int], relevant: AbstractSet[int], k: int) -> float:
     """Fraction of relevant documents found in the top ``k`` results."""
     if not relevant:
         return 0.0
@@ -15,7 +17,7 @@ def recall_at_k(retrieved: list[int], relevant: set[int], k: int) -> float:
     return len(top & relevant) / len(relevant)
 
 
-def precision_at_k(retrieved: list[int], relevant: set[int], k: int) -> float:
+def precision_at_k(retrieved: list[int], relevant: AbstractSet[int], k: int) -> float:
     """Fraction of the top ``k`` results that are relevant."""
     if k <= 0:
         return 0.0
@@ -23,7 +25,7 @@ def precision_at_k(retrieved: list[int], relevant: set[int], k: int) -> float:
     return len(top & relevant) / k
 
 
-def mrr_at_k(retrieved: list[int], relevant: set[int], k: int) -> float:
+def mrr_at_k(retrieved: list[int], relevant: AbstractSet[int], k: int) -> float:
     """Reciprocal rank of the first relevant result within the top ``k``.
 
     Returns 0.0 when no relevant document appears in the top ``k``.
