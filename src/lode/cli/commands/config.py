@@ -12,7 +12,7 @@ from typing import Annotated, Literal, cast
 
 import typer
 
-from lode.cli.commands._common import NoColorArg, PaletteArg, render_options
+from lode.cli.commands._common import NoColorArg, PaletteArg, load_settings_or_fail, render_options
 from lode.cli.render import RenderOptions
 from lode.cli.render.config import (
     render_config_message,
@@ -25,7 +25,6 @@ from lode.cli.render.config import (
 from lode.config import (
     effective_config,
     get_nested,
-    load_settings,
     parse_value,
     read_toml,
     set_nested,
@@ -58,7 +57,7 @@ def _target_config_path(scope: str) -> Path:
 
 def _cfg_show(options: RenderOptions) -> None:
     """Print the merged effective configuration as TOML."""
-    settings = load_settings()
+    settings = load_settings_or_fail(None, command="config", as_json=False)
     render_config_show(toml_dumps(effective_config(settings)), options=options)
 
 
@@ -70,7 +69,7 @@ def _config_callback(  # pyright: ignore[reportUnusedFunction]  # registered as 
 ) -> None:
     # Resolve output options once for the whole sub-app; subcommands read them
     # from ctx.obj. Bare `lode config` (no subcommand) is an alias for `show`.
-    options = render_options(load_settings(), palette, no_color)
+    options = render_options(load_settings_or_fail(None, command="config", as_json=False), palette, no_color)
     ctx.obj = options
     if ctx.invoked_subcommand is None:
         _cfg_show(options)
@@ -98,7 +97,7 @@ def config_get(
     explicit value, failing if it is not set there.
     """
     options = cast(RenderOptions, ctx.obj)
-    settings = load_settings()
+    settings = load_settings_or_fail(None, command="config", as_json=False)
     try:
         validate_key(key)
     except KeyError:

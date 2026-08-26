@@ -11,27 +11,27 @@ from __future__ import annotations
 import re
 from dataclasses import replace
 from pathlib import Path
-from typing import Annotated, Literal
+from tomllib import TOMLDecodeError
+from typing import Annotated, Literal, NoReturn
 
 import typer
+from pydantic import ValidationError
 from rich.console import Console
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskID, TextColumn
 
 from lode.cli.render import Intent, RenderOptions, render_options_from_preset
 from lode.cli.render.output import echo_json, json_err, render_message
-from lode.config import Settings
+from lode.config import Settings, load_settings
 from lode.embeddings.base import Embedder
 from lode.index import (
-    DimensionMismatchError,
     EmbedderUnavailableError,
     ModelStatus,
-    SchemaVersionError,
     Store,
     StoreError,
-    TokenizerMismatchError,
 )
 from lode.ingestion.pipeline import DetectResult, SyncSummary, sync
 from lode.ingestion.split import SegmentSplitter
+from lode.messages import error_text, require_error_text
 
 # The index lives next to the workspace's own .lode/ directory.
 INDEX_DB_RELATIVE = Path(".lode") / "index.db"
@@ -62,66 +62,78 @@ def block(
     command: str,
     intent: Intent = Intent.ERROR,
     hint: str | None = None,
-) -> None:
+    options: RenderOptions | None = None,
+) -> NoReturn:
     """Emit a blocking error (JSON or human) and exit non-zero.
 
     Human output renders ``message`` with ``intent`` and an optional ``hint``
-    with ``INFO``; JSON output joins the two into one envelope.
+    with ``INFO``; JSON output joins the two into one envelope. ``options``
+    carries the resolved output styling so error lines honour palette and
+    no-color like the rest of the command's output.
     """
     if as_json:
         full = f"{message}\n{hint}" if hint else message
         echo_json(json_err(command, full, code=code))
     else:
-        render_message(message, intent=intent)
+        render_message(message, intent=intent, options=options)
         if hint:
-            render_message(hint, intent=Intent.INFO)
+            render_message(hint, intent=Intent.INFO, options=options)
     raise typer.Exit(code=1)
 
 
-def dimension_mismatch_parts(stored_dimension: int, current_dimension: int) -> tuple[str, str]:
-    """Friendly dimension-mismatch message, split into (error, hint) parts."""
-    error = (
-        f"The current lode was driven at {stored_dimension} dimensions, but this model "
-        f"yields {current_dimension}-wide nuggets — they don't sit on the same vein."
-    )
-    hint = (
-        "Re-mine it with `lode mine --from-scratch`, or switch your embedding config "
-        "back to the model/dimension that dug it."
-    )
-    return error, hint
+def fail_with(
+    code: str,
+    *,
+    command: str,
+    as_json: bool,
+    options: RenderOptions | None = None,
+    **fields: object,
+) -> NoReturn:
+    """Emit a fixed-shape failure from the message table and exit non-zero.
+
+    The wording comes from the ``lode.messages`` entry for ``code``; the same
+    code labels the JSON envelope.
+    """
+    text = require_error_text(code, **fields)
+    block(text.error, code=code, as_json=as_json, command=command, hint=text.hint or None, options=options)
 
 
-def tokenizer_mismatch_parts(stored_tokenizer: str, current_tokenizer: str) -> tuple[str, str]:
-    """Friendly tokenizer-mismatch message, split into (error, hint) parts."""
-    error = (
-        f"This index was dug with the {stored_tokenizer} tokenizer, but {current_tokenizer} "
-        "is configured — they don't sit on the same vein."
-    )
-    hint = (
-        "Re-mine it with `lode mine --from-scratch`, or switch your lexical config back to the tokenizer that dug it."
-    )
-    return error, hint
+def load_settings_or_fail(
+    config: Path | str | None,
+    *,
+    command: str,
+    as_json: bool,
+) -> Settings:
+    """Load settings, mapping config failures to a friendly blocking exit.
+
+    A malformed TOML file, an explicit path that does not exist, or a value
+    that fails validation would otherwise surface as a raw traceback; here
+    they become one readable line instead.
+    """
+    try:
+        return load_settings(config)
+    except (ValidationError, TOMLDecodeError, FileNotFoundError) as exc:
+        block(
+            require_error_text("config_invalid", detail=str(exc)).error,
+            code="config_invalid",
+            as_json=as_json,
+            command=command,
+        )
 
 
-def store_failure(exc: Exception, *, command: str, as_json: bool) -> None:
+def store_failure(exc: Exception, *, command: str, as_json: bool) -> NoReturn:
     """Emit a store/embedder failure through the shared blocking exit.
 
-    Maps each failure to a stable machine-readable ``code`` (carried on the
-    exception) and a friendly message. Dimension mismatch and schema version are
-    special-cased for a recovery hint or a re-mine prefix.
+    User-facing wording comes from the ``lode.messages`` table, looked up by
+    the exception's stable ``code`` and filled from its ``template_fields()``.
+    Codes without a template fall back to the exception's diagnostic message.
     """
-    if isinstance(exc, DimensionMismatchError):
-        error, hint = dimension_mismatch_parts(exc.stored_dimension, exc.current_dimension)
-        block(error, code="dimension_mismatch", as_json=as_json, command=command, hint=hint)
-        return
-    if isinstance(exc, SchemaVersionError):
-        block(f"Index needs a re-mine: {exc}", code="schema_version", as_json=as_json, command=command)
-        return
-    if isinstance(exc, TokenizerMismatchError):
-        error, hint = tokenizer_mismatch_parts(exc.stored_tokenizer, exc.current_tokenizer)
-        block(error, code="tokenizer_mismatch", as_json=as_json, command=command, hint=hint)
-        return
-    block(str(exc), code=getattr(exc, "code", "store_error"), as_json=as_json, command=command)
+    code = getattr(exc, "code", "store_error")
+    fields = exc.template_fields() if isinstance(exc, StoreError) else {}
+    text = error_text(code, **fields)
+    if text is None:
+        block(str(exc), code=code, as_json=as_json, command=command)
+    block(text.error, code=code, as_json=as_json, command=command, hint=text.hint or None)
 
 
 def open_store(
@@ -147,7 +159,6 @@ def open_store(
         return Store(db_path, embedder, tokenizer=tokenizer, allow_tokenizer_mismatch=from_scratch)
     except (StoreError, EmbedderUnavailableError) as exc:
         store_failure(exc, command=command, as_json=as_json)
-        raise typer.Exit(code=1) from exc
 
 
 def resolve_render_options(
@@ -203,12 +214,7 @@ def model_gate(
     incompatible vectors. UNKNOWN (embedding endpoint down) does not block.
     """
     if store.model_status is ModelStatus.MISMATCH and not from_scratch:
-        message = (
-            "The index was built with a different model "
-            f"(indexed: {store.stored_model_id!r}). "
-            "Run `lode mine --from-scratch` to re-mine it, or switch back to that model."
-        )
-        block(message, code="model_mismatch", as_json=as_json, command=command)
+        fail_with("model_mismatch", command=command, as_json=as_json, stored_model_id=store.stored_model_id)
 
     if from_scratch:
         return
@@ -220,8 +226,13 @@ def model_gate(
         # block search, which can still serve cached data.
         return
     if current_dimension != store.dimension:
-        error, hint = dimension_mismatch_parts(store.dimension, current_dimension)
-        block(error, code="dimension_mismatch", as_json=as_json, command=command, hint=hint)
+        fail_with(
+            "dimension_mismatch",
+            command=command,
+            as_json=as_json,
+            stored_dimension=store.dimension,
+            current_dimension=current_dimension,
+        )
 
 
 def sync_with_progress(

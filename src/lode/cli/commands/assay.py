@@ -15,23 +15,27 @@ import typer
 import lode.cli as _cli
 from lode.cli.commands._common import (
     DIGEST_PATTERN,
+    INDEX_DB_RELATIVE,
     ConfigArg,
     NoColorArg,
     PaletteArg,
     ProspectWorkspaceArg,
-    dimension_mismatch_parts,
+    fail_with,
+    load_settings_or_fail,
     model_gate,
     normalize_digest,
     open_store,
     render_options,
+    store_failure,
 )
 from lode.cli.render import Intent, RenderOptions
 from lode.cli.render.output import echo_json, json_err, json_ok, render_message
-from lode.config import Settings, build_plan, load_settings
+from lode.config import Settings, build_plan
 from lode.embeddings.base import Embedder
 from lode.index import DimensionMismatchError, Store
 from lode.index.search import ScoreExplanation, explain
 from lode.ingestion.pipeline import detect_changes
+from lode.messages import require_error_text
 
 
 def register(app: typer.Typer) -> None:
@@ -50,17 +54,18 @@ def assay(
     as_json: bool = typer.Option(False, "--json", help="Emit JSON output."),
 ) -> None:
     """Explain why a chunk scored as it did for a query."""
-    settings = load_settings(config)
+    settings = load_settings_or_fail(config, command="assay", as_json=as_json)
     embedder = _cli.build_embedder(settings.embedding)
     options = render_options(settings, palette, no_color)
     store = open_store(workspace, embedder, command="assay", as_json=as_json, tokenizer=settings.lexical.strategy)
     if store is None:
-        message = f"Dry hole: no index at {workspace / '.lode' / 'index.db'}; run `lode mine` first."
-        if as_json:
-            echo_json(json_err("assay", message, code="no_index"))
-        else:
-            render_message(message, intent=Intent.ERROR, options=options)
-        raise typer.Exit(code=1)
+        fail_with(
+            "no_index",
+            command="assay",
+            as_json=as_json,
+            options=options,
+            index_path=str(workspace / INDEX_DB_RELATIVE),
+        )
 
     model_gate(store, embedder, as_json=as_json, command="assay")
     with store:
@@ -83,43 +88,31 @@ def _assay(
     options: RenderOptions | None,
 ) -> None:
     if not query.strip():
-        message = "Dry hole: query must not be empty."
-        if as_json:
-            echo_json(json_err("assay", message, code="invalid_query"))
-        else:
-            render_message(message, intent=Intent.ERROR, options=options)
-        raise typer.Exit(code=1)
+        fail_with("invalid_query", command="assay", as_json=as_json, options=options)
 
     token = normalize_digest(digest)
     if not DIGEST_PATTERN.fullmatch(token):
-        message = f"Dry hole: not a valid digest: {digest!r}."
-        if as_json:
-            echo_json(json_err("assay", message, code="invalid_digest"))
-        else:
-            render_message(message, intent=Intent.ERROR, options=options)
-        raise typer.Exit(code=1)
+        fail_with("invalid_digest", command="assay", as_json=as_json, options=options, digest=digest)
 
     rowids = store.find_chunk_rowids(token)
     if not rowids:
-        message = f"Dry hole: no chunk with digest {digest!r}."
-        if as_json:
-            echo_json(json_err("assay", message, code="not_found"))
-        else:
-            render_message(message, intent=Intent.ERROR, options=options)
-        raise typer.Exit(code=1)
+        fail_with("not_found", command="assay", as_json=as_json, options=options, digest=digest)
     if len(rowids) > 1:
-        message = f"Digest {digest!r} is ambiguous ({len(rowids)} chunks); use a longer prefix:"
+        # Structured candidates: the JSON envelope carries them as data, the
+        # human output lists them as muted lines under the message.
+        text = require_error_text("ambiguous", digest=digest, count=len(rowids))
         if as_json:
             echo_json(
                 json_err(
                     "assay",
-                    message,
+                    f"{text.error}\n{text.hint}",
                     code="ambiguous",
                     candidates=[_candidate_json(store, rowid) for rowid in rowids],
                 )
             )
         else:
-            render_message(message, intent=Intent.ERROR, options=options)
+            render_message(text.error, intent=Intent.ERROR, options=options)
+            render_message(text.hint, intent=Intent.INFO, options=options)
             for rowid in rowids:
                 render_message(_candidate_line(store, rowid), intent=Intent.MUTED, options=options)
         raise typer.Exit(code=1)
@@ -143,13 +136,7 @@ def _assay(
     except DimensionMismatchError as exc:
         # Fallback for a dimension mismatch the gate could not detect: surface
         # the friendly recovery message instead of a raw sqlite traceback.
-        error, hint = dimension_mismatch_parts(exc.stored_dimension, exc.current_dimension)
-        if as_json:
-            echo_json(json_err("assay", f"{error}\n{hint}", code="dimension_mismatch"))
-        else:
-            render_message(error, intent=Intent.ERROR, options=options)
-            render_message(hint, intent=Intent.INFO, options=options)
-        raise typer.Exit(code=1) from exc
+        store_failure(exc, command="assay", as_json=as_json)
 
     if as_json:
         echo_json(

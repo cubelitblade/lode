@@ -21,6 +21,7 @@ from lode.cli.commands._common import (
     MineWorkspaceArg,
     NoColorArg,
     PaletteArg,
+    load_settings_or_fail,
     model_gate,
     open_store,
     render_options,
@@ -29,7 +30,7 @@ from lode.cli.commands._common import (
 )
 from lode.cli.render import RenderOptions
 from lode.cli.render.output import echo_json, json_ok
-from lode.config import Settings, load_settings
+from lode.config import Settings
 from lode.embeddings.base import Embedder
 from lode.index import EmbedderUnavailableError, Store, StoreError
 from lode.ingestion.pipeline import (
@@ -64,7 +65,7 @@ def mine(
     Use `--from-scratch` when changing the embedding model or when the index
     schema is incompatible.
     """
-    settings = load_settings(config)
+    settings = load_settings_or_fail(config, command="mine", as_json=as_json)
     embedder = _cli.build_embedder(settings.embedding)
     options = render_options(settings, palette, no_color)
     store = open_store(
@@ -90,7 +91,6 @@ def mine(
             store = Store(workspace / INDEX_DB_RELATIVE, embedder, tokenizer=settings.lexical.strategy)
         except (StoreError, EmbedderUnavailableError) as exc:
             store_failure(exc, command="mine", as_json=as_json)
-            raise typer.Exit(code=1) from exc
         # A fresh database has no stored model to gate against.
         with store:
             splitter = _splitter(settings)

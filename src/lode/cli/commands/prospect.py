@@ -14,18 +14,21 @@ import typer
 
 import lode.cli as _cli
 from lode.cli.commands._common import (
+    INDEX_DB_RELATIVE,
     ConfigArg,
     NoColorArg,
     PaletteArg,
     ProspectWorkspaceArg,
-    dimension_mismatch_parts,
+    fail_with,
+    load_settings_or_fail,
     model_gate,
     open_store,
     render_options,
+    store_failure,
 )
 from lode.cli.render import Intent
 from lode.cli.render.output import echo_json, json_err, json_ok, preview, render_message
-from lode.config import build_plan, load_settings
+from lode.config import build_plan
 from lode.index import DimensionMismatchError
 from lode.index.search import ProspectResult, search
 from lode.ingestion.pipeline import detect_changes
@@ -50,17 +53,18 @@ def prospect(
     Runs a silent detection first so the stale bits are fresh before search
     reads them — this command writes ``files.status`` (it is not read-only).
     """
-    settings = load_settings(config)
+    settings = load_settings_or_fail(config, command="prospect", as_json=as_json)
     embedder = _cli.build_embedder(settings.embedding)
     options = render_options(settings, palette, no_color)
     store = open_store(workspace, embedder, command="prospect", as_json=as_json, tokenizer=settings.lexical.strategy)
     if store is None:
-        message = f"Dry hole: no index at {workspace / '.lode' / 'index.db'}; run `lode mine` first."
-        if as_json:
-            echo_json(json_err("prospect", message, code="no_index"))
-        else:
-            render_message(message, intent=Intent.ERROR)
-        raise typer.Exit(code=1)
+        fail_with(
+            "no_index",
+            command="prospect",
+            as_json=as_json,
+            options=options,
+            index_path=str(workspace / INDEX_DB_RELATIVE),
+        )
 
     model_gate(store, embedder, as_json=as_json, command="prospect")
     with store:
@@ -88,13 +92,7 @@ def prospect(
             # config dimension mirrors the stored value but the model actually
             # emits a different width): surface the friendly recovery message
             # instead of a raw sqlite traceback.
-            error, hint = dimension_mismatch_parts(exc.stored_dimension, exc.current_dimension)
-            if as_json:
-                echo_json(json_err("prospect", f"{error}\n{hint}", code="dimension_mismatch"))
-            else:
-                render_message(error, intent=Intent.ERROR)
-                render_message(hint, intent=Intent.INFO)
-            raise typer.Exit(code=1) from exc
+            store_failure(exc, command="prospect", as_json=as_json)
         result = ProspectResult(
             workspace=workspace,
             query=query,

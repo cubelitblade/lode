@@ -18,11 +18,11 @@ from lode.cli.commands._common import (
     NoColorArg,
     PaletteArg,
     SurveyWorkspaceArg,
+    load_settings_or_fail,
     open_store,
     render_options,
 )
 from lode.cli.render.output import echo_json, json_ok
-from lode.config import load_settings
 from lode.ingestion.pipeline import classify, detect_changes
 
 
@@ -42,7 +42,7 @@ def survey(
 
     This command only compares files and does not require an embedding endpoint.
     """
-    settings = load_settings(config)
+    settings = load_settings_or_fail(config, command="survey", as_json=as_json)
     options = render_options(settings, palette, no_color)
     store = open_store(workspace, None, command="survey", as_json=as_json, tokenizer=settings.lexical.strategy)
     if store is None:

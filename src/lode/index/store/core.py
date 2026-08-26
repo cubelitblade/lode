@@ -161,11 +161,15 @@ class Store:
         if version != str(SCHEMA_VERSION):
             raise SchemaVersionError(
                 f"database schema version {version!r} is incompatible with "
-                f"supported version {SCHEMA_VERSION}; run an explicit rebuild"
+                f"supported version {SCHEMA_VERSION}; run an explicit rebuild",
+                stored_version=version,
             )
         dimension = self._meta_get("dimension")
         if dimension is None:
-            raise SchemaVersionError("database is missing dimension metadata; run an explicit rebuild")
+            raise SchemaVersionError(
+                "database is missing dimension metadata; run an explicit rebuild",
+                stored_version=version,
+            )
         self._stored_dimension = int(dimension)
         self._stored_model_id = self._meta_get("model_id")
         # Older databases predate the tokenizer key; default to the historical
@@ -321,7 +325,7 @@ class Store:
                 ).fetchall()
             except sqlite3.OperationalError as exc:
                 if "Dimension mismatch" in str(exc):
-                    raise DimensionMismatchError(self.dimension, len(vector), operation="query") from exc
+                    raise DimensionMismatchError(self.dimension, len(vector)) from exc
                 raise
         return [DenseMatch(int(row[0]), float(row[1])) for row in rows]
 
@@ -541,7 +545,7 @@ class Store:
                 )
             except sqlite3.OperationalError as exc:
                 if "Dimension mismatch" in str(exc):
-                    raise DimensionMismatchError(self.dimension, len(vector), operation="insert") from exc
+                    raise DimensionMismatchError(self.dimension, len(vector)) from exc
                 raise
 
     def _set_meta(self, key: str, value: str) -> None:

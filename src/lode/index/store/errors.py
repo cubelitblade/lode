@@ -1,5 +1,9 @@
 """Exceptions raised by the index store.
 
+Exception messages are diagnostic only (tracebacks, logs); user-facing
+wording lives in the ``lode.messages`` template table, keyed by each class's
+``code`` and filled from ``template_fields()``.
+
 ``EmbedderUnavailableError`` is defined in the embedding layer and re-exported
 here so embedding backends can raise it without depending on the index
 package; callers that catch it alongside store errors keep a single import.
@@ -10,6 +14,10 @@ from __future__ import annotations
 from typing import ClassVar
 
 from lode.embeddings.errors import EmbedderUnavailableError
+
+# Diagnostic message templates; never shown to users (see module docstring).
+_TOKENIZER_MISMATCH_DETAIL = "index was built with tokenizer {stored!r}, but {current!r} is configured"
+_DIMENSION_MISMATCH_DETAIL = "vector has {current} dimensions; the index expects {stored}"
 
 __all__ = [
     "DimensionMismatchError",
@@ -27,6 +35,10 @@ class StoreError(Exception):
     # Stable machine-readable identifier for the CLI/MCP error envelope.
     code: ClassVar[str] = "store_error"
 
+    def template_fields(self) -> dict[str, object]:
+        """Fields for filling this error's ``lode.messages`` template."""
+        return {}
+
 
 class SchemaVersionError(StoreError):
     """The existing database was created with an incompatible schema.
@@ -35,6 +47,13 @@ class SchemaVersionError(StoreError):
     """
 
     code: ClassVar[str] = "schema_version"
+
+    def __init__(self, message: str, *, stored_version: str | None = None) -> None:
+        super().__init__(message)
+        self.stored_version = stored_version
+
+    def template_fields(self) -> dict[str, object]:
+        return {"stored_version": self.stored_version if self.stored_version is not None else "unknown"}
 
 
 class TokenizerMismatchError(StoreError):
@@ -49,11 +68,12 @@ class TokenizerMismatchError(StoreError):
     code: ClassVar[str] = "tokenizer_mismatch"
 
     def __init__(self, stored_tokenizer: str, current_tokenizer: str) -> None:
-        super().__init__(
-            f"index was built with tokenizer {stored_tokenizer!r}, but {current_tokenizer!r} is configured"
-        )
+        super().__init__(_TOKENIZER_MISMATCH_DETAIL.format(stored=stored_tokenizer, current=current_tokenizer))
         self.stored_tokenizer = stored_tokenizer
         self.current_tokenizer = current_tokenizer
+
+    def template_fields(self) -> dict[str, object]:
+        return {"stored_tokenizer": self.stored_tokenizer, "current_tokenizer": self.current_tokenizer}
 
 
 class MissingEmbedderError(StoreError):
@@ -77,8 +97,10 @@ class DimensionMismatchError(StoreError):
 
     code: ClassVar[str] = "dimension_mismatch"
 
-    def __init__(self, stored_dimension: int, current_dimension: int, *, operation: str) -> None:
-        super().__init__(f"{operation} vector has {current_dimension} dimensions; the index expects {stored_dimension}")
+    def __init__(self, stored_dimension: int, current_dimension: int) -> None:
+        super().__init__(_DIMENSION_MISMATCH_DETAIL.format(stored=stored_dimension, current=current_dimension))
         self.stored_dimension = stored_dimension
         self.current_dimension = current_dimension
-        self.operation = operation
+
+    def template_fields(self) -> dict[str, object]:
+        return {"stored_dimension": self.stored_dimension, "current_dimension": self.current_dimension}

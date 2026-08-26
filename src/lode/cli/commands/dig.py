@@ -15,18 +15,21 @@ import typer
 
 import lode.cli as _cli
 from lode.cli.commands._common import (
+    INDEX_DB_RELATIVE,
     ConfigArg,
     DigWorkspaceArg,
     NoColorArg,
     PaletteArg,
+    fail_with,
+    load_settings_or_fail,
     open_store,
     render_options,
 )
 from lode.cli.render import Intent, RenderOptions
 from lode.cli.render.output import echo_json, json_err, json_ok, render_message
-from lode.config import load_settings
 from lode.index import ChunkWithPath, Store
 from lode.ingestion.pipeline import detect_changes
+from lode.messages import require_error_text
 
 # Hex hexdigest bodies (BLAKE3 produces lowercase hex); accept uppercase too.
 _DIGEST_PATTERN = re.compile(r"[0-9a-f]+", re.IGNORECASE)
@@ -57,16 +60,17 @@ def dig(
     as_json: bool = typer.Option(False, "--json", help="Emit JSON output."),
 ) -> None:
     """Fetch a chunk's full text by its digest (content address)."""
-    settings = load_settings(config)
+    settings = load_settings_or_fail(config, command="dig", as_json=as_json)
     options = render_options(settings, palette, no_color)
     store = open_store(workspace, None, command="dig", as_json=as_json, tokenizer=settings.lexical.strategy)
     if store is None:
-        message = f"Dry hole: no index at {workspace / '.lode' / 'index.db'}; run `lode mine` first."
-        if as_json:
-            echo_json(json_err("dig", message, code="no_index"))
-        else:
-            render_message(message, intent=Intent.ERROR, options=options)
-        raise typer.Exit(code=1)
+        fail_with(
+            "no_index",
+            command="dig",
+            as_json=as_json,
+            options=options,
+            index_path=str(workspace / INDEX_DB_RELATIVE),
+        )
     with store:
         # Refresh the stale bits so per-chunk provenance reflects the current
         # workspace (single dependency: only the status update, not the dirty
@@ -112,33 +116,26 @@ def _dig(
 ) -> None:
     token = _normalize_digest(digest)
     if not _DIGEST_PATTERN.fullmatch(token):
-        message = f"Dry hole: not a valid digest: {digest!r}."
-        if as_json:
-            echo_json(json_err("dig", message, code="invalid_digest"))
-        else:
-            render_message(message, intent=Intent.ERROR, options=options)
-        raise typer.Exit(code=1)
+        fail_with("invalid_digest", command="dig", as_json=as_json, options=options, digest=digest)
     matches = store.find_chunks_by_digest(token)
     if not matches:
-        message = f"Dry hole: no chunk with digest {digest!r}."
-        if as_json:
-            echo_json(json_err("dig", message, code="not_found"))
-        else:
-            render_message(message, intent=Intent.ERROR, options=options)
-        raise typer.Exit(code=1)
+        fail_with("not_found", command="dig", as_json=as_json, options=options, digest=digest)
     if len(matches) > 1:
-        message = f"Digest {digest!r} is ambiguous ({len(matches)} chunks); use a longer prefix:"
+        # Structured candidates: the JSON envelope carries them as data, the
+        # human output lists them as muted lines under the message.
+        text = require_error_text("ambiguous", digest=digest, count=len(matches))
         if as_json:
             echo_json(
                 json_err(
                     "dig",
-                    message,
+                    f"{text.error}\n{text.hint}",
                     code="ambiguous",
                     candidates=[_chunk_to_json(chunk, include_text=False) for chunk in matches],
                 )
             )
         else:
-            render_message(message, intent=Intent.ERROR, options=options)
+            render_message(text.error, intent=Intent.ERROR, options=options)
+            render_message(text.hint, intent=Intent.INFO, options=options)
             for chunk in matches:
                 render_message(_provenance_line(chunk), intent=Intent.MUTED, options=options)
         raise typer.Exit(code=1)
