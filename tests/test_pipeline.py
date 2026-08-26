@@ -10,9 +10,9 @@ from pathlib import Path
 
 import pytest
 
+from lode.index import FileStatus, Store
 from lode.index.ranking import LinearFusion, MinmaxNorm, RetrievalPlan
 from lode.index.search import search
-from lode.index.store import FileStatus, Store
 from lode.ingestion import Chunk, Segment
 from lode.ingestion.pipeline import FailedFile, SyncSummary, classify, detect_changes, sync
 from lode.ingestion.split import RecursiveSegmentSplitter, SegmentSplitter

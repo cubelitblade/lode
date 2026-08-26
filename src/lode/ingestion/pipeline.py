@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from lode.embeddings.base import Embedder
-from lode.index.store import EmbedderUnavailableError, FileRecord, FileStatus, Store, StoreError
+from lode.index import EmbedderUnavailableError, FileRecord, FileStatus, Store, StoreError
 from lode.ingestion.digest import file_digest
 from lode.ingestion.discover import discover
 from lode.ingestion.errors import ExtractionError

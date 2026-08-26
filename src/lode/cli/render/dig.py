@@ -17,7 +17,7 @@ from rich.panel import Panel
 from rich.text import Text
 
 from lode.cli.render.core import Intent, RenderOptions
-from lode.index.store import ChunkWithPath, FileStatus
+from lode.index import ChunkWithPath, FileStatus
 
 
 def render_dig(

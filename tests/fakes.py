@@ -8,7 +8,7 @@ from docx import Document
 
 from lode.embeddings.base import Embedder
 from lode.embeddings.errors import EmbedderUnavailableError
-from lode.index.store import FileRecord
+from lode.index import FileRecord
 from lode.ingestion import Chunk, chunk_digest
 
 DIM = 4

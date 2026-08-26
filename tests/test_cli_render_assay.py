@@ -18,9 +18,9 @@ from rich.console import Console
 
 from lode.cli.render import RenderOptions
 from lode.cli.render.assay import render_assay
+from lode.index import ChunkWithPath, FileStatus, PathRef
 from lode.index.ranking import LinearFusion, MinmaxNorm, RetrievalPlan, RrfFusion
 from lode.index.search import ScoreExplanation
-from lode.index.store import ChunkWithPath, FileStatus, PathRef
 
 
 def _explanation(

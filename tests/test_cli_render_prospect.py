@@ -20,8 +20,8 @@ from rich.console import Console
 
 from lode.cli.render import RenderOptions
 from lode.cli.render.prospect import render_prospect
+from lode.index import FileStatus, PathRef
 from lode.index.search import ProspectResult, SearchHit
-from lode.index.store import FileStatus, PathRef
 
 
 def _hit(*, stale: bool = False) -> SearchHit:

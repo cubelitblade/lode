@@ -13,9 +13,9 @@ from pathlib import Path
 
 import pytest
 
+from lode.index import Store
 from lode.index.ranking import LinearFusion, MinmaxNorm, RetrievalPlan, RrfFusion
 from lode.index.search import explain, search
-from lode.index.store import Store
 from lode.ingestion import chunk_digest
 from tests.fakes import FakeEmbedder, file_record, make_chunks
 

@@ -17,8 +17,8 @@ from rich.text import Text
 
 from lode.cli.render.core import Intent, RenderOptions
 from lode.cli.render.output import preview
+from lode.index import FileStatus
 from lode.index.search import ProspectResult
-from lode.index.store import FileStatus
 
 
 def render_prospect(

@@ -18,7 +18,7 @@ from rich.console import Console
 
 from lode.cli.render import RenderOptions
 from lode.cli.render.dig import render_dig
-from lode.index.store import ChunkWithPath, FileStatus, PathRef
+from lode.index import ChunkWithPath, FileStatus, PathRef
 
 
 def _chunk(seq: int, *, stale: bool = False, text: str = "full chunk text") -> ChunkWithPath:

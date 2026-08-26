@@ -13,8 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from lode.embeddings.base import Embedder
+from lode.index import ChunkWithPath, FileStatus, PathRef, Store
 from lode.index.ranking import LinearFusion, RetrievalPlan
-from lode.index.store import ChunkWithPath, FileStatus, PathRef, Store
 
 # Retrieve a larger candidate pool than top_k from each source so the fused
 # ranking can still reach the best combined result.
