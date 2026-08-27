@@ -11,9 +11,10 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from collections.abc import Sequence
 from dataclasses import dataclass
 
-from lode.lexical.base import LexicalStrategy
+from lode.lexical.base import IndexedTerm, LexicalStrategy, identity_terms
 from lode.lexical.simple import SimpleStrategy
 
 # Word-ish tokens for the plain (unicode61-style) query. Each token is quoted
@@ -36,6 +37,9 @@ class Unicode61Strategy:
         tokens = _WORD.findall(text)
         return " OR ".join(f'"{token}"' for token in tokens)
 
+    def interpret(self, tokens: Sequence[str]) -> list[IndexedTerm]:
+        return identity_terms(tokens)
+
 
 @dataclass(frozen=True, slots=True)
 class TrigramStrategy:
@@ -51,6 +55,9 @@ class TrigramStrategy:
     def query(self, text: str) -> str:
         grams = [text[i : i + 3] for i in range(len(text) - 2)]
         return " OR ".join(f'"{g}"' for g in grams)
+
+    def interpret(self, tokens: Sequence[str]) -> list[IndexedTerm]:
+        return identity_terms(tokens)
 
 
 # The strategies under test, keyed by name.

@@ -1,5 +1,14 @@
 """Index storage layer: the SQLite store backing retrieval."""
 
+from lode.index.explanation import (
+    EvidenceBlock,
+    FormulaComponents,
+    FusionExplanation,
+    RankingFactor,
+    RetrievalStatus,
+    ScoreExplanation,
+    SourceExplanation,
+)
 from lode.index.ranking import (
     LinearFusion,
     MinmaxNorm,
@@ -33,8 +42,11 @@ __all__ = [
     "ChunkWithPath",
     "DimensionMismatchError",
     "EmbedderUnavailableError",
+    "EvidenceBlock",
     "FileRecord",
     "FileStatus",
+    "FormulaComponents",
+    "FusionExplanation",
     "IndexIssue",
     "IndexMeta",
     "LinearFusion",
@@ -42,10 +54,14 @@ __all__ = [
     "ModelStatus",
     "Norm",
     "PathRef",
+    "RankingFactor",
     "RetrievalPlan",
+    "RetrievalStatus",
     "RrfFusion",
     "SchemaVersionError",
+    "ScoreExplanation",
     "SoftmaxNorm",
+    "SourceExplanation",
     "Store",
     "StoreError",
     "TokenizerMismatchError",

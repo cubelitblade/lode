@@ -9,7 +9,10 @@ this package (``lode.lexical.simple``); the library is under ``native/``.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Sequence
 from dataclasses import dataclass
+
+from lode.lexical.base import IndexedTerm, identity_terms
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +39,11 @@ class SimpleStrategy:
         # The raw query is passed as a bound parameter to the helper; the
         # return value here is unused when ``uses_helper`` is true.
         return text
+
+    def interpret(self, tokens: Sequence[str]) -> list[IndexedTerm]:
+        # Structuring the pinyin readings into variants needs a contract from
+        # the native side (see discussion); until then the stream stays flat.
+        return identity_terms(tokens)
 
 
 __all__ = ["SimpleStrategy"]

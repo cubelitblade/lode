@@ -15,7 +15,48 @@ owns the full DDL and a strategy only contributes its tokenizer-specific bits.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Protocol
+
+
+@dataclass(frozen=True, slots=True)
+class IndexedTerm:
+    """One structured term of the index-side token stream.
+
+    ``surface`` is the term's primary form as stored in the index (a word for
+    ``unicode61``, a 3-gram for ``trigram``, a Han character for the native
+    strategies). ``variants`` are accompanying forms of the same surface that
+    the tokenizer also indexes — e.g. the pinyin readings emitted alongside
+    each Han character. Empty for tokenizers that index one plain form.
+    """
+
+    surface: str
+    variants: tuple[str, ...] = ()
+
+
+def identity_terms(tokens: Sequence[str]) -> list[IndexedTerm]:
+    """The default interpretation: every raw token is its own plain term."""
+    return [IndexedTerm(surface=token) for token in tokens]
+
+
+def distinct_terms(terms: Sequence[IndexedTerm]) -> list[IndexedTerm]:
+    """Merge repeated surfaces, preserving first-seen order.
+
+    Variants of repeated surfaces unite in first-seen order; everything else
+    keeps the original occurrence order.
+    """
+    merged: dict[str, IndexedTerm] = {}
+    order: list[str] = []
+    for term in terms:
+        if term.surface not in merged:
+            merged[term.surface] = IndexedTerm(term.surface, term.variants)
+            order.append(term.surface)
+            continue
+        seen = merged[term.surface]
+        if extra := tuple(v for v in term.variants if v not in seen.variants):
+            merged[term.surface] = IndexedTerm(seen.surface, (*seen.variants, *extra))
+    return [merged[surface] for surface in order]
 
 
 class LexicalStrategy(Protocol):
@@ -49,6 +90,17 @@ class LexicalStrategy(Protocol):
         The result is passed as the MATCH argument. Strategies backed by a
         native helper (e.g. ``simple_query``) return a marker that the caller
         resolves to the helper call; see ``uses_helper``.
+        """
+        ...
+
+    def interpret(self, tokens: Sequence[str]) -> list[IndexedTerm]:
+        """Structure a raw index-side token stream into terms.
+
+        The adapter between what the tokenizer stores and what consumers
+        (e.g. ``assay how``) display: each strategy knows its own token
+        conventions and folds accompanying forms into ``variants``. The
+        occurrence order of the stream is preserved; duplicates are kept
+        (callers dedupe with :func:`distinct_terms` when displaying).
         """
         ...
 

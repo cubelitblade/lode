@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from lode.index import Store
+from lode.index.explanation import RetrievalStatus
 from lode.index.ranking import LinearFusion, MinmaxNorm, RetrievalPlan, RrfFusion
 from lode.index.search import explain, search
 from lode.ingestion import chunk_digest
@@ -193,8 +194,8 @@ def test_explain_hit_matches_search_score(seeded_store: Store) -> None:
     assert explanation.in_results
     assert explanation.rank is not None
     assert explanation.combined > 0
-    assert explanation.semantic_raw is not None
-    assert explanation.lexical_raw is not None
+    assert explanation.sources["semantic"].raw_score is not None
+    assert explanation.sources["lexical"].raw_score is not None
 
     hits = search(
         seeded_store,
@@ -240,9 +241,9 @@ def test_explain_lexical_miss_is_none(seeded_store: Store) -> None:
         top_k=5,
     )
 
-    assert explanation.lexical_raw is None
-    assert explanation.lexical_prepared is None
-    assert explanation.semantic_raw is not None
+    assert explanation.sources["lexical"].status is RetrievalStatus.NOT_RETRIEVED
+    assert explanation.sources["lexical"].raw_score is None
+    assert explanation.sources["semantic"].raw_score is not None
 
 
 def test_explain_disabled_source_is_none(seeded_store: Store) -> None:
@@ -257,9 +258,9 @@ def test_explain_disabled_source_is_none(seeded_store: Store) -> None:
         top_k=5,
     )
 
-    assert explanation.semantic_raw is None
-    assert explanation.semantic_prepared is None
-    assert explanation.lexical_raw is not None
+    assert explanation.sources["semantic"].status is RetrievalStatus.DISABLED
+    assert explanation.sources["semantic"].raw_score is None
+    assert explanation.sources["lexical"].raw_score is not None
 
 
 def test_explain_zero_combined_not_in_results(seeded_store: Store) -> None:
@@ -324,6 +325,7 @@ def test_rrf_explain_skips_norm(seeded_store: Store) -> None:
     )
 
     assert explanation.plan.norm is None
-    assert explanation.semantic_prepared == explanation.semantic_raw
-    assert explanation.lexical_prepared == explanation.lexical_raw
+    # RRF skips normalization: prepared scores equal the raw ones.
+    assert explanation.sources["semantic"].prepared_score == explanation.sources["semantic"].raw_score
+    assert explanation.sources["lexical"].prepared_score == explanation.sources["lexical"].raw_score
     assert explanation.in_results

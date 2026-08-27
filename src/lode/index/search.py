@@ -13,7 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from lode.embeddings.base import Embedder
-from lode.index import ChunkWithPath, FileStatus, PathRef, Store
+from lode.index import FileStatus, PathRef, Store
+from lode.index.explanation import RetrievalStatus, ScoreExplanation, SourceExplanation
 from lode.index.ranking import LinearFusion, RetrievalPlan
 
 # Retrieve a larger candidate pool than top_k from each source so the fused
@@ -81,37 +82,6 @@ class _Candidates:
     semantic_prepared: dict[int, float]
     lexical_prepared: dict[int, float]
     combined: dict[int, float]
-
-
-@dataclass(frozen=True, slots=True)
-class ScoreExplanation:
-    """Why one chunk scored as it did for a query.
-
-    ``*_raw``/``*_prepared`` are ``None`` when that source did not return the
-    chunk in its candidate pool (e.g. no lexical match, or the source is
-    disabled). ``*_pool_rank`` is the chunk's rank within that source's
-    candidate pool (by raw score, descending), or ``None`` when it is not in
-    the pool; ``*_pool_size`` is the pool's actual size. ``rank`` is the
-    chunk's true rank across all scored rows (not truncated to ``top_k``);
-    ``in_results`` reports whether it actually made the returned top-``top_k``.
-    ``plan`` is the retrieval path that produced the scores (the flow context
-    ``assay`` reads to explain them).
-    """
-
-    chunk: ChunkWithPath
-    semantic_raw: float | None
-    lexical_raw: float | None
-    semantic_prepared: float | None
-    lexical_prepared: float | None
-    semantic_pool_rank: int | None
-    lexical_pool_rank: int | None
-    semantic_pool_size: int
-    lexical_pool_size: int
-    combined: float
-    rank: int | None
-    in_results: bool
-    plan: RetrievalPlan
-    top_k: int
 
 
 def search(
@@ -241,16 +211,23 @@ def explain(
     if chunk is None:
         raise ValueError(f"no chunk with rowid {rowid}")
 
-    semantic_raw = candidates.semantic_raw.get(rowid)
-    lexical_raw = candidates.lexical_raw.get(rowid)
-    semantic_prepared = candidates.semantic_prepared.get(rowid)
-    lexical_prepared = candidates.lexical_prepared.get(rowid)
+    sources = {
+        "semantic": _source_explanation(
+            plan,
+            "semantic",
+            candidates.semantic_raw,
+            candidates.semantic_prepared,
+            rowid,
+        ),
+        "lexical": _source_explanation(
+            plan,
+            "lexical",
+            candidates.lexical_raw,
+            candidates.lexical_prepared,
+            rowid,
+        ),
+    }
     combined = candidates.combined.get(rowid, 0.0)
-
-    semantic_pool_rank = _pool_rank(candidates.semantic_raw, rowid)
-    lexical_pool_rank = _pool_rank(candidates.lexical_raw, rowid)
-    semantic_pool_size = len(candidates.semantic_raw)
-    lexical_pool_size = len(candidates.lexical_raw)
 
     all_ranked = sorted(
         ((rid, score) for rid, score in candidates.combined.items() if score > 0.0),
@@ -262,19 +239,36 @@ def explain(
 
     return ScoreExplanation(
         chunk=chunk,
-        semantic_raw=semantic_raw,
-        lexical_raw=lexical_raw,
-        semantic_prepared=semantic_prepared,
-        lexical_prepared=lexical_prepared,
-        semantic_pool_rank=semantic_pool_rank,
-        lexical_pool_rank=lexical_pool_rank,
-        semantic_pool_size=semantic_pool_size,
-        lexical_pool_size=lexical_pool_size,
+        sources=sources,
         combined=combined,
         rank=rank,
         in_results=in_results,
         plan=plan,
         top_k=top_k,
+    )
+
+
+def _source_explanation(
+    plan: RetrievalPlan,
+    source: str,
+    raw: dict[int, float],
+    prepared: dict[int, float],
+    rowid: int,
+) -> SourceExplanation:
+    """Assemble one source's explanation, deriving its retrieval status."""
+    if not _source_enabled(plan, source):
+        return SourceExplanation(RetrievalStatus.DISABLED, 0)
+    if not raw:
+        return SourceExplanation(RetrievalStatus.EMPTY, 0)
+    raw_score = raw.get(rowid)
+    if raw_score is None:
+        return SourceExplanation(RetrievalStatus.NOT_RETRIEVED, len(raw))
+    return SourceExplanation(
+        RetrievalStatus.MATCHED,
+        len(raw),
+        raw_score=raw_score,
+        prepared_score=prepared.get(rowid),
+        pool_rank=_pool_rank(raw, rowid),
     )
 
 

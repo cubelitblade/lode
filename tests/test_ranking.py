@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import pytest
 
+from lode.index.explanation import RetrievalStatus, SourceExplanation
 from lode.index.ranking import LinearFusion, MinmaxNorm, RrfFusion, SoftmaxNorm
 
 
@@ -78,3 +79,103 @@ def test_rrf_fusion_uses_custom_k() -> None:
     fusion = RrfFusion(k=10)
     result = fusion.fuse({"semantic": {1: 1.0}})
     assert result[1] == pytest.approx(1.0 / 11.0)
+
+
+def _matched(
+    *,
+    raw: float,
+    prepared: float,
+    pool_rank: int,
+    pool_size: int = 40,
+) -> SourceExplanation:
+    return SourceExplanation(
+        status=RetrievalStatus.MATCHED,
+        pool_size=pool_size,
+        raw_score=raw,
+        prepared_score=prepared,
+        pool_rank=pool_rank,
+    )
+
+
+def _sources() -> dict[str, SourceExplanation]:
+    return {
+        "semantic": _matched(raw=0.9, prepared=1.0, pool_rank=1),
+        "lexical": _matched(raw=-5.0, prepared=0.5, pool_rank=3),
+    }
+
+
+def test_linear_explain_ranking_factors_are_contributions() -> None:
+    fusion = LinearFusion(weights={"semantic": 0.7, "lexical": 0.3})
+    expl = fusion.explain(_sources(), combined=0.85, norm=MinmaxNorm())
+    assert expl.ranking_factors["semantic"].metric == "contribution"
+    assert expl.ranking_factors["semantic"].value == pytest.approx(0.7)
+    assert expl.ranking_factors["lexical"].value == pytest.approx(0.15)
+
+
+def test_linear_explain_evidence_carries_norm_and_weight() -> None:
+    fusion = LinearFusion(weights={"semantic": 0.7, "lexical": 0.3})
+    expl = fusion.explain(_sources(), combined=0.85, norm=MinmaxNorm())
+    block = expl.evidence["semantic"]
+    assert block.rank == 1
+    assert block.raw_score == pytest.approx(0.9)
+    assert block.prepared_score == pytest.approx(1.0)
+    assert block.normalization == "min-max"
+    assert block.weight == pytest.approx(0.7)
+    assert block.contribution == pytest.approx(0.7)
+
+
+def test_linear_explain_formula_substitutes_numbers() -> None:
+    fusion = LinearFusion(weights={"semantic": 0.7, "lexical": 0.3})
+    expl = fusion.explain(_sources(), combined=0.85, norm=MinmaxNorm())
+    assert expl.formula.method_label == "Linear"
+    assert expl.formula.symbolic_terms == "semantic \u00d7 0.7 + lexical \u00d7 0.3"
+    assert expl.formula.value_terms == "1.0000 \u00d7 0.7 + 0.5000 \u00d7 0.3"
+    assert expl.formula.result == pytest.approx(0.85)
+    assert expl.formula.missing_note is None
+
+
+def test_linear_explain_skips_non_matched_sources() -> None:
+    sources = _sources()
+    sources["lexical"] = SourceExplanation(
+        status=RetrievalStatus.DISABLED, pool_size=0, raw_score=None, prepared_score=None, pool_rank=None
+    )
+    fusion = LinearFusion(weights={"semantic": 0.7, "lexical": 0.3})
+    expl = fusion.explain(sources, combined=0.7, norm=MinmaxNorm())
+    assert set(expl.ranking_factors) == {"semantic"}
+    assert set(expl.evidence) == {"semantic"}
+    assert expl.formula.symbolic_terms == "semantic \u00d7 0.7"
+
+
+def test_rrf_explain_ranking_factors_are_ranks() -> None:
+    fusion = RrfFusion(k=60)
+    expl = fusion.explain(_sources(), combined=0.05)
+    assert expl.ranking_factors["semantic"].metric == "rank"
+    assert expl.ranking_factors["semantic"].value == 1
+    assert expl.ranking_factors["lexical"].value == 3
+
+
+def test_rrf_explain_evidence_is_empty() -> None:
+    fusion = RrfFusion(k=60)
+    expl = fusion.explain(_sources(), combined=0.05)
+    assert expl.evidence == {}
+
+
+def test_rrf_explain_formula_uses_ranks() -> None:
+    fusion = RrfFusion(k=60)
+    expl = fusion.explain(_sources(), combined=0.05)
+    assert expl.formula.method_label == "RRF (k=60)"
+    assert expl.formula.symbolic_terms == "1 \u00f7 (60 + semantic_rank) + 1 \u00f7 (60 + lexical_rank)"
+    assert expl.formula.value_terms == "1 \u00f7 61 + 1 \u00f7 63"
+    assert expl.formula.result == pytest.approx(0.05)
+    assert expl.formula.missing_note is None
+
+
+def test_rrf_explain_missing_note_lists_non_matched() -> None:
+    sources = _sources()
+    sources["lexical"] = SourceExplanation(
+        status=RetrievalStatus.EMPTY, pool_size=0, raw_score=None, prepared_score=None, pool_rank=None
+    )
+    fusion = RrfFusion(k=60)
+    expl = fusion.explain(sources, combined=1.0 / 61.0)
+    assert set(expl.ranking_factors) == {"semantic"}
+    assert expl.formula.missing_note == "lexical: no results"

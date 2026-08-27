@@ -19,6 +19,15 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
+from lode.index.explanation import (
+    EvidenceBlock,
+    FormulaComponents,
+    FusionExplanation,
+    RankingFactor,
+    RetrievalStatus,
+    SourceExplanation,
+)
+
 
 class Norm(Protocol):
     """Per-source score transform, applied before fusion.
@@ -31,6 +40,15 @@ class Norm(Protocol):
     @property
     def name(self) -> str: ...
 
+    @property
+    def params(self) -> Mapping[str, object]:
+        """Human-readable operator parameters (e.g. ``temperature``).
+
+        Empty for parameterless operators; consumed by explanation output so
+        renderers never inspect concrete operator types.
+        """
+        ...
+
     def normalize(self, scores: dict[int, float]) -> dict[int, float]: ...
 
 
@@ -39,6 +57,10 @@ class MinmaxNorm:
     """Min-max normalize to [0, 1]; a single value maps to 1.0."""
 
     name: str = "min-max"
+
+    @property
+    def params(self) -> Mapping[str, object]:
+        return {}
 
     def normalize(self, scores: dict[int, float]) -> dict[int, float]:
         if not scores:
@@ -63,6 +85,10 @@ class SoftmaxNorm:
     temperature: float = 1.0
     name: str = "softmax"
 
+    @property
+    def params(self) -> Mapping[str, object]:
+        return {"temperature": self.temperature}
+
     def normalize(self, scores: dict[int, float]) -> dict[int, float]:
         if not scores:
             return {}
@@ -80,7 +106,26 @@ class Fusion(Protocol):
     @property
     def name(self) -> str: ...
 
+    @property
+    def params(self) -> Mapping[str, object]:
+        """Human-readable operator parameters (e.g. ``k``, ``weights``)."""
+        ...
+
     def fuse(self, prepared: Mapping[str, dict[int, float]]) -> dict[int, float]: ...
+
+    def explain(
+        self,
+        sources: Mapping[str, SourceExplanation],
+        combined: float,
+        norm: Norm | None = None,
+    ) -> FusionExplanation:
+        """Render-ready explanation of how this fusion produced ``combined``.
+
+        The render layer consumes this without branching on concrete operator
+        types. ``norm`` is provided so Linear can include the normalization
+        name in evidence blocks; RRF ignores it.
+        """
+        ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +135,10 @@ class LinearFusion:
     weights: Mapping[str, float]
     name: str = "linear"
 
+    @property
+    def params(self) -> Mapping[str, object]:
+        return {"weights": dict(self.weights)}
+
     def fuse(self, prepared: Mapping[str, dict[int, float]]) -> dict[int, float]:
         combined: dict[int, float] = {}
         for source, scores in prepared.items():
@@ -97,6 +146,44 @@ class LinearFusion:
             for rowid, score in scores.items():
                 combined[rowid] = combined.get(rowid, 0.0) + weight * score
         return combined
+
+    def explain(
+        self,
+        sources: Mapping[str, SourceExplanation],
+        combined: float,
+        norm: Norm | None = None,
+    ) -> FusionExplanation:
+        norm_name = norm.name if norm is not None else None
+        ranking_factors: dict[str, RankingFactor] = {}
+        evidence: dict[str, EvidenceBlock] = {}
+        symbolic_parts: list[str] = []
+        value_parts: list[str] = []
+
+        for name, source in sources.items():
+            if source.status is not RetrievalStatus.MATCHED:
+                continue
+            weight = self.weights.get(name, 0.0)
+            prepared = source.prepared_score or 0.0
+            contribution = prepared * weight
+            ranking_factors[name] = RankingFactor("contribution", contribution)
+            evidence[name] = EvidenceBlock(
+                rank=source.pool_rank,
+                raw_score=source.raw_score,
+                prepared_score=source.prepared_score,
+                normalization=norm_name,
+                weight=weight,
+                contribution=contribution,
+            )
+            symbolic_parts.append(f"{name} \u00d7 {weight}")
+            value_parts.append(f"{source.prepared_score:.4f} \u00d7 {weight}")
+
+        formula = FormulaComponents(
+            method_label="Linear",
+            symbolic_terms=" + ".join(symbolic_parts),
+            value_terms=" + ".join(value_parts),
+            result=combined,
+        )
+        return FusionExplanation(ranking_factors=ranking_factors, evidence=evidence, formula=formula)
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,6 +198,10 @@ class RrfFusion:
     k: int = 60
     name: str = "rrf"
 
+    @property
+    def params(self) -> Mapping[str, object]:
+        return {"k": self.k}
+
     def fuse(self, prepared: Mapping[str, dict[int, float]]) -> dict[int, float]:
         combined: dict[int, float] = {}
         for scores in prepared.values():
@@ -118,6 +209,39 @@ class RrfFusion:
             for position, (rowid, _) in enumerate(ranked, start=1):
                 combined[rowid] = combined.get(rowid, 0.0) + 1.0 / (self.k + position)
         return combined
+
+    def explain(
+        self,
+        sources: Mapping[str, SourceExplanation],
+        combined: float,
+        norm: Norm | None = None,
+    ) -> FusionExplanation:
+        ranking_factors: dict[str, RankingFactor] = {}
+        symbolic_parts: list[str] = []
+        value_parts: list[str] = []
+
+        for name, source in sources.items():
+            if source.status is not RetrievalStatus.MATCHED:
+                continue
+            rank = source.pool_rank or 0
+            ranking_factors[name] = RankingFactor("rank", rank)
+            symbolic_parts.append(f"1 \u00f7 ({self.k} + {name}_rank)")
+            value_parts.append(f"1 \u00f7 {self.k + rank}")
+
+        missing = [
+            f"{name}: {source.status.label}"
+            for name, source in sources.items()
+            if source.status is not RetrievalStatus.MATCHED
+        ]
+
+        formula = FormulaComponents(
+            method_label=f"RRF (k={self.k})",
+            symbolic_terms=" + ".join(symbolic_parts),
+            value_terms=" + ".join(value_parts),
+            result=combined,
+            missing_note=", ".join(missing) if missing else None,
+        )
+        return FusionExplanation(ranking_factors=ranking_factors, evidence={}, formula=formula)
 
 
 @dataclass(frozen=True, slots=True)

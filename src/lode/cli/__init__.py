@@ -11,6 +11,7 @@ from __future__ import annotations
 import typer
 
 from lode.cli.render.assay import render_assay as render_assay  # re-exported for lode.cli.render_assay
+from lode.cli.render.assay import render_how as render_how  # re-exported for lode.cli.render_how
 from lode.cli.render.dig import render_dig as render_dig  # re-exported for lode.cli.render_dig
 from lode.cli.render.mine import render_mine as render_mine  # re-exported for lode.cli.render_mine
 from lode.cli.render.prospect import render_prospect as render_prospect  # re-exported for lode.cli.render_prospect
