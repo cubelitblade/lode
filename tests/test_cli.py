@@ -79,11 +79,11 @@ def test_mine_then_prospect_roundtrip(tmp_path: Path, monkeypatch: pytest.Monkey
         "The experiment showed strong quantum entanglement in the third group."
     )
 
-    mine = runner.invoke(app, ["mine", str(tmp_path)])
+    mine = runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
     assert mine.exit_code == 0, mine.output
     assert "+ added 1" in mine.output
 
-    prospect = runner.invoke(app, ["prospect", "entanglement", str(tmp_path)])
+    prospect = runner.invoke(app, ["--workspace", str(tmp_path), "prospect", "entanglement"])
     assert prospect.exit_code == 0, prospect.output
     assert "docs/report.txt" in prospect.output
     assert "quantum entanglement" in prospect.output
@@ -97,10 +97,10 @@ def test_survey_reports_pending(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     report = tmp_path / "a.txt"
     report.write_text("hello world")
 
-    runner.invoke(app, ["mine", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
     report.write_text("changed content!")
 
-    survey = runner.invoke(app, ["survey", str(tmp_path)])
+    survey = runner.invoke(app, ["--workspace", str(tmp_path), "survey"])
     assert survey.exit_code == 0, survey.output
     # Human-readable output is presentation, not a stable contract: assert only
     # that the changed file is reported, not the exact formatting.
@@ -118,7 +118,7 @@ def test_survey_without_index_reports_all_new_and_creates_no_db(
     (tmp_path / "a.txt").write_text("hello world")
     (tmp_path / "b.txt").write_text("second file")
 
-    result = runner.invoke(app, ["survey", "--json", str(tmp_path)])
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "survey", "--json"])
 
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
@@ -137,7 +137,7 @@ def test_survey_uses_configured_no_color(tmp_path: Path, monkeypatch: pytest.Mon
     (tmp_path / "a.txt").write_text("hello world")
     (tmp_path / ".lode").mkdir()
     (tmp_path / ".lode" / "config.toml").write_text("[output]\nno_color = true\n")
-    runner.invoke(app, ["mine", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
 
     captured: RenderOptions | None = None
 
@@ -152,7 +152,7 @@ def test_survey_uses_configured_no_color(tmp_path: Path, monkeypatch: pytest.Mon
         captured = options
 
     monkeypatch.setattr("lode.cli.render_survey", fake_render)
-    result = runner.invoke(app, ["survey", str(tmp_path)])
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "survey"])
     assert result.exit_code == 0, result.output
     assert captured is not None
     assert captured.no_color is True
@@ -178,7 +178,7 @@ def test_survey_palette_flag_overrides_config(tmp_path: Path, monkeypatch: pytes
         captured = options
 
     monkeypatch.setattr("lode.cli.render_survey", fake_render)
-    result = runner.invoke(app, ["survey", "--palette", "accessible", str(tmp_path)])
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "survey", "--palette", "accessible"])
     assert result.exit_code == 0, result.output
     assert captured is not None
     assert captured.intent_colors == ACCESSIBLE_INTENT_COLORS
@@ -202,7 +202,7 @@ def test_survey_no_color_flag_wins_over_palette(tmp_path: Path, monkeypatch: pyt
         captured = options
 
     monkeypatch.setattr("lode.cli.render_survey", fake_render)
-    result = runner.invoke(app, ["survey", "--no-color", "--palette", "accessible", str(tmp_path)])
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "survey", "--no-color", "--palette", "accessible"])
     assert result.exit_code == 0, result.output
     assert captured is not None
     assert captured.no_color is True
@@ -293,7 +293,7 @@ def test_mine_from_scratch_flag_works(tmp_path: Path, monkeypatch: pytest.Monkey
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
     (tmp_path / "a.txt").write_text("hello world")
 
-    mine = runner.invoke(app, ["mine", "--from-scratch", str(tmp_path)])
+    mine = runner.invoke(app, ["--workspace", str(tmp_path), "mine", "--from-scratch"])
     assert mine.exit_code == 0, mine.output
     assert "+ added 1" in mine.output
 
@@ -306,7 +306,7 @@ def test_mine_with_no_indexable_files_creates_no_db(tmp_path: Path, monkeypatch:
     """
     (tmp_path / "pic.png").write_bytes(b"nope")
 
-    result = runner.invoke(app, ["mine", str(tmp_path)])
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
 
     assert result.exit_code == 0, result.output
     assert "Nothing to do." in result.output
@@ -323,7 +323,7 @@ def test_mine_uses_chunking_config(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     (tmp_path / ".lode" / "config.toml").write_text("[chunking]\nsize = 20\noverlap = 5\n")
     (tmp_path / "a.txt").write_text("word " * 100)
 
-    mine = runner.invoke(app, ["mine", str(tmp_path)])
+    mine = runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
     assert mine.exit_code == 0, mine.output
     assert "+ added 1" in mine.output
 
@@ -339,26 +339,26 @@ def test_mine_uses_chunking_config(tmp_path: Path, monkeypatch: pytest.MonkeyPat
 def test_model_mismatch_blocks_prospect(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
     (tmp_path / "a.txt").write_text("hello world")
-    runner.invoke(app, ["mine", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
 
     # Same store, different model -> refused until --from-scratch.
     monkeypatch.setattr("lode.cli.build_embedder", _other_model_embedder)
-    prospect = runner.invoke(app, ["prospect", "hello", str(tmp_path)])
+    prospect = runner.invoke(app, ["--workspace", str(tmp_path), "prospect", "hello"])
     assert prospect.exit_code != 0
 
-    mine = runner.invoke(app, ["mine", "--from-scratch", str(tmp_path)])
+    mine = runner.invoke(app, ["--workspace", str(tmp_path), "mine", "--from-scratch"])
     assert mine.exit_code == 0, mine.output
 
-    prospect = runner.invoke(app, ["prospect", "hello", str(tmp_path)])
+    prospect = runner.invoke(app, ["--workspace", str(tmp_path), "prospect", "hello"])
     assert prospect.exit_code == 0, prospect.output
 
 
 def test_search_alias_is_hidden_and_works(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
     (tmp_path / "a.txt").write_text("hello world")
-    runner.invoke(app, ["mine", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
 
-    result = runner.invoke(app, ["search", "hello", str(tmp_path)])
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "search", "hello"])
     assert result.exit_code == 0, result.output
     assert "a.txt" in result.output
 
@@ -376,15 +376,15 @@ def test_prospect_warns_stale_files_outside_results(tmp_path: Path, monkeypatch:
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
     (tmp_path / "a.txt").write_text("hello world")
     (tmp_path / "b.txt").write_text("quantum entanglement")
-    runner.invoke(app, ["mine", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
 
     # Change a.txt so survey marks it stale; b.txt stays current.
     (tmp_path / "a.txt").write_text("hello world changed")
-    runner.invoke(app, ["survey", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "survey"])
 
     # top-k 1 keeps only the current hit (b.txt), so the stale file is not
     # in the result set.
-    prospect = runner.invoke(app, ["prospect", "entanglement", str(tmp_path), "--top-k", "1"])
+    prospect = runner.invoke(app, ["--workspace", str(tmp_path), "prospect", "entanglement", "--top-k", "1"])
     assert prospect.exit_code == 0, prospect.output
 
 
@@ -392,12 +392,12 @@ def test_prospect_warns_stale_files_in_results(tmp_path: Path, monkeypatch: pyte
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
     (tmp_path / "a.txt").write_text("hello world")
     (tmp_path / "b.txt").write_text("quantum entanglement")
-    runner.invoke(app, ["mine", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
 
     (tmp_path / "a.txt").write_text("hello world changed")
-    runner.invoke(app, ["survey", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "survey"])
 
-    prospect = runner.invoke(app, ["prospect", "hello", str(tmp_path)])
+    prospect = runner.invoke(app, ["--workspace", str(tmp_path), "prospect", "hello"])
     assert prospect.exit_code == 0, prospect.output
 
 
@@ -406,10 +406,10 @@ def test_dig_returns_full_chunk_text(tmp_path: Path, monkeypatch: pytest.MonkeyP
     text = "The experiment showed strong quantum entanglement in the third group."
     (tmp_path / "docs").mkdir()
     (tmp_path / "docs" / "report.txt").write_text(text)
-    runner.invoke(app, ["mine", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
 
     digest = chunk_digest(text)
-    dig = runner.invoke(app, ["dig", digest, str(tmp_path)])
+    dig = runner.invoke(app, ["--workspace", str(tmp_path), "dig", digest])
     assert dig.exit_code == 0, dig.output
     assert "docs/report.txt" in dig.output
     assert text in dig.output
@@ -421,10 +421,10 @@ def test_dig_accepts_short_prefix(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
     text = "quantum entanglement in the lab"
     (tmp_path / "a.txt").write_text(text)
-    runner.invoke(app, ["mine", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
 
     short = chunk_digest(text).removeprefix("blake3:")[:12]
-    dig = runner.invoke(app, ["dig", short, str(tmp_path)])
+    dig = runner.invoke(app, ["--workspace", str(tmp_path), "dig", short])
     assert dig.exit_code == 0, dig.output
     assert text in dig.output
     assert "a.txt" in dig.output
@@ -434,10 +434,10 @@ def test_dig_accepts_bare_hex(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
     text = "quantum entanglement in the lab"
     (tmp_path / "a.txt").write_text(text)
-    runner.invoke(app, ["mine", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
 
     hex_digest = chunk_digest(text).removeprefix("blake3:")
-    dig = runner.invoke(app, ["dig", hex_digest, str(tmp_path)])
+    dig = runner.invoke(app, ["--workspace", str(tmp_path), "dig", hex_digest])
     assert dig.exit_code == 0, dig.output
     assert text in dig.output
 
@@ -445,10 +445,10 @@ def test_dig_accepts_bare_hex(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
 def test_dig_missing_digest_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
     (tmp_path / "a.txt").write_text("hello world")
-    runner.invoke(app, ["mine", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
 
     absent = chunk_digest("this text is not indexed")
-    dig = runner.invoke(app, ["dig", absent, str(tmp_path)])
+    dig = runner.invoke(app, ["--workspace", str(tmp_path), "dig", absent])
     assert dig.exit_code != 0
 
 
@@ -456,7 +456,7 @@ def test_dig_without_index_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
     (tmp_path / "a.txt").write_text("hello world")  # never mined
 
-    dig = runner.invoke(app, ["dig", "deadbeef", str(tmp_path)])
+    dig = runner.invoke(app, ["--workspace", str(tmp_path), "dig", "deadbeef"])
     assert dig.exit_code != 0
 
 
@@ -464,9 +464,9 @@ def test_dig_invalid_digest_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
     text = "quantum entanglement"
     (tmp_path / "a.txt").write_text(text)
-    runner.invoke(app, ["mine", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
 
-    dig = runner.invoke(app, ["dig", "not-a-digest!", str(tmp_path)])
+    dig = runner.invoke(app, ["--workspace", str(tmp_path), "dig", "not-a-digest!"])
     assert dig.exit_code != 0
 
 
@@ -475,9 +475,9 @@ def test_dig_json_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
     text = "The experiment showed strong quantum entanglement in the third group."
     (tmp_path / "a.txt").write_text(text)
     monkeypatch.chdir(tmp_path)
-    runner.invoke(app, ["mine", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
 
-    result = runner.invoke(app, ["dig", chunk_digest(text), "--json", str(tmp_path)])
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "dig", chunk_digest(text), "--json"])
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["command"] == "dig"
@@ -500,10 +500,10 @@ def test_dig_json_accepts_short_prefix(tmp_path: Path, monkeypatch: pytest.Monke
     text = "quantum entanglement in the lab"
     (tmp_path / "a.txt").write_text(text)
     monkeypatch.chdir(tmp_path)
-    runner.invoke(app, ["mine", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
 
     short = chunk_digest(text).removeprefix("blake3:")[:12]
-    result = runner.invoke(app, ["dig", short, "--json", str(tmp_path)])
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "dig", short, "--json"])
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["success"] is True
@@ -516,9 +516,11 @@ def test_dig_json_not_found(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
     (tmp_path / "a.txt").write_text("hello world")
     monkeypatch.chdir(tmp_path)
-    runner.invoke(app, ["mine", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
 
-    result = runner.invoke(app, ["dig", chunk_digest("this text is not indexed"), "--json", str(tmp_path)])
+    result = runner.invoke(
+        app, ["--workspace", str(tmp_path), "dig", chunk_digest("this text is not indexed"), "--json"]
+    )
     assert result.exit_code != 0
     payload = json.loads(result.output)
     assert payload["success"] is False
@@ -529,9 +531,9 @@ def test_dig_json_invalid_digest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
     (tmp_path / "a.txt").write_text("quantum")
     monkeypatch.chdir(tmp_path)
-    runner.invoke(app, ["mine", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
 
-    result = runner.invoke(app, ["dig", "not-a-digest!", "--json", str(tmp_path)])
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "dig", "not-a-digest!", "--json"])
     assert result.exit_code != 0
     payload = json.loads(result.output)
     assert payload["success"] is False
@@ -543,7 +545,7 @@ def test_dig_json_no_index(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     (tmp_path / "a.txt").write_text("hello")
     monkeypatch.chdir(tmp_path)
 
-    result = runner.invoke(app, ["dig", "deadbeef", "--json", str(tmp_path)])
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "dig", "deadbeef", "--json"])
     assert result.exit_code != 0
     payload = json.loads(result.output)
     assert payload["success"] is False
@@ -555,10 +557,10 @@ def test_assay_explains_hit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     text = "The experiment showed strong quantum entanglement in the third group."
     (tmp_path / "docs").mkdir()
     (tmp_path / "docs" / "report.txt").write_text(text)
-    runner.invoke(app, ["mine", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
 
     digest = chunk_digest(text)
-    result = runner.invoke(app, ["assay", "why", digest, "entanglement", str(tmp_path)])
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "assay", "why", digest, "entanglement"])
     assert result.exit_code == 0, result.output
     assert "Query: entanglement" in result.output
     assert "semantic" in result.output
@@ -572,10 +574,10 @@ def test_assay_accepts_short_prefix(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
     text = "quantum entanglement in the lab"
     (tmp_path / "a.txt").write_text(text)
-    runner.invoke(app, ["mine", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
 
     short = chunk_digest(text).removeprefix("blake3:")[:12]
-    result = runner.invoke(app, ["assay", "why", short, "entanglement", str(tmp_path)])
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "assay", "why", short, "entanglement"])
     assert result.exit_code == 0, result.output
     assert "Query: entanglement" in result.output
     assert "Score:" in result.output
@@ -585,9 +587,9 @@ def test_assay_analyze_alias(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
     text = "quantum entanglement in the lab"
     (tmp_path / "a.txt").write_text(text)
-    runner.invoke(app, ["mine", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
 
-    result = runner.invoke(app, ["analyze", "why", chunk_digest(text), "entanglement", str(tmp_path)])
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "analyze", "why", chunk_digest(text), "entanglement"])
     assert result.exit_code == 0, result.output
     assert "Query: entanglement" in result.output
     assert "Score:" in result.output
@@ -596,19 +598,19 @@ def test_assay_analyze_alias(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
 def test_assay_missing_digest_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
     (tmp_path / "a.txt").write_text("hello world")
-    runner.invoke(app, ["mine", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
 
     absent = chunk_digest("this text is not indexed")
-    result = runner.invoke(app, ["assay", "why", absent, "hello", str(tmp_path)])
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "assay", "why", absent, "hello"])
     assert result.exit_code != 0
 
 
 def test_assay_invalid_digest_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
     (tmp_path / "a.txt").write_text("hello world")
-    runner.invoke(app, ["mine", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
 
-    result = runner.invoke(app, ["assay", "why", "not-a-digest!", "hello", str(tmp_path)])
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "assay", "why", "not-a-digest!", "hello"])
     assert result.exit_code != 0
 
 
@@ -616,7 +618,7 @@ def test_assay_without_index_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
     (tmp_path / "a.txt").write_text("hello")
 
-    result = runner.invoke(app, ["assay", "why", "deadbeef", "hello", str(tmp_path)])
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "assay", "why", "deadbeef", "hello"])
     assert result.exit_code != 0
 
 
@@ -624,9 +626,11 @@ def test_assay_json_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
     text = "quantum entanglement in the lab"
     (tmp_path / "a.txt").write_text(text)
-    runner.invoke(app, ["mine", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
 
-    result = runner.invoke(app, ["assay", "why", chunk_digest(text), "entanglement", "--json", str(tmp_path)])
+    result = runner.invoke(
+        app, ["--workspace", str(tmp_path), "assay", "why", chunk_digest(text), "entanglement", "--json"]
+    )
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["command"] == "assay"
@@ -665,9 +669,11 @@ def test_assay_json_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
 def test_assay_json_not_found(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
     (tmp_path / "a.txt").write_text("hello world")
-    runner.invoke(app, ["mine", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
 
-    result = runner.invoke(app, ["assay", "why", chunk_digest("not indexed"), "hello", "--json", str(tmp_path)])
+    result = runner.invoke(
+        app, ["--workspace", str(tmp_path), "assay", "why", chunk_digest("not indexed"), "hello", "--json"]
+    )
     assert result.exit_code != 0
     payload = json.loads(result.output)
     assert payload["success"] is False
@@ -678,10 +684,10 @@ def test_assay_how_shows_tokenization(tmp_path: Path, monkeypatch: pytest.Monkey
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
     text = "quantum entanglement in the lab"
     (tmp_path / "a.txt").write_text(text)
-    runner.invoke(app, ["mine", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
 
     digest = chunk_digest(text)
-    result = runner.invoke(app, ["assay", "how", digest, str(tmp_path)])
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "assay", "how", digest])
     assert result.exit_code == 0, result.output
     # Tokenizer metadata and the term stream are shown.
     assert "simple" in result.output
@@ -696,9 +702,9 @@ def test_assay_how_analyze_alias(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
     text = "quantum entanglement in the lab"
     (tmp_path / "a.txt").write_text(text)
-    runner.invoke(app, ["mine", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
 
-    result = runner.invoke(app, ["analyze", "how", chunk_digest(text), str(tmp_path)])
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "analyze", "how", chunk_digest(text)])
     assert result.exit_code == 0, result.output
     assert "Terms" in result.output
 
@@ -707,9 +713,9 @@ def test_assay_how_json_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
     text = "quantum entanglement in the lab"
     (tmp_path / "a.txt").write_text(text)
-    runner.invoke(app, ["mine", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
 
-    result = runner.invoke(app, ["assay", "how", chunk_digest(text), "--json", str(tmp_path)])
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "assay", "how", chunk_digest(text), "--json"])
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["command"] == "assay"
@@ -731,9 +737,9 @@ def test_assay_how_json_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
 def test_assay_how_not_found(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
     (tmp_path / "a.txt").write_text("hello world")
-    runner.invoke(app, ["mine", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
 
-    result = runner.invoke(app, ["assay", "how", chunk_digest("not indexed"), "--json", str(tmp_path)])
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "assay", "how", chunk_digest("not indexed"), "--json"])
     assert result.exit_code != 0
     payload = json.loads(result.output)
     assert payload["success"] is False
@@ -744,7 +750,7 @@ def test_assay_how_without_index_fails(tmp_path: Path, monkeypatch: pytest.Monke
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
     (tmp_path / "a.txt").write_text("hello")
 
-    result = runner.invoke(app, ["assay", "how", "deadbeef", "--json", str(tmp_path)])
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "assay", "how", "deadbeef", "--json"])
     assert result.exit_code != 0
     payload = json.loads(result.output)
     assert payload["error"]["code"] == "no_index"
@@ -759,7 +765,7 @@ def _mine_report_with_many_chunks(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     (tmp_path / "report.txt").write_text(
         "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi " * 12
     )
-    runner.invoke(app, ["mine", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
 
     conn = sqlite3.connect(str(tmp_path / ".lode" / "index.db"))
     row = conn.execute("SELECT digest FROM chunks ORDER BY seq LIMIT 1").fetchone()
@@ -770,7 +776,7 @@ def _mine_report_with_many_chunks(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
 def test_dig_radius_returns_section_window(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     digest = _mine_report_with_many_chunks(tmp_path, monkeypatch)
 
-    result = runner.invoke(app, ["dig", digest, "--radius", "1", str(tmp_path)])
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "dig", digest, "--radius", "1"])
     assert result.exit_code == 0, result.output
     short = digest.removeprefix("blake3:")[:12]
     assert f"Dug {short} with radius 1" in result.output
@@ -782,7 +788,7 @@ def test_dig_radius_returns_section_window(tmp_path: Path, monkeypatch: pytest.M
 def test_dig_json_radius_window(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     digest = _mine_report_with_many_chunks(tmp_path, monkeypatch)
 
-    result = runner.invoke(app, ["dig", digest, "--radius", "1", "--json", str(tmp_path)])
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "dig", digest, "--radius", "1", "--json"])
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["command"] == "dig"
@@ -807,9 +813,9 @@ def test_dig_json_default_single_chunk_window(tmp_path: Path, monkeypatch: pytes
     text = "quantum entanglement"
     (tmp_path / "a.txt").write_text(text)
     monkeypatch.chdir(tmp_path)
-    runner.invoke(app, ["mine", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
 
-    result = runner.invoke(app, ["dig", chunk_digest(text), "--json", str(tmp_path)])
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "dig", chunk_digest(text), "--json"])
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     window = payload["window"]
@@ -822,9 +828,9 @@ def test_get_alias_is_hidden_and_works(tmp_path: Path, monkeypatch: pytest.Monke
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
     text = "quantum entanglement"
     (tmp_path / "a.txt").write_text(text)
-    runner.invoke(app, ["mine", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
 
-    result = runner.invoke(app, ["get", chunk_digest(text), str(tmp_path)])
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "get", chunk_digest(text)])
     assert result.exit_code == 0, result.output
     assert text in result.output
 
@@ -836,12 +842,12 @@ def test_get_alias_is_hidden_and_works(tmp_path: Path, monkeypatch: pytest.Monke
 def test_survey_json_reports_changes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
     (tmp_path / "a.txt").write_text("hello world")
-    runner.invoke(app, ["mine", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
 
     (tmp_path / "a.txt").write_text("changed content!")
     (tmp_path / "b.txt").write_text("brand new file")
 
-    result = runner.invoke(app, ["survey", "--json", str(tmp_path)])
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "survey", "--json"])
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
 
@@ -868,11 +874,11 @@ def test_survey_json_reports_changes(tmp_path: Path, monkeypatch: pytest.MonkeyP
 def test_survey_json_reports_rename(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
     (tmp_path / "a.txt").write_text("hello world")
-    runner.invoke(app, ["mine", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
 
     (tmp_path / "a.txt").rename(tmp_path / "b.txt")
 
-    result = runner.invoke(app, ["survey", "--json", str(tmp_path)])
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "survey", "--json"])
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
 
@@ -887,11 +893,11 @@ def test_survey_json_reports_rename(tmp_path: Path, monkeypatch: pytest.MonkeyPa
 def test_mine_json_reports_rename(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
     (tmp_path / "a.txt").write_text("hello world")
-    runner.invoke(app, ["mine", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
 
     (tmp_path / "a.txt").rename(tmp_path / "b.txt")
 
-    result = runner.invoke(app, ["mine", "--json", str(tmp_path)])
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "mine", "--json"])
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
 
@@ -907,7 +913,7 @@ def test_mine_json_reports_rename(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
 def test_survey_json_error_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
     (tmp_path / "a.txt").write_text("hello world")
-    runner.invoke(app, ["mine", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
 
     # Corrupt the schema version so the store refuses to open.
     conn = sqlite3.connect(str(tmp_path / ".lode" / "index.db"))
@@ -917,7 +923,7 @@ def test_survey_json_error_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     finally:
         conn.close()
 
-    result = runner.invoke(app, ["survey", "--json", str(tmp_path)])
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "survey", "--json"])
     assert result.exit_code != 0
     payload = json.loads(result.output)
     assert payload["command"] == "survey"
@@ -931,7 +937,7 @@ def test_mine_json_reports_changes(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     (tmp_path / "a.txt").write_text("hello world")
     (tmp_path / "b.txt").write_text("quantum entanglement")
 
-    result = runner.invoke(app, ["mine", "--json", str(tmp_path)])
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "mine", "--json"])
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
 
@@ -959,7 +965,7 @@ def test_mine_from_scratch_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
     (tmp_path / "a.txt").write_text("hello world")
 
-    result = runner.invoke(app, ["mine", "--from-scratch", "--json", str(tmp_path)])
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "mine", "--from-scratch", "--json"])
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["success"] is True
@@ -971,7 +977,7 @@ def test_mine_json_reports_failed_files(tmp_path: Path, monkeypatch: pytest.Monk
     monkeypatch.setattr("lode.cli.build_embedder", _failing_embedder)
     (tmp_path / "a.txt").write_text("hello world")
 
-    result = runner.invoke(app, ["mine", "--json", str(tmp_path)])
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "mine", "--json"])
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["success"] is True
@@ -982,10 +988,10 @@ def test_mine_json_reports_failed_files(tmp_path: Path, monkeypatch: pytest.Monk
 def test_mine_json_model_mismatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
     (tmp_path / "a.txt").write_text("hello world")
-    runner.invoke(app, ["mine", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
 
     monkeypatch.setattr("lode.cli.build_embedder", _other_model_embedder)
-    result = runner.invoke(app, ["mine", "--json", str(tmp_path)])
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "mine", "--json"])
     assert result.exit_code != 0
     payload = json.loads(result.output)
     assert payload["command"] == "mine"
@@ -996,7 +1002,7 @@ def test_mine_json_model_mismatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
 def test_mine_json_schema_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
     (tmp_path / "a.txt").write_text("hello world")
-    runner.invoke(app, ["mine", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
 
     conn = sqlite3.connect(str(tmp_path / ".lode" / "index.db"))
     try:
@@ -1005,7 +1011,7 @@ def test_mine_json_schema_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     finally:
         conn.close()
 
-    result = runner.invoke(app, ["mine", "--json", str(tmp_path)])
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "mine", "--json"])
     assert result.exit_code != 0
     payload = json.loads(result.output)
     assert payload["success"] is False
@@ -1016,7 +1022,7 @@ def test_mine_from_scratch_schema_version_exempt(tmp_path: Path, monkeypatch: py
     """--from-scratch exempts schema_version mismatch: old db is reset, then re-mined."""
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
     (tmp_path / "a.txt").write_text("hello world")
-    runner.invoke(app, ["mine", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
 
     # Corrupt schema version so a plain open would refuse.
     conn = sqlite3.connect(str(tmp_path / ".lode" / "index.db"))
@@ -1026,7 +1032,7 @@ def test_mine_from_scratch_schema_version_exempt(tmp_path: Path, monkeypatch: py
     finally:
         conn.close()
 
-    result = runner.invoke(app, ["mine", "--from-scratch", "--json", str(tmp_path)])
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "mine", "--from-scratch", "--json"])
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["success"] is True
@@ -1040,15 +1046,15 @@ def test_mine_from_scratch_tokenizer_mismatch_exempt(tmp_path: Path, monkeypatch
     (tmp_path / "a.txt").write_text("hello world")
     # Build an index with trigram tokenizer.
     (tmp_path / "lode.toml").write_text('[lexical]\nstrategy = "trigram"\n')
-    runner.invoke(app, ["mine", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
 
     # Switch back to default (simple) without --from-scratch → blocked.
     (tmp_path / "lode.toml").write_text('[lexical]\nstrategy = "simple"\n')
-    result = runner.invoke(app, ["mine", str(tmp_path)])
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
     assert result.exit_code != 0
 
     # Switch with --from-scratch → reset and re-mine.
-    result = runner.invoke(app, ["mine", "--from-scratch", "--json", str(tmp_path)])
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "mine", "--from-scratch", "--json"])
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["success"] is True
@@ -1063,8 +1069,8 @@ def test_prospect_json_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     (tmp_path / "docs" / "report.txt").write_text(text)
     monkeypatch.chdir(tmp_path)
 
-    runner.invoke(app, ["mine", str(tmp_path)])
-    result = runner.invoke(app, ["prospect", "entanglement", "--json", "--top-k", "3", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "prospect", "entanglement", "--json", "--top-k", "3"])
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
 
@@ -1089,8 +1095,8 @@ def test_prospect_json_preview_flattens_crlf(tmp_path: Path, monkeypatch: pytest
     (tmp_path / "a.txt").write_text("line one\r\nline two\rline three\n")
     monkeypatch.chdir(tmp_path)
 
-    runner.invoke(app, ["mine", str(tmp_path)])
-    result = runner.invoke(app, ["prospect", "line", "--json", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "prospect", "line", "--json"])
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["success"] is True
@@ -1111,10 +1117,10 @@ def test_prospect_json_empty_hits(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     (tmp_path / ".lode" / "config.toml").write_text(
         '[fusion]\ntype = "linear"\n\n[fusion.linear]\nsemantic_factor = 0\nlexical_factor = 1\n'
     )
-    runner.invoke(app, ["mine", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
 
     # An existing index with no matching content yields empty hits.
-    result = runner.invoke(app, ["prospect", "nothing-matches", "--json", str(tmp_path)])
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "prospect", "nothing-matches", "--json"])
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["success"] is True
@@ -1126,7 +1132,7 @@ def test_prospect_without_index_short_circuits(tmp_path: Path, monkeypatch: pyte
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
     (tmp_path / "a.txt").write_text("hello world")
 
-    result = runner.invoke(app, ["prospect", "hello", "--json", str(tmp_path)])
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "prospect", "hello", "--json"])
 
     assert result.exit_code == 1
     payload = json.loads(result.output)
@@ -1139,10 +1145,10 @@ def test_prospect_json_model_mismatch(tmp_path: Path, monkeypatch: pytest.Monkey
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
     (tmp_path / "a.txt").write_text("hello world")
     monkeypatch.chdir(tmp_path)
-    runner.invoke(app, ["mine", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
 
     monkeypatch.setattr("lode.cli.build_embedder", _other_model_embedder)
-    result = runner.invoke(app, ["prospect", "hello", "--json", str(tmp_path)])
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "prospect", "hello", "--json"])
     assert result.exit_code != 0
     payload = json.loads(result.output)
     assert payload["command"] == "prospect"
@@ -1154,14 +1160,14 @@ def test_prospect_json_invalid_query(tmp_path: Path, monkeypatch: pytest.MonkeyP
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
     (tmp_path / "a.txt").write_text("hello world")
     monkeypatch.chdir(tmp_path)
-    runner.invoke(app, ["mine", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
 
     # Both linear fusion factors zero -> search refuses to run.
     (tmp_path / ".lode" / "config.toml").write_text(
         '[fusion]\ntype = "linear"\n\n[fusion.linear]\nsemantic_factor = 0.0\nlexical_factor = 0.0\n'
     )
 
-    result = runner.invoke(app, ["prospect", "hello", "--json", str(tmp_path)])
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "prospect", "hello", "--json"])
     assert result.exit_code != 0
     payload = json.loads(result.output)
     assert payload["success"] is False
@@ -1174,49 +1180,49 @@ def test_prospect_json_invalid_query(tmp_path: Path, monkeypatch: pytest.MonkeyP
 def test_prospect_dimension_mismatch_blocks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
     (tmp_path / "a.txt").write_text("hello world")
-    runner.invoke(app, ["mine", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
 
     # Same model id but a different vector dimension -> gate refuses search.
     monkeypatch.setattr("lode.cli.build_embedder", _dimension_mismatch_embedder)
-    prospect = runner.invoke(app, ["prospect", "hello", str(tmp_path)])
+    prospect = runner.invoke(app, ["--workspace", str(tmp_path), "prospect", "hello"])
     assert prospect.exit_code != 0
 
 
 def test_prospect_dimension_mismatch_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
     (tmp_path / "a.txt").write_text("hello world")
-    runner.invoke(app, ["mine", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
 
     # Reports the stored dimension (4) so the gate passes, but actually emits
     # 99-dim query vectors -> sqlite-vec MATCH throws DimensionMismatchError,
     # which the CLI must translate to the friendly message (Layer 2 fallback).
     monkeypatch.setattr("lode.cli.build_embedder", _wrong_query_embedder)
-    result = runner.invoke(app, ["prospect", "hello", str(tmp_path)])
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "prospect", "hello"])
     assert result.exit_code != 0
 
 
 def test_mine_from_scratch_dimension_mismatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
     (tmp_path / "a.txt").write_text("hello world")
-    runner.invoke(app, ["mine", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
 
     # A dimension change is allowed with an explicit --from-scratch.
     monkeypatch.setattr("lode.cli.build_embedder", _dimension_mismatch_embedder)
-    mine = runner.invoke(app, ["mine", "--from-scratch", str(tmp_path)])
+    mine = runner.invoke(app, ["--workspace", str(tmp_path), "mine", "--from-scratch"])
     assert mine.exit_code == 0, mine.output
 
     # After re-mine the index is 99-dim; prospect with the same embedder works.
-    prospect = runner.invoke(app, ["prospect", "hello", str(tmp_path)])
+    prospect = runner.invoke(app, ["--workspace", str(tmp_path), "prospect", "hello"])
     assert prospect.exit_code == 0, prospect.output
 
 
 def test_prospect_json_dimension_mismatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("lode.cli.build_embedder", _fake_embedder)
     (tmp_path / "a.txt").write_text("hello world")
-    runner.invoke(app, ["mine", str(tmp_path)])
+    runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
 
     monkeypatch.setattr("lode.cli.build_embedder", _dimension_mismatch_embedder)
-    result = runner.invoke(app, ["prospect", "hello", "--json", str(tmp_path)])
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "prospect", "hello", "--json"])
     assert result.exit_code != 0
     payload = json.loads(result.output)
     assert payload["command"] == "prospect"
@@ -1363,7 +1369,7 @@ def test_malformed_config_toml_fails_friendly(tmp_path: Path) -> None:
     (tmp_path / ".lode").mkdir()
     (tmp_path / ".lode" / "config.toml").write_text("[embedding\nmodel = oops")
 
-    result = runner.invoke(app, ["survey", str(tmp_path)], catch_exceptions=False)
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "survey"], catch_exceptions=False)
 
     assert result.exit_code == 1
 
@@ -1373,7 +1379,7 @@ def test_invalid_config_value_fails_friendly(tmp_path: Path) -> None:
     (tmp_path / ".lode").mkdir()
     (tmp_path / ".lode" / "config.toml").write_text('[embedding]\nbatch_size = "lots"\n')
 
-    result = runner.invoke(app, ["survey", str(tmp_path)], catch_exceptions=False)
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "survey"], catch_exceptions=False)
 
     assert result.exit_code == 1
 
@@ -1382,7 +1388,7 @@ def test_missing_explicit_config_path_fails_friendly(tmp_path: Path) -> None:
     """An explicit --config path that does not exist exits cleanly."""
     result = runner.invoke(
         app,
-        ["survey", "--config", str(tmp_path / "nope.toml"), str(tmp_path)],
+        ["--workspace", str(tmp_path), "survey", "--config", str(tmp_path / "nope.toml")],
         catch_exceptions=False,
     )
 

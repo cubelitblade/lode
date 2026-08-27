@@ -7,7 +7,6 @@ needs an existing index: with none, it short-circuits with "run mine first".
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -18,12 +17,12 @@ from lode.cli.commands._common import (
     ConfigArg,
     NoColorArg,
     PaletteArg,
-    ProspectWorkspaceArg,
     fail_with,
     load_settings_or_fail,
     open_store,
     render_options,
     store_failure,
+    workspace_from,
 )
 from lode.cli.render import Intent
 from lode.cli.render.output import echo_json, json_err, json_ok, preview, render_message
@@ -39,8 +38,8 @@ def register(app: typer.Typer) -> None:
 
 
 def prospect(
+    ctx: typer.Context,
     query: Annotated[str, typer.Argument(help="Query to search for.")],
-    workspace: ProspectWorkspaceArg = Path("."),
     top_k: Annotated[int | None, typer.Option("--top-k", min=1, help="Maximum number of results to return.")] = None,
     config: ConfigArg = None,
     palette: PaletteArg = None,
@@ -52,6 +51,7 @@ def prospect(
     Runs a silent detection first so the stale bits are fresh before search
     reads them — this command writes ``files.status`` (it is not read-only).
     """
+    workspace = workspace_from(ctx)
     settings = load_settings_or_fail(config, command="prospect", as_json=as_json)
     embedder = _cli.build_embedder(settings.embedding)
     options = render_options(settings, palette, no_color)

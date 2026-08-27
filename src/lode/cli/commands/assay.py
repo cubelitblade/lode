@@ -15,7 +15,6 @@ need an existing index: with none, they short-circuit with "run mine first".
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Annotated, Any
 
 import typer
@@ -27,13 +26,13 @@ from lode.cli.commands._common import (
     ConfigArg,
     NoColorArg,
     PaletteArg,
-    ProspectWorkspaceArg,
     fail_with,
     load_settings_or_fail,
     normalize_digest,
     open_store,
     render_options,
     store_failure,
+    workspace_from,
 )
 from lode.cli.render import Intent, RenderOptions
 from lode.cli.render.output import echo_json, json_err, json_ok, render_message
@@ -64,9 +63,9 @@ def _build_assay_app(*, hidden: bool = False) -> typer.Typer:
 
 
 def why(
+    ctx: typer.Context,
     digest: Annotated[str, typer.Argument(help="Chunk digest or prefix to explain.")],
     query: Annotated[str, typer.Argument(help="Query to explain the score for.")],
-    workspace: ProspectWorkspaceArg = Path("."),
     top_k: Annotated[int | None, typer.Option("--top-k", min=1, help="Maximum number of results to return.")] = None,
     config: ConfigArg = None,
     palette: PaletteArg = None,
@@ -74,6 +73,7 @@ def why(
     as_json: bool = typer.Option(False, "--json", help="Emit JSON output."),
 ) -> None:
     """Explain why a chunk scored as it did for a query."""
+    workspace = workspace_from(ctx)
     settings = load_settings_or_fail(config, command="assay", as_json=as_json)
     embedder = _cli.build_embedder(settings.embedding)
     options = render_options(settings, palette, no_color)
@@ -96,14 +96,15 @@ def why(
 
 
 def how(
+    ctx: typer.Context,
     digest: Annotated[str, typer.Argument(help="Chunk digest or prefix to inspect.")],
-    workspace: ProspectWorkspaceArg = Path("."),
     config: ConfigArg = None,
     palette: PaletteArg = None,
     no_color: NoColorArg = False,
     as_json: bool = typer.Option(False, "--json", help="Emit JSON output."),
 ) -> None:
     """Show how the configured tokenizer splits a chunk's text."""
+    workspace = workspace_from(ctx)
     settings = load_settings_or_fail(config, command="assay", as_json=as_json)
     options = render_options(settings, palette, no_color)
     # No embedder needed: tokenization never touches vectors, but opening the

@@ -8,7 +8,6 @@ needs an existing index: with none, it short-circuits with "run mine first".
 from __future__ import annotations
 
 import re
-from pathlib import Path
 from typing import Annotated, Any
 
 import typer
@@ -17,13 +16,13 @@ import lode.cli as _cli
 from lode.cli.commands._common import (
     INDEX_DB_RELATIVE,
     ConfigArg,
-    DigWorkspaceArg,
     NoColorArg,
     PaletteArg,
     fail_with,
     load_settings_or_fail,
     open_store,
     render_options,
+    workspace_from,
 )
 from lode.cli.render import Intent, RenderOptions
 from lode.cli.render.output import echo_json, json_err, json_ok, render_message
@@ -41,11 +40,11 @@ def register(app: typer.Typer) -> None:
 
 
 def dig(
+    ctx: typer.Context,
     digest: Annotated[
         str,
         typer.Argument(help="Chunk digest or prefix."),
     ],
-    workspace: DigWorkspaceArg = Path("."),
     radius: Annotated[
         int | None,
         typer.Option(
@@ -60,6 +59,7 @@ def dig(
     as_json: bool = typer.Option(False, "--json", help="Emit JSON output."),
 ) -> None:
     """Fetch a chunk's full text by its digest (content address)."""
+    workspace = workspace_from(ctx)
     settings = load_settings_or_fail(config, command="dig", as_json=as_json)
     options = render_options(settings, palette, no_color)
     store = open_store(workspace, None, command="dig", as_json=as_json, tokenizer=settings.lexical.strategy)

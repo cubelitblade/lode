@@ -22,7 +22,6 @@ import lode.cli as _cli
 from lode.cli.commands._common import (
     INDEX_DB_RELATIVE,
     ConfigArg,
-    MineWorkspaceArg,
     NoColorArg,
     PaletteArg,
     load_settings_or_fail,
@@ -30,6 +29,7 @@ from lode.cli.commands._common import (
     render_options,
     store_failure,
     sync_with_progress,
+    workspace_from,
 )
 from lode.cli.render import RenderOptions
 from lode.cli.render.output import echo_json, json_ok
@@ -52,7 +52,7 @@ def register(app: typer.Typer) -> None:
 
 
 def mine(
-    workspace: MineWorkspaceArg = Path("."),
+    ctx: typer.Context,
     from_scratch: bool = typer.Option(
         False,
         "--from-scratch",
@@ -69,6 +69,7 @@ def mine(
     (embedding model, dimension, tokenizer) or its schema is incompatible;
     it snapshots the old index to `<index>.bak` and re-mines everything.
     """
+    workspace = workspace_from(ctx)
     settings = load_settings_or_fail(config, command="mine", as_json=as_json)
     embedder = _cli.build_embedder(settings.embedding)
     options = render_options(settings, palette, no_color)

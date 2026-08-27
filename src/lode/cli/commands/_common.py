@@ -242,44 +242,17 @@ def sync_with_progress(
         return sync(store, workspace, embedder, splitter, detect=detect, report=report)
 
 
-# Shared workspace argument shape; only the help string varies per command.
-# The default value (".") is set with `=` at the call site, not inside `Argument`.
-SurveyWorkspaceArg = Annotated[
-    Path,
-    typer.Argument(
-        exists=True,
-        file_okay=False,
-        dir_okay=True,
-        help="Workspace to inspect.",
-    ),
-]
-MineWorkspaceArg = Annotated[
-    Path,
-    typer.Argument(
-        exists=True,
-        file_okay=False,
-        dir_okay=True,
-        help="Workspace to index.",
-    ),
-]
-ProspectWorkspaceArg = Annotated[
-    Path,
-    typer.Argument(
-        exists=True,
-        file_okay=False,
-        dir_okay=True,
-        help="Workspace to search.",
-    ),
-]
-DigWorkspaceArg = Annotated[
-    Path,
-    typer.Argument(
-        exists=True,
-        file_okay=False,
-        dir_okay=True,
-        help="Workspace containing the index.",
-    ),
-]
+def workspace_from(ctx: typer.Context) -> Path:
+    """Resolve the workspace from the application-level callback.
+
+    ``lode --workspace <path> <command>`` stores the resolved ``Path`` (default
+    ``.``) on the click context; commands read it here instead of declaring
+    their own argument. The callback already validated the path (exists,
+    directory), so this is a plain read.
+    """
+    value = ctx.find_object(Path)
+    return value if value is not None else Path(".")
+
 
 # Shared config option: an explicit path that skips auto-discovery (see config).
 ConfigArg = Annotated[

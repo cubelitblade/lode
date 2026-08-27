@@ -8,8 +8,6 @@ before running it.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import typer
 
 import lode.cli as _cli
@@ -17,10 +15,10 @@ from lode.cli.commands._common import (
     ConfigArg,
     NoColorArg,
     PaletteArg,
-    SurveyWorkspaceArg,
     load_settings_or_fail,
     open_store,
     render_options,
+    workspace_from,
 )
 from lode.cli.render.output import echo_json, json_ok
 from lode.ingestion.pipeline import classify, detect_changes
@@ -32,7 +30,7 @@ def register(app: typer.Typer) -> None:
 
 
 def survey(
-    workspace: SurveyWorkspaceArg = Path("."),
+    ctx: typer.Context,
     config: ConfigArg = None,
     palette: PaletteArg = None,
     no_color: NoColorArg = False,
@@ -42,6 +40,7 @@ def survey(
 
     This command only compares files and does not require an embedding endpoint.
     """
+    workspace = workspace_from(ctx)
     settings = load_settings_or_fail(config, command="survey", as_json=as_json)
     options = render_options(settings, palette, no_color)
     store = open_store(workspace, None, command="survey", as_json=as_json, tokenizer=settings.lexical.strategy)

@@ -95,7 +95,7 @@ Workspace-specific configuration can also be created using workspace scope.
 Discover documents in your workspace:
 
 ```bash
-lode survey [path]
+lode --workspace <path> survey
 ```
 
 Survey builds the map of your knowledge lode.
@@ -105,7 +105,7 @@ Survey builds the map of your knowledge lode.
 Generate embeddings and store indexed chunks:
 
 ```bash
-lode mine [path]
+lode --workspace <path> mine
 ```
 
 Mining processes discovered documents, generates embeddings, and stores searchable indexes locally in SQLite.
@@ -115,7 +115,7 @@ Mining processes discovered documents, generates embeddings, and stores searchab
 Search your workspace:
 
 ```bash
-lode prospect <query> [path]
+lode --workspace <path> prospect <query>
 ```
 
 Lode performs hybrid retrieval using semantic similarity and BM25 lexical matching.
@@ -127,7 +127,7 @@ It combines meaning-based search with exact keyword matching, then returns candi
 Retrieve a specific chunk:
 
 ```bash
-lode dig <digest> [path]
+lode --workspace <path> dig <digest>
 ```
 
 This returns the complete content associated with the digest.

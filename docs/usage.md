@@ -1,11 +1,19 @@
 # Usage
 
+## Global options
+
+Options that apply to every command and must appear before the command name:
+
+- `--workspace`, `-C`
+    - `<path>`
+    Workspace to operate on. Defaults to the current directory.
+
 ## lode survey
 
 Detect workspace changes and report stale files.
 
 ```bash
-lode survey [OPTIONS] [workspace]
+lode survey [OPTIONS]
 ```
 
 Aliases: `lode status`
@@ -13,9 +21,6 @@ Aliases: `lode status`
 This command only compares files and does not require an embedding endpoint.
 
 ### Options
-
-- `[workspace]`
-    Workspace to inspect.
 
 - `--config`
     - `<path>`
@@ -42,7 +47,7 @@ reported as a rename (`old -> new`).
 Embeds and indexes new or changed files. An embedding endpoint must be configured.
 
 ```bash
-lode mine [OPTIONS] [workspace]
+lode mine [OPTIONS]
 ```
 
 Aliases: `lode index`
@@ -51,10 +56,6 @@ Use `--from-scratch` when changing the embedding model or when the index
 schema is incompatible.
 
 ### Options
-
-- `[workspace]`
-    - `<path>`
-    Workspace to index.
 
 - `--from-scratch`
   Discard the existing index and create a new one from scratch.
@@ -84,7 +85,7 @@ re-pointed at zero embedding cost and reported as a rename (`old -> new`).
 Search the index and show results with source information.
 
 ```bash
-lode prospect QUERY [OPTIONS] [workspace]
+lode prospect QUERY [OPTIONS]
 ```
 
 Aliases: `lode search`
@@ -98,10 +99,6 @@ min-max normalization + linear weighted fusion).
 - `QUERY`
     - `<query>`
     Query to search for.
-
-- `[workspace]`
-    - `<path>`
-    Workspace to search.
 
 - `--top-k`
     - `<int>`
@@ -131,7 +128,7 @@ optional stale marker, and chunk digest, followed by a preview snippet.
 Fetch a chunk's full text by its digest (content address).
 
 ```bash
-lode dig DIGEST [OPTIONS] [workspace]
+lode dig DIGEST [OPTIONS]
 ```
 
 Aliases: `lode get`
@@ -145,10 +142,6 @@ return matching candidates.
 - `DIGEST`
     - `<digest>`
     Chunk digest or prefix.
-
-- `[workspace]`
-    - `<path>`
-    Workspace containing the index.
 
 - `--radius`
     - `<int>`
@@ -181,8 +174,8 @@ Explain how one indexed chunk is processed and scored. Two views:
   chunk's text at index time.
 
 ```bash
-lode assay why DIGEST QUERY [OPTIONS] [workspace]
-lode assay how DIGEST [OPTIONS] [workspace]
+lode assay why DIGEST QUERY [OPTIONS]
+lode assay how DIGEST [OPTIONS]
 ```
 
 Aliases: `lode analyze why|how`
@@ -206,10 +199,6 @@ return matching candidates.
 - `QUERY`
     - `<query>`
     Query to explain the score for.
-
-- `[workspace]`
-    - `<path>`
-    Workspace to search.
 
 - `--top-k`
     - `<int>`
@@ -242,10 +231,6 @@ it is not in the results).
 - `DIGEST`
     - `<digest>`
     Chunk digest or prefix to inspect.
-
-- `[workspace]`
-    - `<path>`
-    Workspace to search.
 
 - `--config`, `--palette`, `--no-color`, `--json`
     Same as `why`.

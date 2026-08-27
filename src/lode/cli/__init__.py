@@ -8,6 +8,9 @@ the same functions — CLI first, MCP later.
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Annotated
+
 import typer
 
 from lode.cli.render.assay import render_assay as render_assay  # re-exported for lode.cli.render_assay
@@ -23,6 +26,25 @@ app = typer.Typer(
     help="lode: turn a workspace of documents into a searchable knowledge lode.",
     no_args_is_help=True,
 )
+
+
+@app.callback()
+def main(
+    ctx: typer.Context,
+    workspace: Annotated[
+        Path,
+        typer.Option(
+            "--workspace",
+            "-C",
+            exists=True,
+            file_okay=False,
+            dir_okay=True,
+            help="Workspace to operate on.",
+        ),
+    ] = Path("."),
+) -> None:
+    """Application-level options shared by every command."""
+    ctx.obj = workspace
 
 
 # Register the command modules on the shared app. Imported at the bottom so
