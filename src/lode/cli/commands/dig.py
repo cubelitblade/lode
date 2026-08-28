@@ -7,18 +7,19 @@ needs an existing index: with none, it short-circuits with "run mine first".
 
 from __future__ import annotations
 
-import re
 from typing import Annotated, Any
 
 import typer
 
 import lode.cli as _cli
 from lode.cli.commands._common import (
+    DIGEST_PATTERN,
     ConfigArg,
     NoColorArg,
     PaletteArg,
     fail_with,
     load_settings_or_fail,
+    normalize_digest,
     render_options,
     require_store,
     workspace_from,
@@ -28,9 +29,6 @@ from lode.cli.render.output import echo_json, json_err, json_ok, render_message
 from lode.index import ChunkWithPath, Store
 from lode.ingestion.pipeline import detect_changes
 from lode.messages import require_error_text
-
-# Hex hexdigest bodies (BLAKE3 produces lowercase hex); accept uppercase too.
-_DIGEST_PATTERN = re.compile(r"[0-9a-f]+", re.IGNORECASE)
 
 
 def register(app: typer.Typer) -> None:
@@ -77,19 +75,6 @@ def dig(
         _dig(store, digest, as_json=as_json, radius=radius or 0, options=options)
 
 
-def _normalize_digest(digest: str) -> str:
-    """Strip cosmetics that carry no addressing value.
-
-    Accepts the full ``blake3:<hex>``, the bare hex, or the short prefix
-    ``prospect`` prints (including a leading ``#``). Any uppercase hex is
-    folded to lowercase so it matches stored content addresses.
-    """
-    token = digest.strip()
-    if token.startswith("#"):
-        token = token[1:]
-    return token.removeprefix("blake3:").lower()
-
-
 def _chunk_to_json(chunk: ChunkWithPath, *, include_text: bool = True) -> dict[str, Any]:
     """Build a `dig` --json payload for one chunk (omit text for candidates)."""
     data: dict[str, Any] = {
@@ -112,8 +97,8 @@ def _dig(
     radius: int = 0,
     options: RenderOptions | None = None,
 ) -> None:
-    token = _normalize_digest(digest)
-    if not _DIGEST_PATTERN.fullmatch(token):
+    token = normalize_digest(digest)
+    if not DIGEST_PATTERN.fullmatch(token):
         fail_with("invalid_digest", command="dig", as_json=as_json, options=options, digest=digest)
     matches = store.find_chunks_by_digest(token)
     if not matches:

@@ -46,12 +46,10 @@ def normalize_digest(digest: str) -> str:
     """Strip cosmetics that carry no addressing value.
 
     Accepts the full ``blake3:<hex>``, the bare hex, or the short prefix
-    ``prospect`` prints (including a leading ``#``). Any uppercase hex is
-    folded to lowercase so it matches stored content addresses.
+    ``prospect`` prints. Any uppercase hex is folded to lowercase so it
+    matches stored content addresses.
     """
     token = digest.strip()
-    if token.startswith("#"):
-        token = token[1:]
     return token.removeprefix("blake3:").lower()
 
 
