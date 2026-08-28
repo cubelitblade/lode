@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 from rich.console import Console
 
+from lode.cli.commands._common import resolve_render_options
 from lode.cli.render import (
     ACCESSIBLE_INTENT_COLORS,
     DEFAULT_INTENT_COLORS,
@@ -98,3 +99,59 @@ def test_render_preset_plain_and_rich_rejected() -> None:
         render_options_from_preset("plain")
     with pytest.raises(ValueError):
         render_options_from_preset("rich")
+
+
+def test_resolve_render_options_no_color_flag_wins() -> None:
+    """--no-color (flag) forces colour off regardless of palette."""
+    options = resolve_render_options(
+        configured_palette="vivid",
+        configured_no_color=None,
+        palette="accessible",
+        no_color=True,
+    )
+    assert options.no_color is True
+    assert options.intent_colors == ACCESSIBLE_INTENT_COLORS
+
+
+def test_resolve_render_options_config_no_color_wins() -> None:
+    """Configured no_color forces colour off even when --palette is passed."""
+    options = resolve_render_options(
+        configured_palette="vivid",
+        configured_no_color=True,
+        palette="accessible",
+        no_color=False,
+    )
+    assert options.no_color is True
+    assert options.intent_colors == ACCESSIBLE_INTENT_COLORS
+
+
+def test_resolve_render_options_config_no_color_false_forces_color() -> None:
+    """An explicit configured no_color=false keeps colour on (overrides NO_COLOR)."""
+    options = resolve_render_options(
+        configured_palette="vivid",
+        configured_no_color=False,
+    )
+    assert options.no_color is False
+    assert options.intent_colors == DEFAULT_INTENT_COLORS
+
+
+def test_resolve_render_options_palette_flag_overrides_config() -> None:
+    """--palette overrides the configured palette when colour is on."""
+    options = resolve_render_options(
+        configured_palette="vivid",
+        configured_no_color=None,
+        palette="accessible",
+        no_color=False,
+    )
+    assert options.no_color is None
+    assert options.intent_colors == ACCESSIBLE_INTENT_COLORS
+
+
+def test_resolve_render_options_defaults_to_config() -> None:
+    """No flags: the configured palette is used and no_color is unset."""
+    options = resolve_render_options(
+        configured_palette="accessible",
+        configured_no_color=None,
+    )
+    assert options.no_color is None
+    assert options.intent_colors == ACCESSIBLE_INTENT_COLORS
