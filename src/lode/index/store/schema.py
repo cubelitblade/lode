@@ -108,13 +108,3 @@ def create_schema(conn: sqlite3.Connection, dimension: int, tokenize_clause: str
     conn.execute(_TRIGGER_CHUNKS_AI)
     conn.execute(_TRIGGER_CHUNKS_AD)
     conn.execute(_TRIGGER_CHUNKS_AU)
-
-
-def drop_all(conn: sqlite3.Connection) -> None:
-    """Drop every table of the index schema."""
-    conn.execute("DROP TABLE IF EXISTS chunks_fts")
-    conn.execute("DROP TABLE IF EXISTS chunk_vectors")
-    conn.execute("DROP TABLE IF EXISTS chunks")
-    conn.execute("DROP TABLE IF EXISTS files")
-    conn.execute("DROP TABLE IF EXISTS contents")
-    conn.execute("DROP TABLE IF EXISTS meta")
