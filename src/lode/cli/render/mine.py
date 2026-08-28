@@ -16,10 +16,17 @@ from pathlib import Path
 
 from rich.console import Console
 from rich.panel import Panel
-from rich.table import Table
 from rich.text import Text
 
-from lode.cli.render.core import MARKERS, STATUS_INTENT, Entry, Intent, RenderOptions, Status, entry_label
+from lode.cli.render.core import (
+    MARKERS,
+    STATUS_INTENT,
+    Entry,
+    Intent,
+    RenderOptions,
+    Status,
+    render_change_list,
+)
 from lode.ingestion.pipeline import SyncSummary
 
 
@@ -92,28 +99,7 @@ def render_mine(
 
     if result.added or result.updated or result.removed or result.renamed:
         header = f"Processed files ({result.added + result.updated + result.removed + result.renamed})"
-        if frame is not None:
-            changed = Table(box=None, show_header=False)
-            changed.add_column("Change", width=1, justify="center")
-            changed.add_column("Path")
-            for status, entries in _processed_entries(result):
-                style = options.intent_colors.get(STATUS_INTENT[status], "")
-                for entry in entries:
-                    changed.add_row(
-                        Text(MARKERS[status], style=style),
-                        Text(entry_label(entry), style=style),
-                    )
-            console.print()
-            console.print(
-                Panel(changed, title=header, title_align="left", border_style=options.border_style, box=frame)
-            )
-        else:
-            console.print()
-            console.print(header)
-            for status, entries in _processed_entries(result):
-                style = options.intent_colors.get(STATUS_INTENT[status], "")
-                for entry in entries:
-                    console.print(f"  {MARKERS[status]} {entry_label(entry)}", style=style)
+        render_change_list(console, header=header, entries=_processed_entries(result), options=options)
 
     if result.failed:
         error_style = options.intent_colors.get(STATUS_INTENT[Status.FAILED], "")

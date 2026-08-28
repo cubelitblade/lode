@@ -20,11 +20,15 @@ Design notes
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 
 from rich import box
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
 
 # Change-list entries are plain paths except renames, which carry ``(old, new)``.
 type Entry = str | tuple[str, str]
@@ -178,3 +182,37 @@ def render_options_from_preset(name: str) -> RenderOptions:
         return _PRESETS[name]
     except KeyError:
         raise ValueError(f"unknown render preset: {name!r}") from None
+
+
+def render_change_list(
+    console: Console,
+    *,
+    header: str,
+    entries: Sequence[tuple[Status, Sequence[Entry]]],
+    options: RenderOptions,
+) -> None:
+    """Render a change list, framed (Table in Panel) or plain (indented lines).
+
+    Shared by ``mine`` and ``survey``, whose change lists differ only in the
+    data source (processed vs pending) and the header. The frame decision
+    (``options.box``) is made here so both commands render identically: a
+    bordered ``Table`` when a frame is set, otherwise a plain header plus
+    indented ``<marker> <label>`` lines.
+    """
+    frame = options.box
+    console.print()
+    if frame is not None:
+        table = Table(box=None, show_header=False)
+        table.add_column("Change", width=1, justify="center")
+        table.add_column("Path")
+        for status, group in entries:
+            style = options.intent_colors.get(STATUS_INTENT[status], "")
+            for entry in group:
+                table.add_row(Text(MARKERS[status], style=style), Text(entry_label(entry), style=style))
+        console.print(Panel(table, title=header, title_align="left", border_style=options.border_style, box=frame))
+    else:
+        console.print(header)
+        for status, group in entries:
+            style = options.intent_colors.get(STATUS_INTENT[status], "")
+            for entry in group:
+                console.print(f"  {MARKERS[status]} {entry_label(entry)}", style=style)

@@ -12,10 +12,17 @@ from pathlib import Path
 
 from rich.console import Console
 from rich.panel import Panel
-from rich.table import Table
 from rich.text import Text
 
-from lode.cli.render.core import MARKERS, STATUS_INTENT, Entry, Intent, RenderOptions, Status, entry_label
+from lode.cli.render.core import (
+    MARKERS,
+    STATUS_INTENT,
+    Entry,
+    Intent,
+    RenderOptions,
+    Status,
+    render_change_list,
+)
 from lode.ingestion.pipeline import DetectResult
 
 
@@ -88,28 +95,7 @@ def render_survey(
 
     if result.pending:
         header = f"Pending sync ({result.pending} changes)"
-        if frame is not None:
-            pending = Table(box=None, show_header=False)
-            pending.add_column("Change", width=1, justify="center")
-            pending.add_column("Path")
-            for status, entries in _pending_entries(result):
-                style = options.intent_colors.get(STATUS_INTENT[status], "")
-                for entry in entries:
-                    pending.add_row(
-                        Text(MARKERS[status], style=style),
-                        Text(entry_label(entry), style=style),
-                    )
-            console.print()
-            console.print(
-                Panel(pending, title=header, title_align="left", border_style=options.border_style, box=frame)
-            )
-        else:
-            console.print()
-            console.print(header)
-            for status, entries in _pending_entries(result):
-                style = options.intent_colors.get(STATUS_INTENT[status], "")
-                for entry in entries:
-                    console.print(f"  {MARKERS[status]} {entry_label(entry)}", style=style)
+        render_change_list(console, header=header, entries=_pending_entries(result), options=options)
         hint_indent = " " if frame is not None else "  "
         console.print()
         console.print(
