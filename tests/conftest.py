@@ -1,7 +1,7 @@
-"""Shared fixtures and test doubles for the CLI end-to-end tests.
+"""Shared fixtures and test doubles for the test suite.
 
 The real embedder (network) is replaced with a FakeEmbedder via monkeypatch;
-everything else runs through the actual typer app.
+everything else runs through the actual code under test.
 """
 
 from __future__ import annotations
@@ -14,9 +14,10 @@ from typer.testing import CliRunner
 
 from lode.config import EmbeddingConfig
 from lode.index import Store
+from lode.index.ranking import LinearFusion, MinmaxNorm, RetrievalPlan
 from lode.ingestion.pipeline import SyncSummary, detect_changes, sync
 from lode.ingestion.split import RecursiveSegmentSplitter
-from tests.fakes import FailingEmbedder, FakeEmbedder
+from tests.fakes import FailingEmbedder, FakeEmbedder, file_record, make_chunks
 
 runner = CliRunner()
 
@@ -61,6 +62,22 @@ def run_sync(
     """detect then sync — the two-stage shape the CLI now uses."""
     detect = detect_changes(store, tmp_path)
     return sync(store, tmp_path, embedder, SPLITTER, detect=detect, report=report)
+
+
+def linear_plan(semantic: float, lexical: float) -> RetrievalPlan:
+    """A min-max + linear plan with the given weights (the default shape)."""
+    return RetrievalPlan(
+        norm=MinmaxNorm(),
+        fusion=LinearFusion(weights={"semantic": semantic, "lexical": lexical}),
+    )
+
+
+@pytest.fixture
+def seeded_store(tmp_path: Path) -> Store:
+    store = Store(tmp_path / "index.db", FakeEmbedder())
+    store.replace_file(file_record("a.txt"), *make_chunks(["the quick brown fox jumps", "lazy dog sleeps"]))
+    store.replace_file(file_record("b.md", digest="blake3:bb", size=2), *make_chunks(["quantum entanglement in labs"]))
+    return store
 
 
 def fake_embedder(_cfg: EmbeddingConfig) -> FakeEmbedder:
