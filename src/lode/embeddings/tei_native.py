@@ -1,20 +1,20 @@
-"""Embedding client speaking the OpenAI-compatible embeddings API.
+"""Embedding client speaking the TEI native API.
 
 Native endpoints used:
-    GET  /v1/models       -> {"data": [{"id": "model_id", ...}, ...]}
-    POST /v1/embeddings   -> {"model": "...", "input": [...]}
-                          -> {"data": [{"embedding": [...], "index": 0}, ...]}
+    GET  /info        -> {"model_id": "...", "max_client_batch_size": 32, ...}
+    POST /embed       -> {"inputs": [...], "normalize": true, ...}
+                     -> [[...], [...]]  (bare vectors, in input order)
 
-Any OpenAI-compatible server works: TEI, Ollama, vLLM, llama.cpp, hosted
-APIs. Those servers expose no `normalize` flag, so L2 normalization happens
-client-side via `l2_normalize` in base.py — that is also what makes the
-`Embedder` contract ("cosine == dot") hold regardless of backend.
+Unlike the OpenAI-compatible endpoint, TEI's native `/embed` returns a bare
+array of vectors in input order (no `index`/`model` wrapper), and `/info`
+reports the model id but not the vector dimension, so unless a dimension is
+given explicitly we auto-detect it with a tiny probe request.
 
-Note: /v1/models reports the model id but not the vector dimension, so
-unless a dimension is given explicitly we auto-detect it with a tiny probe
-request.
+`normalize` is applied client-side via `l2_normalize` in base.py to keep the
+`Embedder` contract ("cosine == dot") centralized, matching the
+OpenAI-compatible backend.
 
-See https://platform.openai.com/docs/api-reference/embeddings
+See https://huggingface.github.io/text-embeddings-inference/openapi
 """
 
 from __future__ import annotations
@@ -31,18 +31,18 @@ from lode.embeddings.errors import EmbedderUnavailableError
 logger = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "http://localhost:8080"
-# TEI advertises max_client_batch_size=32; other servers accept more, but
-# staying at or below it keeps the client safe across backends.
 DEFAULT_BATCH_SIZE = 32
 # Used to auto-detect the vector dimension at startup.
 PROBE_TEXT = "ping"
 
-# Retryable statuses. /v1/embeddings is idempotent, so retries are safe.
-RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+# Retryable statuses. 424 (backend inference failure) is NOT retryable: the
+# request reached the model and failed deterministically, so retrying would
+# not help. 429 (overloaded) is safe to retry.
+RETRYABLE_STATUS = {429}
 
 
-class OpenAICompatibleEmbedder(Embedder):
-    """Client for any OpenAI-compatible embeddings endpoint.
+class HuggingFaceTEINativeEmbedder(Embedder):
+    """Client for the TEI native embeddings API.
 
     Construction is side-effect free: metadata (model id, dimension) is
     resolved lazily on first access, so instantiating an embedder never
@@ -60,6 +60,8 @@ class OpenAICompatibleEmbedder(Embedder):
         timeout: float = 60.0,
         retries: int = 3,
         normalize: bool = True,
+        truncate: bool = False,
+        truncation_direction: str = "right",
         api_key: str | None = None,
         client: httpx.Client | None = None,
     ) -> None:
@@ -68,12 +70,14 @@ class OpenAICompatibleEmbedder(Embedder):
         self.timeout = timeout
         self.retries = max(0, retries)
         self.normalize = normalize
+        self.truncate = truncate
+        self.truncation_direction = truncation_direction
         self._api_key = api_key
         self._client = client or httpx.Client(timeout=timeout)
         self._model = model
         self._dimension = dimension
         self._output_dimension = output_dimension
-        self._fetched_model: str | None = None  # resolved lazily from /v1/models
+        self._fetched_model: str | None = None  # resolved lazily from /info
 
     # -- metadata (lazy) ----------------------------------------------------
 
@@ -113,30 +117,30 @@ class OpenAICompatibleEmbedder(Embedder):
     # -- internal -----------------------------------------------------------
 
     def _fetch_model_id(self) -> str:
-        resp = self._request("GET", f"{self.base_url}/v1/models")
+        resp = self._request("GET", f"{self.base_url}/info")
         data = cast(dict[str, Any], resp.json())
-        models = data.get("data", [])
-        if not models:
-            raise EmbedderUnavailableError("GET /v1/models returned no models")
-        model_id = models[0].get("id")
+        model_id = data.get("model_id")
         if not model_id:
-            raise EmbedderUnavailableError("GET /v1/models returned a model without an id")
+            raise EmbedderUnavailableError("GET /info returned no model_id")
         model_id = str(model_id)
         logger.info("Struck a lode: model=%s", model_id)
         return model_id
 
     def _embed(self, texts: list[str]) -> list[list[float]]:
-        payload: dict[str, Any] = {"model": self.model_id, "input": texts}
+        payload: dict[str, Any] = {
+            "inputs": texts,
+            "normalize": self.normalize,
+            "truncate": self.truncate,
+            "truncation_direction": self.truncation_direction,
+        }
         if self._output_dimension is not None:
             payload["dimensions"] = self._output_dimension
-        resp = self._request("POST", f"{self.base_url}/v1/embeddings", json=payload)
-        data = cast(list[dict[str, Any]], resp.json().get("data", []))
+        resp = self._request("POST", f"{self.base_url}/embed", json=payload)
+        data = cast(list[list[float]], resp.json())
         if len(data) != len(texts):
-            raise EmbedderUnavailableError(f"/v1/embeddings returned {len(data)} vectors for {len(texts)} inputs")
-        # The spec says vectors come back in input order, but servers may
-        # reorder; index is authoritative, so sort by it.
-        ordered = sorted(data, key=lambda item: int(item.get("index", 0)))
-        vectors = [list(map(float, item["embedding"])) for item in ordered]
+            raise EmbedderUnavailableError(f"/embed returned {len(data)} vectors for {len(texts)} inputs")
+        # TEI returns bare vectors in input order; no index to sort by.
+        vectors = [list(map(float, item)) for item in data]
         return l2_normalize(vectors) if self.normalize else vectors
 
     def _request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
@@ -155,7 +159,7 @@ class OpenAICompatibleEmbedder(Embedder):
                     ) from exc
                 attempt += 1
                 logger.warning(
-                    "OpenAI-compatible embedding request stumbled (%s); retrying attempt %d/%d",
+                    "TEI native embedding request stumbled (%s); retrying attempt %d/%d",
                     exc,
                     attempt,
                     self.retries,
@@ -174,7 +178,7 @@ class OpenAICompatibleEmbedder(Embedder):
 
             attempt += 1
             logger.warning(
-                "OpenAI-compatible embedding endpoint stumbled with status %d; retrying attempt %d/%d",
+                "TEI native embedding endpoint stumbled with status %d; retrying attempt %d/%d",
                 resp.status_code,
                 attempt,
                 self.retries,

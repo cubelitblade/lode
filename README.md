@@ -83,11 +83,20 @@ Lode supports local embedding servers such as Text Embeddings Inference (TEI), a
 Set your embedding provider:
 
 ```bash
-lode config set embedding.api.type "openai_compatible" --scope user
-lode config set embedding.api.endpoint <endpoint> --scope user
+lode config set embedding.provider "openai_compatible" --scope user
+lode config set embedding.openai_compatible.endpoint <endpoint> --scope user
 lode config set embedding.model <model-name> --scope user
-lode config set embedding.api.key <api-key> --scope user # optional
+lode config set embedding.openai_compatible.key <api-key> --scope user # optional
 ```
+
+For a TEI native endpoint, use `tei_native` instead:
+
+```bash
+lode config set embedding.provider "tei_native" --scope user
+lode config set embedding.tei_native.endpoint <endpoint> --scope user
+lode config set embedding.model <model-name> --scope user
+```
+
 Workspace-specific configuration can also be created using workspace scope.
 
 ### 3. Survey a workspace

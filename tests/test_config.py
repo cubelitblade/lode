@@ -15,6 +15,7 @@ from pydantic import ValidationError
 
 from lode import config
 from lode.embeddings.openai_compat import OpenAICompatibleEmbedder
+from lode.embeddings.tei_native import HuggingFaceTEINativeEmbedder
 from lode.index.ranking import LinearFusion, MinmaxNorm, RrfFusion, SoftmaxNorm
 
 
@@ -58,7 +59,7 @@ batch_size = 8
     assert settings.embedding.model == "BAAI/bge-small-zh-v1.5"
     assert settings.embedding.batch_size == 8
     # Fields not present in the file keep their defaults.
-    assert settings.embedding.api.endpoint == "http://localhost:8080"
+    assert settings.embedding.openai_compatible.endpoint == "http://localhost:8080"
     # Sections absent from the file fall back to their defaults entirely.
     assert settings.retrieval == config.RetrievalConfig()
     assert settings.chunking == config.ChunkingConfig()
@@ -147,9 +148,9 @@ overlap = 256
 
 def test_explicit_path(tmp_path: Path) -> None:
     toml = tmp_path / "custom.toml"
-    _write_toml(toml, '[embedding.api]\nendpoint = "http://127.0.0.1:11434"\n')
+    _write_toml(toml, '[embedding.openai_compatible]\nendpoint = "http://127.0.0.1:11434"\n')
     settings = config.load_settings(toml)
-    assert settings.embedding.api.endpoint == "http://127.0.0.1:11434"
+    assert settings.embedding.openai_compatible.endpoint == "http://127.0.0.1:11434"
 
 
 def test_explicit_path_must_exist(tmp_path: Path) -> None:
@@ -162,18 +163,20 @@ def test_nested_api_from_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     _write_toml(
         tmp_path / ".lode" / "config.toml",
         """
-[embedding.api]
-type = "openai_compatible"
+[embedding]
+provider = "openai_compatible"
+
+[embedding.openai_compatible]
 endpoint = "http://127.0.0.1:11434"
 max_retries = 5
 timeout = 30.0
 """,
     )
     settings = config.load_settings()
-    assert settings.embedding.api.type == "openai_compatible"
-    assert settings.embedding.api.endpoint == "http://127.0.0.1:11434"
-    assert settings.embedding.api.max_retries == 5
-    assert settings.embedding.api.timeout == 30.0
+    assert settings.embedding.provider == "openai_compatible"
+    assert settings.embedding.openai_compatible.endpoint == "http://127.0.0.1:11434"
+    assert settings.embedding.openai_compatible.max_retries == 5
+    assert settings.embedding.openai_compatible.timeout == 30.0
 
 
 def test_nested_api_env_overrides_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -181,13 +184,13 @@ def test_nested_api_env_overrides_toml(tmp_path: Path, monkeypatch: pytest.Monke
     _write_toml(
         tmp_path / ".lode" / "config.toml",
         """
-[embedding.api]
+[embedding.openai_compatible]
 endpoint = "http://127.0.0.1:11434"
 """,
     )
-    monkeypatch.setenv("LODE_EMBEDDING__API__ENDPOINT", "http://0.0.0.0:9999")
+    monkeypatch.setenv("LODE_EMBEDDING__OPENAI_COMPATIBLE__ENDPOINT", "http://0.0.0.0:9999")
     settings = config.load_settings()
-    assert settings.embedding.api.endpoint == "http://0.0.0.0:9999"
+    assert settings.embedding.openai_compatible.endpoint == "http://0.0.0.0:9999"
 
 
 def test_user_config_loads_as_base(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -263,10 +266,24 @@ def test_explicit_kwargs_win_over_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_build_embedder_from_settings() -> None:
     settings = config.Settings(
-        embedding=config.EmbeddingConfig(api=config.EmbeddingApiConfig(endpoint="http://localhost:9999"))
+        embedding=config.EmbeddingConfig(
+            openai_compatible=config.OpenAICompatibleConfig(endpoint="http://localhost:9999")
+        )
     )
     embedder = config.build_embedder(settings.embedding)
     assert isinstance(embedder, OpenAICompatibleEmbedder)
+    assert embedder.base_url == "http://localhost:9999"
+
+
+def test_build_tei_native_embedder_from_settings() -> None:
+    settings = config.Settings(
+        embedding=config.EmbeddingConfig(
+            provider="tei_native",
+            tei_native=config.TeiNativeConfig(endpoint="http://localhost:9999"),
+        )
+    )
+    embedder = config.build_embedder(settings.embedding)
+    assert isinstance(embedder, HuggingFaceTEINativeEmbedder)
     assert embedder.base_url == "http://localhost:9999"
 
 
@@ -365,7 +382,8 @@ def test_build_plan_rrf_skips_norm() -> None:
 
 def test_validate_key_accepts_leaf_keys() -> None:
     config.validate_key("embedding.model")
-    config.validate_key("embedding.api.endpoint")
+    config.validate_key("embedding.openai_compatible.endpoint")
+    config.validate_key("embedding.tei_native.truncate")
     config.validate_key("retrieval.top_k")
     config.validate_key("chunking.size")
     config.validate_key("ignore.sources")
@@ -379,7 +397,17 @@ def test_validate_key_accepts_leaf_keys() -> None:
 
 def test_validate_key_rejects_sections_and_unknown() -> None:
     # Whole sections are not settable leaves.
-    for key in ("embedding", "embedding.api", "retrieval", "chunking", "ignore", "norm", "fusion", "lexical"):
+    for key in (
+        "embedding",
+        "embedding.openai_compatible",
+        "embedding.tei_native",
+        "retrieval",
+        "chunking",
+        "ignore",
+        "norm",
+        "fusion",
+        "lexical",
+    ):
         with pytest.raises(KeyError):
             config.validate_key(key)
     # Unknown/invalid keys.
@@ -391,7 +419,8 @@ def test_validate_key_rejects_sections_and_unknown() -> None:
 def test_parse_value_types() -> None:
     assert config.parse_value("embedding.model", "BAAI/bge-small-zh-v1.5") == "BAAI/bge-small-zh-v1.5"
     assert config.parse_value("embedding.batch_size", "8") == 8
-    assert config.parse_value("embedding.api.timeout", "30.0") == 30.0
+    assert config.parse_value("embedding.openai_compatible.timeout", "30.0") == 30.0
+    assert config.parse_value("embedding.tei_native.truncate", "true") is True
     assert config.parse_value("embedding.l2_normalize", "false") is False
     assert config.parse_value("embedding.l2_normalize", "1") is True
     assert config.parse_value("ignore.sources", ".gitignore, docs") == [".gitignore", "docs"]
@@ -417,12 +446,14 @@ def test_parse_value_rejects_bad_types() -> None:
 
 def test_effective_config_drops_internal_field() -> None:
     settings = config.Settings(
-        embedding=config.EmbeddingConfig(model="m", api=config.EmbeddingApiConfig(endpoint="http://x")),
+        embedding=config.EmbeddingConfig(
+            model="m", openai_compatible=config.OpenAICompatibleConfig(endpoint="http://x")
+        ),
         chunking=config.ChunkingConfig(size=2048),
     )
     data = config.effective_config(settings)
     # The internal `config_files` field must not leak into the serialized config.
     assert "config_files" not in data
     assert data["embedding"]["model"] == "m"
-    assert data["embedding"]["api"]["endpoint"] == "http://x"
+    assert data["embedding"]["openai_compatible"]["endpoint"] == "http://x"
     assert data["chunking"]["size"] == 2048

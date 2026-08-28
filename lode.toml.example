@@ -2,16 +2,30 @@ version = 1
 
 [embedding]
 
+# Which embedding provider to use.
+# Supported values:
+# - `openai_compatible`: OpenAI Embeddings API compatible endpoint.
+# - `tei_native`: Hugging Face Text Embeddings Inference native API.
+# The matching `[embedding.<provider>]` table is read at assembly time; the
+# other tables are ignored.
+provider = "openai_compatible"
+
 # Name of the embedding model.
 # If omitted, lode will try to discover the model information from the embedding API endpoint.
 # This is useful for OpenAI-compatible servers that expose model metadata.
 # model = "BAAI/bge-small-zh-v1.5"
 
-# Dimension of the embedding vectors.
+# Dimension of the embedding vectors (the model's native output dimension).
 # If omitted, lode will try to discover it from the embedding API endpoint.
 # The dimension must match the actual output dimension of the embedding model.
 # Changing this value requires re-mining the index.
-# dimension = 512
+# model_dimension = 512
+
+# Optional request-level output dimension (a subset of the model dimension).
+# When set, the provider is asked to return vectors of this size (e.g. the
+# `dimensions` field of OpenAI-compatible APIs, or `dimensions` of TEI).
+# Leave unset to use the full model dimension.
+# output_dimension = 256
 
 # Whether to apply L2 normalization to embedding vectors.
 # When enabled, cosine similarity can be calculated efficiently using dot product.
@@ -23,12 +37,8 @@ l2_normalize = true
 batch_size = 32
 
 
-[embedding.api]
-
-# Type of embedding API endpoint.
-# Supported values:
-# - `openai_compatible`: OpenAI Embeddings API compatible endpoint.
-type = "openai_compatible"
+[embedding.openai_compatible]
+# Only loaded when provider = "openai_compatible".
 
 # Base URL of the embedding API endpoint.
 endpoint = "http://localhost:8080"
@@ -41,6 +51,29 @@ max_retries = 3
 
 # Timeout in seconds for each embedding request.
 timeout = 60.0
+
+
+[embedding.tei_native]
+# Only loaded when provider = "tei_native".
+
+# Base URL of the TEI endpoint.
+endpoint = "http://localhost:8080"
+
+# Optional API key for authenticated endpoints.
+# key = ""
+
+# Maximum number of retries when an embedding request fails.
+max_retries = 3
+
+# Timeout in seconds for each embedding request.
+timeout = 60.0
+
+# Whether to truncate inputs longer than the model's maximum length.
+truncate = false
+
+# Which side to truncate from when `truncate` is enabled.
+# Options: `left`, `right`.
+truncation_direction = "right"
 
 
 [retrieval]

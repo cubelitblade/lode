@@ -36,8 +36,10 @@ def test_render_config_show_emits_toml() -> None:
 
 
 def test_render_config_value_emits_key_value() -> None:
-    text = _render(lambda console: render_config_value("embedding.api.endpoint", "https://x", console=console))
-    assert 'embedding.api.endpoint = "https://x"' in text
+    text = _render(
+        lambda console: render_config_value("embedding.openai_compatible.endpoint", "https://x", console=console)
+    )
+    assert 'embedding.openai_compatible.endpoint = "https://x"' in text
 
 
 def test_render_config_value_formats_bool_lowercase() -> None:

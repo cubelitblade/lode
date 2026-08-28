@@ -101,6 +101,16 @@ Contains embedding interfaces and implementations.
   * Construction should remain side-effect free.
   * Provider metadata should be resolved lazily when possible.
 
+* `tei_native.py`
+
+  * Implements `HuggingFaceTEINativeEmbedder`.
+  * Supports the Hugging Face Text Embeddings Inference (TEI) native API:
+
+    * `GET /info`
+    * `POST /embed`
+  * Returns bare vectors in input order (no `index` wrapper).
+  * `424` (backend inference failure) is not retryable; only `429` is.
+
 Adding a new embedding backend should not require changes to core business logic.
 
 ## Development Workflow

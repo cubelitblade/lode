@@ -84,7 +84,7 @@ def config_show(ctx: typer.Context) -> None:
 @config_app.command("get")
 def config_get(
     ctx: typer.Context,
-    key: Annotated[str, typer.Argument(help="Config key, e.g. embedding.api.endpoint.")],
+    key: Annotated[str, typer.Argument(help="Config key, e.g. embedding.openai_compatible.endpoint.")],
     scope: Annotated[
         str | None,
         typer.Option("--scope", help="Read only this scope; omit to read the merged effective value."),
@@ -125,7 +125,7 @@ def config_get(
 @config_app.command("set")
 def config_set(
     ctx: typer.Context,
-    key: Annotated[str, typer.Argument(help="Config key, e.g. embedding.api.endpoint.")],
+    key: Annotated[str, typer.Argument(help="Config key, e.g. embedding.openai_compatible.endpoint.")],
     value: Annotated[str, typer.Argument(help="Value to set; typed by the config field.")],
     scope: ConfigScope = "workspace",
 ) -> None:
@@ -153,7 +153,7 @@ def config_set(
 @config_app.command("unset")
 def config_unset(
     ctx: typer.Context,
-    key: Annotated[str, typer.Argument(help="Config key, e.g. embedding.api.endpoint.")],
+    key: Annotated[str, typer.Argument(help="Config key, e.g. embedding.openai_compatible.endpoint.")],
     scope: ConfigScope = "workspace",
 ) -> None:
     """Unset a config value from the target scope."""

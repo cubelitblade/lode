@@ -35,6 +35,7 @@ from pydantic_settings import (
 
 from lode.embeddings.base import Embedder
 from lode.embeddings.openai_compat import OpenAICompatibleEmbedder
+from lode.embeddings.tei_native import HuggingFaceTEINativeEmbedder
 from lode.index.ranking import (
     LinearFusion,
     MinmaxNorm,
@@ -73,24 +74,44 @@ DEFAULT_CHUNK_OVERLAP = 128
 DEFAULT_TOKENIZER = "simple"
 
 
-class EmbeddingApiConfig(BaseModel):
-    """Transport settings for the embedding HTTP backend."""
+class EmbeddingHttpConfig(BaseModel):
+    """Transport settings shared by HTTP embedding backends."""
 
-    type: str = "openai_compatible"
-    key: str | None = None
     endpoint: str = "http://localhost:8080"
+    key: str | None = None
     max_retries: int = 3
     timeout: float = 60.0
 
 
-class EmbeddingConfig(BaseModel):
-    """Settings for the embedding model backend."""
+class OpenAICompatibleConfig(EmbeddingHttpConfig):
+    """Provider-specific settings for the OpenAI-compatible backend."""
 
+
+class TeiNativeConfig(EmbeddingHttpConfig):
+    """Provider-specific settings for the TEI native backend."""
+
+    truncate: bool = False
+    truncation_direction: Literal["left", "right"] = "right"
+
+
+class EmbeddingConfig(BaseModel):
+    """Settings for the embedding model backend.
+
+    ``provider`` picks which parameter table is read at assembly time; the
+    other tables are always present but ignored ("only loaded when provider
+    = ..."). Fields on this model (``model``, ``model_dimension``,
+    ``output_dimension``, ``l2_normalize``, ``batch_size``) are shared by all
+    providers.
+    """
+
+    provider: Literal["openai_compatible", "tei_native"] = "openai_compatible"
     model: str | None = None
-    dimension: int | None = None
+    model_dimension: int | None = None
+    output_dimension: int | None = None
     l2_normalize: bool = True
     batch_size: int = 32
-    api: EmbeddingApiConfig = EmbeddingApiConfig()
+    openai_compatible: OpenAICompatibleConfig = OpenAICompatibleConfig()
+    tei_native: TeiNativeConfig = TeiNativeConfig()
 
 
 class RetrievalConfig(BaseModel):
@@ -404,7 +425,7 @@ def validate_key(key: str) -> None:
         raise KeyError(key)
     annotation = _unwrap_optional(field.annotation)
     if isinstance(annotation, type) and issubclass(annotation, BaseModel):
-        # A whole section (`embedding`, `embedding.api`) is not a settable leaf.
+        # A whole section (`embedding`, `embedding.openai_compatible`) is not a settable leaf.
         raise KeyError(key)
 
 
@@ -490,18 +511,33 @@ def toml_dumps(data: dict[str, Any]) -> str:
 
 def build_embedder(cfg: EmbeddingConfig) -> Embedder:
     """Construct the embedding implementation selected by config."""
-    if cfg.api.type == "openai_compatible":
+    if cfg.provider == "openai_compatible":
         return OpenAICompatibleEmbedder(
-            base_url=cfg.api.endpoint,
-            api_key=cfg.api.key,
+            base_url=cfg.openai_compatible.endpoint,
+            api_key=cfg.openai_compatible.key,
             model=cfg.model,
-            dimension=cfg.dimension,
+            dimension=cfg.model_dimension,
+            output_dimension=cfg.output_dimension,
             batch_size=cfg.batch_size,
-            timeout=cfg.api.timeout,
-            retries=cfg.api.max_retries,
+            timeout=cfg.openai_compatible.timeout,
+            retries=cfg.openai_compatible.max_retries,
             normalize=cfg.l2_normalize,
         )
-    raise ValueError(f"Unknown embedding provider: {cfg.api.type!r}")
+    if cfg.provider == "tei_native":
+        return HuggingFaceTEINativeEmbedder(
+            base_url=cfg.tei_native.endpoint,
+            api_key=cfg.tei_native.key,
+            model=cfg.model,
+            dimension=cfg.model_dimension,
+            output_dimension=cfg.output_dimension,
+            batch_size=cfg.batch_size,
+            timeout=cfg.tei_native.timeout,
+            retries=cfg.tei_native.max_retries,
+            normalize=cfg.l2_normalize,
+            truncate=cfg.tei_native.truncate,
+            truncation_direction=cfg.tei_native.truncation_direction,
+        )
+    raise ValueError(f"Unknown embedding provider: {cfg.provider!r}")
 
 
 def build_plan(norm_cfg: NormConfig, fusion_cfg: FusionConfig) -> RetrievalPlan:

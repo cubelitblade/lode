@@ -1295,7 +1295,9 @@ def test_config_set_writes_existing_project_file(tmp_path: Path, monkeypatch: py
 
 def test_config_set_user_scope_writes_user_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
-    result = runner.invoke(app, ["config", "set", "embedding.api.endpoint", "http://x", "--scope", "user"])
+    result = runner.invoke(
+        app, ["config", "set", "embedding.openai_compatible.endpoint", "http://x", "--scope", "user"]
+    )
     assert result.exit_code == 0, result.output
     user_path = _config_path("user")
     assert user_path.is_file()
