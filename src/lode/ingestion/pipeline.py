@@ -264,6 +264,74 @@ def detect_changes(
     return result
 
 
+def _embed_one_file(
+    store: Store,
+    root: Path,
+    embedder: Embedder,
+    splitter: SegmentSplitter,
+    summary: SyncSummary,
+    *,
+    rel_text: str,
+    added_paths: frozenset[str],
+) -> None:
+    """Embed a single file into the index, updating ``summary`` in place.
+
+    The per-file flow: read -> content-reuse check -> extract -> split+embed+
+    replace. ``added_paths`` distinguishes additions from updates (a rename
+    fallback counts as an addition even though it is not in ``new_files``).
+    Domain failures (unreadable file, extraction error, embedder/store error)
+    are recorded on ``summary`` and the file is marked stale so a later run
+    retries it; a programming error (e.g. a bug in the splitter) propagates
+    instead of being silently downgraded to a per-file failure.
+    """
+    path = root / rel_text
+    try:
+        data = path.read_bytes()
+        stat = path.stat()
+    except OSError as exc:
+        summary.failed.append(FailedFile(path=rel_text, error=f"could not read file: {exc}"))
+        store.mark_stale(rel_text)
+        return
+
+    digest = file_digest(data)
+    record = FileRecord(path=rel_text, digest=digest, mtime=stat.st_mtime, size=stat.st_size)
+    if store.reference_file(record):
+        # Identical content is already indexed (a copy elsewhere):
+        # reuse it instead of re-extracting and re-embedding.
+        if rel_text in added_paths:
+            summary.added_files.append(rel_text)
+        else:
+            summary.updated_files.append(rel_text)
+        return
+
+    try:
+        segments = extract_document(data, Path(rel_text).suffix)
+    except ExtractionError as exc:
+        summary.failed.append(FailedFile(path=rel_text, error=str(exc)))
+        store.mark_stale(rel_text)
+        return
+    if segments is None:
+        summary.skipped += 1
+        return
+
+    try:
+        chunks = splitter.split_segments(segments)
+        vectors = embedder.embed_documents([chunk.text for chunk in chunks])
+        store.replace_file(record, chunks, vectors)
+        if rel_text in added_paths:
+            summary.added_files.append(rel_text)
+        else:
+            summary.updated_files.append(rel_text)
+    except (EmbedderUnavailableError, StoreError) as exc:
+        # The old snapshot stays queryable; the file is flagged so search
+        # can tell the user it may be out of date. Only *domain* errors are
+        # caught here — a programming error (e.g. a bug in the splitter)
+        # must propagate instead of being silently downgraded to a per-file
+        # failure.
+        summary.failed.append(FailedFile(path=rel_text, error=str(exc)))
+        store.mark_stale(rel_text)
+
+
 def sync(
     store: Store,
     root: Path,
@@ -316,54 +384,17 @@ def sync(
     added_paths = frozenset([*detect.new_files, *rename_fallbacks])
     total = len(to_embed)
     for idx, rel_text in enumerate(to_embed, start=1):
-        path = root / rel_text
         if report is not None:
             report(idx - 1, total, rel_text)
-        try:
-            data = path.read_bytes()
-            stat = path.stat()
-        except OSError as exc:
-            summary.failed.append(FailedFile(path=rel_text, error=f"could not read file: {exc}"))
-            store.mark_stale(rel_text)
-            continue
-
-        digest = file_digest(data)
-        record = FileRecord(path=rel_text, digest=digest, mtime=stat.st_mtime, size=stat.st_size)
-        if store.reference_file(record):
-            # Identical content is already indexed (a copy elsewhere):
-            # reuse it instead of re-extracting and re-embedding.
-            if rel_text in added_paths:
-                summary.added_files.append(rel_text)
-            else:
-                summary.updated_files.append(rel_text)
-            continue
-
-        try:
-            segments = extract_document(data, Path(rel_text).suffix)
-        except ExtractionError as exc:
-            summary.failed.append(FailedFile(path=rel_text, error=str(exc)))
-            store.mark_stale(rel_text)
-            continue
-        if segments is None:
-            summary.skipped += 1
-            continue
-
-        try:
-            chunks = splitter.split_segments(segments)
-            vectors = embedder.embed_documents([chunk.text for chunk in chunks])
-            store.replace_file(record, chunks, vectors)
-            if rel_text in added_paths:
-                summary.added_files.append(rel_text)
-            else:
-                summary.updated_files.append(rel_text)
-        except (EmbedderUnavailableError, StoreError) as exc:
-            # The old snapshot stays queryable; the file is flagged so search
-            # can tell the user it may be out of date. Only *domain* errors
-            # are caught here — a programming error (e.g. a bug in the
-            # splitter) must propagate instead of being silently downgraded
-            # to a per-file failure.
-            summary.failed.append(FailedFile(path=rel_text, error=str(exc)))
-            store.mark_stale(rel_text)
+        _embed_one_file(
+            store,
+            root,
+            embedder,
+            splitter,
+            summary,
+            rel_text=rel_text,
+            added_paths=added_paths,
+        )
 
     for rel_text in [*detect.missing_files, *fallback_removals]:
         store.remove_file(rel_text)
