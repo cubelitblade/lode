@@ -22,15 +22,14 @@ import typer
 import lode.cli as _cli
 from lode.cli.commands._common import (
     DIGEST_PATTERN,
-    INDEX_DB_RELATIVE,
     ConfigArg,
     NoColorArg,
     PaletteArg,
     fail_with,
     load_settings_or_fail,
     normalize_digest,
-    open_store,
     render_options,
+    require_store,
     store_failure,
     workspace_from,
 )
@@ -77,15 +76,14 @@ def why(
     settings = load_settings_or_fail(config, command="assay", as_json=as_json)
     embedder = _cli.build_embedder(settings.embedding)
     options = render_options(settings, palette, no_color)
-    store = open_store(workspace, embedder, command="assay", as_json=as_json, tokenizer=settings.lexical.strategy)
-    if store is None:
-        fail_with(
-            "no_index",
-            command="assay",
-            as_json=as_json,
-            options=options,
-            index_path=str(workspace / INDEX_DB_RELATIVE),
-        )
+    store = require_store(
+        workspace,
+        embedder,
+        command="assay",
+        as_json=as_json,
+        tokenizer=settings.lexical.strategy,
+        options=options,
+    )
 
     with store:
         # Refresh the stale bits so per-chunk provenance reflects the current
@@ -109,15 +107,14 @@ def how(
     options = render_options(settings, palette, no_color)
     # No embedder needed: tokenization never touches vectors, but opening the
     # store still validates the configured tokenizer against the index.
-    store = open_store(workspace, None, command="assay", as_json=as_json, tokenizer=settings.lexical.strategy)
-    if store is None:
-        fail_with(
-            "no_index",
-            command="assay",
-            as_json=as_json,
-            options=options,
-            index_path=str(workspace / INDEX_DB_RELATIVE),
-        )
+    store = require_store(
+        workspace,
+        None,
+        command="assay",
+        as_json=as_json,
+        tokenizer=settings.lexical.strategy,
+        options=options,
+    )
 
     with store:
         detect_changes(store, workspace, settings.ignore.sources)

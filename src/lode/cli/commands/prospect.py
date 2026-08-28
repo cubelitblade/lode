@@ -13,14 +13,12 @@ import typer
 
 import lode.cli as _cli
 from lode.cli.commands._common import (
-    INDEX_DB_RELATIVE,
     ConfigArg,
     NoColorArg,
     PaletteArg,
-    fail_with,
     load_settings_or_fail,
-    open_store,
     render_options,
+    require_store,
     store_failure,
     workspace_from,
 )
@@ -55,15 +53,14 @@ def prospect(
     settings = load_settings_or_fail(config, command="prospect", as_json=as_json)
     embedder = _cli.build_embedder(settings.embedding)
     options = render_options(settings, palette, no_color)
-    store = open_store(workspace, embedder, command="prospect", as_json=as_json, tokenizer=settings.lexical.strategy)
-    if store is None:
-        fail_with(
-            "no_index",
-            command="prospect",
-            as_json=as_json,
-            options=options,
-            index_path=str(workspace / INDEX_DB_RELATIVE),
-        )
+    store = require_store(
+        workspace,
+        embedder,
+        command="prospect",
+        as_json=as_json,
+        tokenizer=settings.lexical.strategy,
+        options=options,
+    )
 
     with store:
         if top_k is None:

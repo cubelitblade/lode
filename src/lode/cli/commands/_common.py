@@ -169,6 +169,35 @@ def open_store(
         store_failure(exc, command=command, as_json=as_json)
 
 
+def require_store(
+    workspace: Path,
+    embedder: Embedder | None,
+    *,
+    command: str,
+    as_json: bool,
+    tokenizer: str,
+    options: RenderOptions,
+) -> Store:
+    """Open the workspace index, exiting with ``no_index`` if it does not exist.
+
+    Wraps ``open_store`` + the ``no_index`` short-circuit shared by the
+    read-oriented commands (assay/dig/prospect). Returns a non-None ``Store``;
+    a missing index exits through the shared failure path. ``tokenizer`` and
+    ``options`` are required: every caller resolves them from settings, and a
+    default would silently mask a caller that forgot to pass them.
+    """
+    store = open_store(workspace, embedder, command=command, as_json=as_json, tokenizer=tokenizer)
+    if store is None:
+        fail_with(
+            "no_index",
+            command=command,
+            as_json=as_json,
+            options=options,
+            index_path=str(workspace / INDEX_DB_RELATIVE),
+        )
+    return store
+
+
 def resolve_render_options(
     *,
     configured_palette: str,
