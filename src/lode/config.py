@@ -34,6 +34,7 @@ from pydantic_settings import (
 )
 
 from lode.embeddings.base import Embedder
+from lode.embeddings.ollama import OllamaEmbedder
 from lode.embeddings.openai_compat import OpenAICompatibleEmbedder
 from lode.embeddings.tei_native import HuggingFaceTEINativeEmbedder
 from lode.index.ranking import (
@@ -94,6 +95,15 @@ class TeiNativeConfig(EmbeddingHttpConfig):
     truncation_direction: Literal["left", "right"] = "right"
 
 
+class OllamaConfig(EmbeddingHttpConfig):
+    """Provider-specific settings for the Ollama native backend."""
+
+    endpoint: str = "http://localhost:11434"
+    # Ollama's server-side default; truncating silently keeps long inputs
+    # working instead of failing the whole request.
+    truncate: bool = True
+
+
 class EmbeddingConfig(BaseModel):
     """Settings for the embedding model backend.
 
@@ -104,7 +114,7 @@ class EmbeddingConfig(BaseModel):
     providers.
     """
 
-    provider: Literal["openai_compatible", "tei_native"] = "openai_compatible"
+    provider: Literal["openai_compatible", "tei_native", "ollama"] = "openai_compatible"
     model: str | None = None
     model_dimension: int | None = None
     output_dimension: int | None = None
@@ -112,6 +122,7 @@ class EmbeddingConfig(BaseModel):
     batch_size: int = 32
     openai_compatible: OpenAICompatibleConfig = OpenAICompatibleConfig()
     tei_native: TeiNativeConfig = TeiNativeConfig()
+    ollama: OllamaConfig = OllamaConfig()
 
 
 class RetrievalConfig(BaseModel):
@@ -536,6 +547,19 @@ def build_embedder(cfg: EmbeddingConfig) -> Embedder:
             normalize=cfg.l2_normalize,
             truncate=cfg.tei_native.truncate,
             truncation_direction=cfg.tei_native.truncation_direction,
+        )
+    if cfg.provider == "ollama":
+        return OllamaEmbedder(
+            base_url=cfg.ollama.endpoint,
+            api_key=cfg.ollama.key,
+            model=cfg.model,
+            dimension=cfg.model_dimension,
+            output_dimension=cfg.output_dimension,
+            batch_size=cfg.batch_size,
+            timeout=cfg.ollama.timeout,
+            retries=cfg.ollama.max_retries,
+            normalize=cfg.l2_normalize,
+            truncate=cfg.ollama.truncate,
         )
     raise ValueError(f"Unknown embedding provider: {cfg.provider!r}")
 

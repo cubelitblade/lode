@@ -14,6 +14,7 @@ import pytest
 from pydantic import ValidationError
 
 from lode import config
+from lode.embeddings.ollama import OllamaEmbedder
 from lode.embeddings.openai_compat import OpenAICompatibleEmbedder
 from lode.embeddings.tei_native import HuggingFaceTEINativeEmbedder
 from lode.index.ranking import LinearFusion, MinmaxNorm, RrfFusion, SoftmaxNorm
@@ -285,6 +286,26 @@ def test_build_tei_native_embedder_from_settings() -> None:
     embedder = config.build_embedder(settings.embedding)
     assert isinstance(embedder, HuggingFaceTEINativeEmbedder)
     assert embedder.base_url == "http://localhost:9999"
+
+
+def test_build_ollama_embedder_from_settings() -> None:
+    settings = config.Settings(
+        embedding=config.EmbeddingConfig(
+            provider="ollama",
+            model="all-minilm",
+            ollama=config.OllamaConfig(endpoint="http://localhost:9999", truncate=False),
+        )
+    )
+    embedder = config.build_embedder(settings.embedding)
+    assert isinstance(embedder, OllamaEmbedder)
+    assert embedder.base_url == "http://localhost:9999"
+    assert embedder.truncate is False
+
+
+def test_ollama_defaults() -> None:
+    settings = config.Settings()
+    assert settings.embedding.ollama.endpoint == "http://localhost:11434"
+    assert settings.embedding.ollama.truncate is True
 
 
 def test_norm_fusion_defaults() -> None:

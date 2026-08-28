@@ -6,13 +6,17 @@ version = 1
 # Supported values:
 # - `openai_compatible`: OpenAI Embeddings API compatible endpoint.
 # - `tei_native`: Hugging Face Text Embeddings Inference native API.
+# - `ollama`: Ollama native API.
 # The matching `[embedding.<provider>]` table is read at assembly time; the
 # other tables are ignored.
 provider = "openai_compatible"
 
 # Name of the embedding model.
-# If omitted, lode will try to discover the model information from the embedding API endpoint.
-# This is useful for OpenAI-compatible servers that expose model metadata.
+# If omitted, lode will try to discover the model information from the endpoint
+# when supported.
+# On endpoints that expose multiple models, automatic discovery may select or
+# probe a model that is not an embedding model. Set `model` explicitly when
+# the endpoint hosts multiple models.
 # model = "BAAI/bge-small-zh-v1.5"
 
 # Dimension of the embedding vectors (the model's native output dimension).
@@ -32,7 +36,7 @@ provider = "openai_compatible"
 # Usually recommended for retrieval tasks.
 l2_normalize = true
 
-# Number of texts sent to the embedding API in a single request.
+# Number of texts sent to the embedding endpoint in a single request.
 # Larger values may improve throughput but require more memory.
 batch_size = 32
 
@@ -74,6 +78,25 @@ truncate = false
 # Which side to truncate from when `truncate` is enabled.
 # Options: `left`, `right`.
 truncation_direction = "right"
+
+
+[embedding.ollama]
+# Only loaded when provider = "ollama".
+
+# Base URL of the Ollama endpoint.
+endpoint = "http://localhost:11434"
+
+# Optional API key for authenticated endpoints.
+# key = ""
+
+# Maximum number of retries when an embedding request fails.
+max_retries = 3
+
+# Timeout in seconds for each embedding request.
+timeout = 60.0
+
+# Whether to truncate inputs longer than the model's context length.
+truncate = true
 
 
 [retrieval]
