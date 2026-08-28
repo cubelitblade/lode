@@ -6,12 +6,16 @@ everything else runs through the actual typer app.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
 from lode.config import EmbeddingConfig
+from lode.index import Store
+from lode.ingestion.pipeline import SyncSummary, detect_changes, sync
+from lode.ingestion.split import RecursiveSegmentSplitter
 from tests.fakes import FailingEmbedder, FakeEmbedder
 
 runner = CliRunner()
@@ -28,6 +32,35 @@ def _isolate_user_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
     """
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     monkeypatch.chdir(tmp_path)
+
+
+@pytest.fixture
+def store(tmp_path: Path) -> Store:
+    # Keep the db under .lode/ like the real CLI, so the WAL sidecar files
+    # are ignored by discover and don't pollute the counts.
+    return Store(tmp_path / ".lode" / "index.db", FakeEmbedder())
+
+
+def write(tmp_path: Path, name: str, content: str) -> Path:
+    path = tmp_path / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content)
+    return path
+
+
+SPLITTER = RecursiveSegmentSplitter(chunk_size=50, chunk_overlap=5)
+
+
+def run_sync(
+    store: Store,
+    tmp_path: Path,
+    embedder: FakeEmbedder | FailingEmbedder,
+    *,
+    report: Callable[[int, int, str], None] | None = None,
+) -> SyncSummary:
+    """detect then sync — the two-stage shape the CLI now uses."""
+    detect = detect_changes(store, tmp_path)
+    return sync(store, tmp_path, embedder, SPLITTER, detect=detect, report=report)
 
 
 def fake_embedder(_cfg: EmbeddingConfig) -> FakeEmbedder:
