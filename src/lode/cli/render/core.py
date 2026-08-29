@@ -121,8 +121,9 @@ STATUS_INTENT: Mapping[Status, Intent] = {
     Status.FAILED: Intent.ERROR,
 }
 
-# Default (rich) colours: actionable signals stand out, passive ones recede.
-DEFAULT_INTENT_COLORS: Mapping[Intent, str] = {
+# Terminal-native colors: follows the user's terminal theme.
+# Uses ANSI named colors rather than fixed RGB values.
+ANSI_INTENT_COLORS: Mapping[Intent, str] = {
     Intent.SUCCESS: "green",
     Intent.ERROR: "red",
     Intent.WARNING: "yellow",
@@ -130,14 +131,24 @@ DEFAULT_INTENT_COLORS: Mapping[Intent, str] = {
     Intent.MUTED: "dim",
 }
 
-# accessible (colour-blind friendly): distinct hues with strong luminance
-# separation, paired with the always-on symbols so hue is never the only cue.
-ACCESSIBLE_INTENT_COLORS: Mapping[Intent, str] = {
-    Intent.SUCCESS: "spring_green1",
-    Intent.ERROR: "dark_orange",
-    Intent.WARNING: "gold1",
-    Intent.INFO: "deep_sky_blue1",
-    Intent.MUTED: "grey50",
+# Accessible palette optimized for light terminal backgrounds.
+# Based on Paul Tol's vibrant palette.
+ACCESSIBLE_LIGHT_INTENT_COLORS: Mapping[Intent, str] = {
+    Intent.SUCCESS: "#009988",  # teal
+    Intent.ERROR: "#CC3311",  # red
+    Intent.WARNING: "#EE7733",  # orange
+    Intent.INFO: "#0077BB",  # blue
+    Intent.MUTED: "#808080",
+}
+
+# Accessible palette optimized for dark terminal backgrounds.
+# Based on the Okabe-Ito palette.
+ACCESSIBLE_DARK_INTENT_COLORS: Mapping[Intent, str] = {
+    Intent.SUCCESS: "#009E73",  # bluish green
+    Intent.ERROR: "#D55E00",  # vermilion
+    Intent.WARNING: "#F0E442",  # yellow
+    Intent.INFO: "#56B4E9",  # sky blue
+    Intent.MUTED: "#888888",
 }
 
 
@@ -147,14 +158,15 @@ class RenderOptions:
 
     Colour (``intent_colors``), border (``border``), and the colour on/off
     switch (``no_color``) are independent axes. ``intent_colors`` selects the
-    palette (``vivid``/``accessible``); ``no_color`` (``True``/``False``/``None``)
+    palette (``ansi``/``accessible_light``/``accessible_dark``); ``no_color``
+    (``True``/``False``/``None``)
     is applied at the ``Console`` layer — ``None`` defers to Rich's own
     ``NO_COLOR`` detection. Defaults reproduce the current rich output (rounded
     border, dim border, default colours).
     """
 
     border: Border = Border.ROUND
-    intent_colors: Mapping[Intent, str] = field(default_factory=lambda: DEFAULT_INTENT_COLORS)
+    intent_colors: Mapping[Intent, str] = field(default_factory=lambda: ANSI_INTENT_COLORS)
     # Border colour. Kept as a value (not a bool) so it can become configurable
     # later; ``dim`` keeps the frame from competing with the content colours.
     border_style: str = "dim"
@@ -171,13 +183,14 @@ class RenderOptions:
 # Presets only control COLOUR; border (``RenderOptions.border``) and the
 # no-colour switch (``RenderOptions.no_color``) are separate axes.
 _PRESETS: Mapping[str, RenderOptions] = {
-    "vivid": RenderOptions(),
-    "accessible": RenderOptions(intent_colors=ACCESSIBLE_INTENT_COLORS),
+    "ansi": RenderOptions(),
+    "accessible_light": RenderOptions(intent_colors=ACCESSIBLE_LIGHT_INTENT_COLORS),
+    "accessible_dark": RenderOptions(intent_colors=ACCESSIBLE_DARK_INTENT_COLORS),
 }
 
 
 def render_options_from_preset(name: str) -> RenderOptions:
-    """Resolve a palette name (``vivid``/``accessible``) to options."""
+    """Resolve a palette name (``ansi``/``accessible_light``/``accessible_dark``) to options."""
     try:
         return _PRESETS[name]
     except KeyError:

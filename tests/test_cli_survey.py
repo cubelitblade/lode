@@ -14,7 +14,7 @@ import pytest
 from rich.console import Console
 
 from lode.cli import app
-from lode.cli.render import ACCESSIBLE_INTENT_COLORS, RenderOptions
+from lode.cli.render import ACCESSIBLE_LIGHT_INTENT_COLORS, RenderOptions
 from lode.ingestion.pipeline import DetectResult
 from tests.conftest import fake_embedder, runner
 
@@ -90,7 +90,7 @@ def test_survey_palette_flag_overrides_config(tmp_path: Path, monkeypatch: pytes
     monkeypatch.chdir(tmp_path)
     (tmp_path / "a.txt").write_text("hello world")
     (tmp_path / ".lode").mkdir()
-    (tmp_path / ".lode" / "config.toml").write_text('[output]\npalette = "vivid"\n')
+    (tmp_path / ".lode" / "config.toml").write_text('[output]\npalette = "ansi"\n')
 
     captured: RenderOptions | None = None
 
@@ -105,10 +105,10 @@ def test_survey_palette_flag_overrides_config(tmp_path: Path, monkeypatch: pytes
         captured = options
 
     monkeypatch.setattr("lode.cli.render_survey", fake_render)
-    result = runner.invoke(app, ["--workspace", str(tmp_path), "survey", "--palette", "accessible"])
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "survey", "--palette", "accessible_light"])
     assert result.exit_code == 0, result.output
     assert captured is not None
-    assert captured.intent_colors == ACCESSIBLE_INTENT_COLORS
+    assert captured.intent_colors == ACCESSIBLE_LIGHT_INTENT_COLORS
 
 
 def test_survey_no_color_flag_wins_over_palette(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -129,11 +129,11 @@ def test_survey_no_color_flag_wins_over_palette(tmp_path: Path, monkeypatch: pyt
         captured = options
 
     monkeypatch.setattr("lode.cli.render_survey", fake_render)
-    result = runner.invoke(app, ["--workspace", str(tmp_path), "survey", "--no-color", "--palette", "accessible"])
+    result = runner.invoke(app, ["--workspace", str(tmp_path), "survey", "--no-color", "--palette", "accessible_light"])
     assert result.exit_code == 0, result.output
     assert captured is not None
     assert captured.no_color is True
-    assert captured.intent_colors == ACCESSIBLE_INTENT_COLORS
+    assert captured.intent_colors == ACCESSIBLE_LIGHT_INTENT_COLORS
 
 
 def test_survey_json_reports_changes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -27,7 +27,7 @@ This command only compares files and does not require an embedding endpoint.
     Path to a configuration file.
 
 - `--palette`
-    - `vivid|accessible`
+    - `ansi|accessible_light|accessible_dark`
     Color palette for this run.
 
 - `--no-color`
@@ -65,7 +65,7 @@ schema is incompatible.
     Path to a configuration file.
 
 - `--palette`
-    - `vivid|accessible`
+    - `ansi|accessible_light|accessible_dark`
     Color palette for this run.
 
 - `--no-color`
@@ -109,7 +109,7 @@ min-max normalization + linear weighted fusion).
     Path to a configuration file.
 
 - `--palette`
-    - `vivid|accessible`
+    - `ansi|accessible_light|accessible_dark`
     Color palette for this run.
 
 - `--no-color`
@@ -152,7 +152,7 @@ return matching candidates.
     Path to a configuration file.
 
 - `--palette`
-    - `vivid|accessible`
+    - `ansi|accessible_light|accessible_dark`
     Color palette for this run.
 
 - `--no-color`
@@ -209,7 +209,7 @@ return matching candidates.
     Path to a configuration file.
 
 - `--palette`
-    - `vivid|accessible`
+    - `ansi|accessible_light|accessible_dark`
     Color palette for this run.
 
 - `--no-color`
@@ -285,7 +285,7 @@ A bare `lode config` defaults to `show`.
     Config scope.
 
 - `--palette`
-    - `vivid|accessible`
+    - `ansi|accessible_light|accessible_dark`
     Color palette for this run.
 
 - `--no-color`

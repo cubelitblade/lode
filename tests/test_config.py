@@ -68,23 +68,23 @@ batch_size = 8
 
 def test_output_palette_from_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
-    _write_toml(tmp_path / ".lode" / "config.toml", '[output]\npalette = "accessible"\n')
+    _write_toml(tmp_path / ".lode" / "config.toml", '[output]\npalette = "accessible_light"\n')
     settings = config.load_settings()
-    assert settings.output.palette == "accessible"
+    assert settings.output.palette == "accessible_light"
 
 
-def test_output_palette_default_vivid(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_output_palette_default_ansi(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     settings = config.load_settings()
-    assert settings.output.palette == "vivid"
+    assert settings.output.palette == "ansi"
 
 
 def test_output_palette_env_overrides_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
-    _write_toml(tmp_path / ".lode" / "config.toml", '[output]\npalette = "vivid"\n')
-    monkeypatch.setenv("LODE_OUTPUT__PALETTE", "accessible")
+    _write_toml(tmp_path / ".lode" / "config.toml", '[output]\npalette = "ansi"\n')
+    monkeypatch.setenv("LODE_OUTPUT__PALETTE", "accessible_light")
     settings = config.load_settings()
-    assert settings.output.palette == "accessible"
+    assert settings.output.palette == "accessible_light"
 
 
 def test_output_palette_invalid_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

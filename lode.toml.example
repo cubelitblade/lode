@@ -183,8 +183,8 @@ strategy = "simple"
 [output]
 
 # Color palette used for terminal output.
-# Options: vivid, accessible.
-palette = "vivid"
+# Options: ansi, accessible_light, accessible_dark.
+palette = "ansi"
 
 # Disable color at the console level.
 #   true  = never color

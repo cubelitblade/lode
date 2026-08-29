@@ -205,7 +205,8 @@ def resolve_render_options(
 ) -> RenderOptions:
     """Resolve palette + no_color (flag overrides config) to render options.
 
-    ``palette`` (``vivid``/``accessible``) selects ``intent_colors``; ``no_color``
+    ``palette`` (``ansi``/``accessible_light``/``accessible_dark``) selects
+    ``intent_colors``; ``no_color``
     is an independent on/off switch applied at the ``Console`` layer. The flag
     (``--no-color``) wins over config; when neither is set it stays ``None`` so
     Rich's own ``NO_COLOR`` detection applies.
@@ -291,7 +292,7 @@ ConfigArg = Annotated[
 # Both default to "unset" so the configured value wins unless the user passes
 # them; `--no-color` takes precedence over `--palette`.
 PaletteArg = Annotated[
-    Literal["vivid", "accessible"] | None,
+    Literal["ansi", "accessible_light", "accessible_dark"] | None,
     typer.Option("--palette", help="Colour palette for this run."),
 ]
 NoColorArg = Annotated[

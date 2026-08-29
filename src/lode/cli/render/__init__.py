@@ -22,8 +22,9 @@ from lode.cli.render.config import (
     render_config_value,
 )
 from lode.cli.render.core import (
-    ACCESSIBLE_INTENT_COLORS,
-    DEFAULT_INTENT_COLORS,
+    ACCESSIBLE_DARK_INTENT_COLORS,
+    ACCESSIBLE_LIGHT_INTENT_COLORS,
+    ANSI_INTENT_COLORS,
     MARKERS,
     STATUS_INTENT,
     Border,
@@ -38,8 +39,9 @@ from lode.cli.render.prospect import render_prospect
 from lode.cli.render.survey import render_survey
 
 __all__ = [
-    "ACCESSIBLE_INTENT_COLORS",
-    "DEFAULT_INTENT_COLORS",
+    "ACCESSIBLE_DARK_INTENT_COLORS",
+    "ACCESSIBLE_LIGHT_INTENT_COLORS",
+    "ANSI_INTENT_COLORS",
     "MARKERS",
     "STATUS_INTENT",
     "Border",

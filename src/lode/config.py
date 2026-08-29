@@ -215,13 +215,14 @@ class OutputConfig(BaseModel):
     """Settings for CLI output presentation.
 
     ``palette`` selects the colour palette used for human-readable output; it
-    maps onto the render presets (``vivid``/``accessible``). ``no_color`` is an
+    maps onto the render presets (``ansi``/``accessible_light``/``accessible_dark``).
+    ``no_color`` is an
     independent switch applied at the console layer: ``true`` disables colour,
     ``false`` forces it on, and unset (``None``) defers to Rich's ``NO_COLOR``
     detection.
     """
 
-    palette: Literal["vivid", "accessible"] = "vivid"
+    palette: Literal["ansi", "accessible_light", "accessible_dark"] = "ansi"
     no_color: bool | None = None
 
 
