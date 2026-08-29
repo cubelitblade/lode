@@ -29,7 +29,7 @@ def _isolate_user_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
     Redirect the user config dir (``XDG_CONFIG_HOME``) and run from
     ``tmp_path`` so neither the host user config nor the project's own
     ``.lode/config.toml`` / ``lode.toml`` leak into tests (the project config
-    now carries e.g. ``output.palette``).
+    now carries e.g. ``app.output.palette``).
     """
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     monkeypatch.chdir(tmp_path)
@@ -65,7 +65,7 @@ def run_sync(
 
 
 def linear_plan(semantic: float, lexical: float) -> RetrievalPlan:
-    """A min-max + linear plan with the given weights (the default shape)."""
+    """A min-max + linear plan with the given weights."""
     return RetrievalPlan(
         norm=MinmaxNorm(),
         fusion=LinearFusion(weights={"semantic": semantic, "lexical": lexical}),

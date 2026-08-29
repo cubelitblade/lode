@@ -74,6 +74,19 @@ DEFAULT_CHUNK_OVERLAP = 128
 # Default lexical tokenizer; kept as the historical behaviour.
 DEFAULT_TOKENIZER = "simple"
 
+# Current config schema version. Config files may declare `version`; a
+# mismatch is refused at load time so future schema changes are signalled
+# explicitly instead of silently misreading keys.
+CONFIG_VERSION = 1
+
+
+class ConfigVersionError(Exception):
+    """Raised when a config file declares an unsupported schema version."""
+
+    def __init__(self, declared: int) -> None:
+        super().__init__(f"config schema version {declared} is not supported (supported: {CONFIG_VERSION})")
+        self.declared = declared
+
 
 class EmbeddingHttpConfig(BaseModel):
     """Transport settings shared by HTTP embedding backends."""
@@ -86,6 +99,8 @@ class EmbeddingHttpConfig(BaseModel):
 
 class OpenAICompatibleConfig(EmbeddingHttpConfig):
     """Provider-specific settings for the OpenAI-compatible backend."""
+
+    endpoint: str = "https://api.openai.com/v1"
 
 
 class TeiNativeConfig(EmbeddingHttpConfig):
@@ -125,12 +140,6 @@ class EmbeddingConfig(BaseModel):
     ollama: OllamaConfig = OllamaConfig()
 
 
-class RetrievalConfig(BaseModel):
-    """Settings for hybrid retrieval. Reserved for M2 — not read yet."""
-
-    top_k: int = DEFAULT_TOP_K
-
-
 class SoftmaxNormConfig(BaseModel):
     """Softmax normalization parameters; only used when ``norm.type == "softmax"``."""
 
@@ -144,7 +153,7 @@ class NormConfig(BaseModel):
     tables are always present but ignored ("only loaded when type = ...").
     """
 
-    type: Literal["minmax", "softmax"] = "minmax"
+    type: Literal["minmax", "softmax"] = "softmax"
     softmax: SoftmaxNormConfig = SoftmaxNormConfig()
 
 
@@ -173,6 +182,18 @@ class FusionConfig(BaseModel):
     rrf: RrfFusionConfig = RrfFusionConfig()
 
 
+class RetrievalConfig(BaseModel):
+    """Settings for hybrid retrieval: candidate count plus ranking operators.
+
+    ``norm`` and ``fusion`` are selectors with their own parameter tables;
+    only the table matching the active ``type`` is read at assembly time.
+    """
+
+    top_k: int = DEFAULT_TOP_K
+    norm: NormConfig = NormConfig()
+    fusion: FusionConfig = FusionConfig()
+
+
 class ChunkingConfig(BaseModel):
     """Settings for text chunking.
 
@@ -186,7 +207,7 @@ class ChunkingConfig(BaseModel):
     overlap: int = DEFAULT_CHUNK_OVERLAP
 
 
-class LexicalConfig(BaseModel):
+class FtsConfig(BaseModel):
     """Settings for the FTS5 tokenizer.
 
     ``strategy`` selects the lexical strategy: ``unicode61`` (SQLite default),
@@ -204,8 +225,7 @@ class IgnoreConfig(BaseModel):
 
     Rather than listing patterns inline, config names ignore-like files to
     load (gitignore semantics). ``.lodeignore`` is always loaded when present
-    at the workspace root; ``files`` adds extra sources such as ``.gitignore``.
-    Reserved for M2 — not read yet.
+    at the workspace root; ``sources`` adds extra files such as ``.gitignore``.
     """
 
     sources: list[str] = Field(default_factory=list)
@@ -224,6 +244,13 @@ class OutputConfig(BaseModel):
 
     palette: Literal["ansi", "accessible_light", "accessible_dark"] = "ansi"
     no_color: bool | None = None
+
+
+class AppConfig(BaseModel):
+    """Settings for general application behavior."""
+
+    ignore: IgnoreConfig = IgnoreConfig()
+    output: OutputConfig = OutputConfig()
 
 
 def _init_kwargs(source: PydanticBaseSettingsSource) -> dict[str, Any]:
@@ -257,14 +284,17 @@ class Settings(BaseSettings):
     # a real setting, so it is excluded from serialization and env-var lookup.
     config_files: list[Path] = Field(default_factory=_default_config_files, exclude=True)
 
+    # Config schema version declared by the file(s); defaults to the current
+    # version so legacy files without `version` keep loading. Unlike
+    # `config_files`, this is a real user-declared setting, so it is kept in
+    # serialization (shown by `lode config show`) and env-var lookup.
+    version: int = CONFIG_VERSION
+
     embedding: EmbeddingConfig = EmbeddingConfig()
     retrieval: RetrievalConfig = RetrievalConfig()
     chunking: ChunkingConfig = ChunkingConfig()
-    ignore: IgnoreConfig = IgnoreConfig()
-    output: OutputConfig = OutputConfig()
-    norm: NormConfig = NormConfig()
-    fusion: FusionConfig = FusionConfig()
-    lexical: LexicalConfig = LexicalConfig()
+    fts: FtsConfig = FtsConfig()
+    app: AppConfig = AppConfig()
 
     @classmethod
     def settings_customise_sources(
@@ -302,8 +332,17 @@ def load_settings(toml_path: str | Path | None = None) -> Settings:
         path = Path(toml_path)
         if not path.is_file():
             raise FileNotFoundError(f"Config file not found: {path}")
-        return Settings(config_files=[path])
-    return Settings(config_files=_discover_config_files())
+        settings = Settings(config_files=[path])
+    else:
+        settings = Settings(config_files=_discover_config_files())
+    _validate_version(settings)
+    return settings
+
+
+def _validate_version(settings: Settings) -> None:
+    """Refuse configs declaring a schema version other than the supported one."""
+    if settings.version != CONFIG_VERSION:
+        raise ConfigVersionError(settings.version)
 
 
 def user_config_path() -> Path:
@@ -383,9 +422,10 @@ def unset_nested(data: dict[str, Any], key: str) -> bool:
     return True
 
 
-# Sections a user may read/write via `lode config`; excludes internal fields
-# such as `config_files`.
-CONFIG_SECTIONS = ("embedding", "retrieval", "chunking", "ignore", "output", "norm", "fusion", "lexical")
+# Top-level sections a user may read/write via `lode config`; derived from the
+# Settings model so the CLI stays in sync with the schema. `config_files` and
+# `version` are internal fields, not real settings.
+CONFIG_SECTIONS = tuple(name for name in Settings.model_fields if name not in ("config_files", "version"))
 
 # Boolean tokens accepted by `lode config set <key> <bool-value>`.
 _BOOL_TRUE = frozenset({"true", "1", "yes", "y", "on"})

@@ -81,7 +81,7 @@ def why(
         embedder,
         command="assay",
         as_json=as_json,
-        tokenizer=settings.lexical.strategy,
+        tokenizer=settings.fts.strategy,
         options=options,
     )
 
@@ -89,7 +89,7 @@ def why(
         # Refresh the stale bits so per-chunk provenance reflects the current
         # workspace (single dependency: only the status update, not the dirty
         # signal).
-        detect_changes(store, workspace, settings.ignore.sources)
+        detect_changes(store, workspace, settings.app.ignore.sources)
         _why(store, embedder, digest, query, settings, as_json=as_json, top_k=top_k, options=options)
 
 
@@ -112,13 +112,13 @@ def how(
         None,
         command="assay",
         as_json=as_json,
-        tokenizer=settings.lexical.strategy,
+        tokenizer=settings.fts.strategy,
         options=options,
     )
 
     with store:
-        detect_changes(store, workspace, settings.ignore.sources)
-        _how(store, digest, settings.lexical.strategy, as_json=as_json, options=options)
+        detect_changes(store, workspace, settings.app.ignore.sources)
+        _how(store, digest, settings.fts.strategy, as_json=as_json, options=options)
 
 
 def _resolve_chunk_rowid(
@@ -185,7 +185,7 @@ def _why(
             embedder,
             query,
             rowid,
-            plan=build_plan(settings.norm, settings.fusion),
+            plan=build_plan(settings.retrieval.norm, settings.retrieval.fusion),
             top_k=resolved_top_k,
         )
     except ValueError as exc:

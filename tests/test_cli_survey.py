@@ -63,7 +63,7 @@ def test_survey_uses_configured_no_color(tmp_path: Path, monkeypatch: pytest.Mon
     monkeypatch.chdir(tmp_path)
     (tmp_path / "a.txt").write_text("hello world")
     (tmp_path / ".lode").mkdir()
-    (tmp_path / ".lode" / "config.toml").write_text("[output]\nno_color = true\n")
+    (tmp_path / ".lode" / "config.toml").write_text("[app.output]\nno_color = true\n")
     runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
 
     captured: RenderOptions | None = None
@@ -90,7 +90,7 @@ def test_survey_palette_flag_overrides_config(tmp_path: Path, monkeypatch: pytes
     monkeypatch.chdir(tmp_path)
     (tmp_path / "a.txt").write_text("hello world")
     (tmp_path / ".lode").mkdir()
-    (tmp_path / ".lode" / "config.toml").write_text('[output]\npalette = "ansi"\n')
+    (tmp_path / ".lode" / "config.toml").write_text('[app.output]\npalette = "ansi"\n')
 
     captured: RenderOptions | None = None
 

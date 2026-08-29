@@ -1,193 +1,112 @@
+# lode configuration example.
+# Full reference: docs/configuration.md
+
+# Config schema version. Omit to use the current version.
 version = 1
 
 [embedding]
-
-# Which embedding provider to use.
-# Supported values:
-# - `openai_compatible`: OpenAI Embeddings API compatible endpoint.
-# - `tei_native`: Hugging Face Text Embeddings Inference native API.
-# - `ollama`: Ollama native API.
-# The matching `[embedding.<provider>]` table is read at assembly time; the
-# other tables are ignored.
+# Embedding provider. Options: openai_compatible, tei_native, ollama.
+# Only the matching `[embedding.<provider>]` table is read.
 provider = "openai_compatible"
 
-# Name of the embedding model.
-# If omitted, lode will try to discover the model information from the endpoint
-# when supported.
-# On endpoints that expose multiple models, automatic discovery may select or
-# probe a model that is not an embedding model. Set `model` explicitly when
-# the endpoint hosts multiple models.
+# Model name; discovered from the endpoint when omitted.
+# Set explicitly when the endpoint hosts multiple models.
 # model = "BAAI/bge-small-zh-v1.5"
 
-# Dimension of the embedding vectors (the model's native output dimension).
-# If omitted, lode will try to discover it from the embedding API endpoint.
-# The dimension must match the actual output dimension of the embedding model.
+# Native output dimension; discovered when omitted.
 # Changing this value requires re-mining the index.
 # model_dimension = 512
 
-# Optional request-level output dimension (a subset of the model dimension).
-# When set, the provider is asked to return vectors of this size (e.g. the
-# `dimensions` field of OpenAI-compatible APIs, or `dimensions` of TEI).
-# Leave unset to use the full model dimension.
+# Requested output dimension (subset of model_dimension); unset = full.
+# Changing this value requires re-mining the index.
 # output_dimension = 256
 
-# Whether to apply L2 normalization to embedding vectors.
-# When enabled, cosine similarity can be calculated efficiently using dot product.
-# Usually recommended for retrieval tasks.
+# L2-normalize vectors so cosine similarity becomes a dot product.
 l2_normalize = true
 
-# Number of texts sent to the embedding endpoint in a single request.
-# Larger values may improve throughput but require more memory.
+# Texts per embedding request.
 batch_size = 32
 
 
 [embedding.openai_compatible]
 # Only loaded when provider = "openai_compatible".
-
-# Base URL of the embedding API endpoint.
-endpoint = "http://localhost:8080"
-
-# Optional API key for authenticated endpoints.
+endpoint = "https://api.openai.com/v1"
+# Never commit a key; prefer LODE_EMBEDDING__OPENAI_COMPATIBLE__KEY.
 # key = ""
-
-# Maximum number of retries when an embedding request fails.
 max_retries = 3
-
-# Timeout in seconds for each embedding request.
 timeout = 60.0
 
 
 [embedding.tei_native]
 # Only loaded when provider = "tei_native".
-
-# Base URL of the TEI endpoint.
 endpoint = "http://localhost:8080"
-
-# Optional API key for authenticated endpoints.
 # key = ""
-
-# Maximum number of retries when an embedding request fails.
 max_retries = 3
-
-# Timeout in seconds for each embedding request.
 timeout = 60.0
-
-# Whether to truncate inputs longer than the model's maximum length.
 truncate = false
-
-# Which side to truncate from when `truncate` is enabled.
-# Options: `left`, `right`.
+# Truncation side; only applies when truncate = true. Options: left, right.
 truncation_direction = "right"
 
 
 [embedding.ollama]
 # Only loaded when provider = "ollama".
-
-# Base URL of the Ollama endpoint.
 endpoint = "http://localhost:11434"
-
-# Optional API key for authenticated endpoints.
 # key = ""
-
-# Maximum number of retries when an embedding request fails.
 max_retries = 3
-
-# Timeout in seconds for each embedding request.
 timeout = 60.0
-
-# Whether to truncate inputs longer than the model's context length.
 truncate = true
 
 
 [retrieval]
-
-# Maximum number of results returned by `lode prospect`.
-# Larger values provide more candidates but may reduce readability.
+# Max results returned by `lode prospect`.
 top_k = 10
 
+[retrieval.norm]
+# Per-source score normalization before fusion. Options: minmax, softmax.
+# Skipped when fusion.type = "rrf".
+type = "softmax"
 
-[norm]
-
-# Score normalization applied per source before fusion.
-# Options:
-# - `minmax`: min-max normalize each source's scores to [0, 1].
-# - `softmax`: softmax over each source's scores (uses `[norm.softmax]`).
-# When fusion is `rrf`, normalization is skipped (RRF ranks by position).
-type = "minmax"
-
-[norm.softmax]
+[retrieval.norm.softmax]
 # Only loaded when norm.type = "softmax".
-# Higher temperature flattens the distribution; lower sharpens it.
 temperature = 1.0
 
-
-[fusion]
-
-# How per-source scores are combined.
-# Options:
-# - `linear`: weighted sum (uses `[fusion.linear]`).
-# - `rrf`: reciprocal rank fusion (uses `[fusion.rrf]`).
+[retrieval.fusion]
+# How per-source scores combine. Options: linear, rrf.
 type = "linear"
 
-[fusion.linear]
+[retrieval.fusion.linear]
 # Only loaded when fusion.type = "linear".
-# Final score:
-#   score = semantic_score * semantic_factor
-#          + lexical_score * lexical_factor
-#
-# semantic_factor controls vector similarity importance.
-# lexical_factor controls keyword/full-text matching importance.
-#
-# Factors can be negative for advanced ranking strategies.
-# They must not both be zero.
+# Final score = semantic * semantic_factor + lexical * lexical_factor.
+# Factors may be negative; they must not both be zero.
 semantic_factor = 0.7
 lexical_factor = 0.3
 
-[fusion.rrf]
+[retrieval.fusion.rrf]
 # Only loaded when fusion.type = "rrf".
-# Rank constant: each source contributes 1 / (k + rank) per matching chunk.
 k = 60
 
 
 [chunking]
-
-# Maximum size of each text chunk before embedding.
-# Larger chunks preserve more context but may reduce retrieval precision.
+# Chunk size and overlap for splitting documents.
+# Changing these requires re-mining the index.
 size = 1024
-
-# Number of overlapping characters between adjacent chunks.
-# Overlap helps preserve context across chunk boundaries.
 overlap = 128
 
 
-[ignore]
-
-# Additional ignore sources.
-# Files matched by these patterns will not be indexed.
-# `.lodeignore` is always supported and does not need to be listed here.
+[app.ignore]
+# Additional ignore files (gitignore semantics).
+# `.lodeignore` is always loaded and does not need to be listed.
 sources = [".gitignore"]
 
 
-[lexical]
-
-# FTS5 tokenizer used for keyword/full-text matching.
-# Options:
-# - `unicode61`: SQLite default (word-ish tokens).
-# - `trigram`: 3-grams, better for CJK substring matching.
-# - `simple`: native extension (Han characters + pinyin). Default.
-# - `jieba`: word-level matching on the `simple` index.
-# `simple` and `jieba` share the same index tokenizer, so switching between
-# them does not require a re-mine; any other change does.
+[fts]
+# FTS5 tokenizer. Options: unicode61, trigram, simple, jieba.
+# simple and jieba share the same index tokenizer (switching needs no re-mine);
+# any other change requires re-mining.
 strategy = "simple"
 
-[output]
-
-# Color palette used for terminal output.
-# Options: ansi, accessible_light, accessible_dark.
+[app.output]
+# Color palette. Options: ansi, accessible_light, accessible_dark.
 palette = "ansi"
-
-# Disable color at the console level.
-#   true  = never color
-#   false = always color
-#   unset = follow the NO_COLOR environment variable (default)
-no_color = false
+# Disable color: true = never, false = always, unset = follow NO_COLOR (default).
+# no_color = false

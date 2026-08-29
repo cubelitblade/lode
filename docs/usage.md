@@ -91,8 +91,8 @@ lode prospect QUERY [OPTIONS]
 Aliases: `lode search`
 
 Performs hybrid retrieval: semantic similarity (vector) + BM25 lexical
-matching, combined by the configured `[norm]` / `[fusion]` plan (default:
-min-max normalization + linear weighted fusion).
+matching, combined by the configured `[retrieval.norm]` / `[retrieval.fusion]` plan (default:
+softmax normalization + linear weighted fusion).
 
 ### Options
 
@@ -181,7 +181,7 @@ lode assay how DIGEST [OPTIONS]
 Aliases: `lode analyze why|how`
 
 `why` reuses the same hybrid scoring as `prospect` (semantic + BM25, combined
-by the configured `[norm]` / `[fusion]` plan) and breaks down the chunk's
+by the configured `[retrieval.norm]` / `[retrieval.fusion]` plan) and breaks down the chunk's
 score into its per-source raw and prepared values, the fusion, and its rank.
 A chunk that did not make the results is explained as ranked outside `top_k`
 or as having a zero combined score.

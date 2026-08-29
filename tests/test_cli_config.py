@@ -27,7 +27,7 @@ def test_config_show_uses_configured_no_color(tmp_path: Path, monkeypatch: pytes
     """Config output also honours the configured output.no_color."""
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".lode").mkdir()
-    (tmp_path / ".lode" / "config.toml").write_text("[output]\nno_color = true\n")
+    (tmp_path / ".lode" / "config.toml").write_text("[app.output]\nno_color = true\n")
 
     captured: RenderOptions | None = None
 
@@ -82,13 +82,13 @@ def test_config_set_types_value(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     assert result.exit_code == 0, result.output
     result = runner.invoke(app, ["config", "set", "embedding.l2_normalize", "false"])
     assert result.exit_code == 0, result.output
-    result = runner.invoke(app, ["config", "set", "ignore.sources", ".gitignore, docs"])
+    result = runner.invoke(app, ["config", "set", "app.ignore.sources", ".gitignore, docs"])
     assert result.exit_code == 0, result.output
 
     data = config.read_toml(_config_path("workspace"))
     assert data["embedding"]["batch_size"] == 8
     assert data["embedding"]["l2_normalize"] is False
-    assert data["ignore"]["sources"] == [".gitignore", "docs"]
+    assert data["app"]["ignore"]["sources"] == [".gitignore", "docs"]
 
 
 def test_config_set_writes_existing_project_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

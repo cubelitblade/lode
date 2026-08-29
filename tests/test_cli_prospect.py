@@ -139,7 +139,7 @@ def test_prospect_json_empty_hits(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     # (the fake embedder always scores densely, which would mask the empty case).
     (tmp_path / ".lode").mkdir()
     (tmp_path / ".lode" / "config.toml").write_text(
-        '[fusion]\ntype = "linear"\n\n[fusion.linear]\nsemantic_factor = 0\nlexical_factor = 1\n'
+        '[retrieval.fusion]\ntype = "linear"\n\n[retrieval.fusion.linear]\nsemantic_factor = 0\nlexical_factor = 1\n'
     )
     runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
 
@@ -188,7 +188,8 @@ def test_prospect_json_invalid_query(tmp_path: Path, monkeypatch: pytest.MonkeyP
 
     # Both linear fusion factors zero -> search refuses to run.
     (tmp_path / ".lode" / "config.toml").write_text(
-        '[fusion]\ntype = "linear"\n\n[fusion.linear]\nsemantic_factor = 0.0\nlexical_factor = 0.0\n'
+        '[retrieval.fusion]\ntype = "linear"\n\n'
+        "[retrieval.fusion.linear]\nsemantic_factor = 0.0\nlexical_factor = 0.0\n"
     )
 
     result = runner.invoke(app, ["--workspace", str(tmp_path), "prospect", "hello", "--json"])

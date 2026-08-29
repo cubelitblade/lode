@@ -58,7 +58,7 @@ def prospect(
         embedder,
         command="prospect",
         as_json=as_json,
-        tokenizer=settings.lexical.strategy,
+        tokenizer=settings.fts.strategy,
         options=options,
     )
 
@@ -67,13 +67,13 @@ def prospect(
             top_k = settings.retrieval.top_k
         # Refresh the stale bits before searching so per-chunk annotation and
         # the library-wide dirty signal reflect the current workspace.
-        detect = detect_changes(store, workspace, settings.ignore.sources)
+        detect = detect_changes(store, workspace, settings.app.ignore.sources)
         try:
             hits = search(
                 store,
                 embedder,
                 query,
-                plan=build_plan(settings.norm, settings.fusion),
+                plan=build_plan(settings.retrieval.norm, settings.retrieval.fusion),
                 top_k=top_k,
             )
         except ValueError as exc:

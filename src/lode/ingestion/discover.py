@@ -8,7 +8,7 @@ separate.
 Ignore rules use gitignore semantics (via ``pathspec``). ``.lodeignore`` is a
 first-class citizen: it is always loaded when present at the workspace root,
 without being listed in config. Config can name additional ignore-like files
-(e.g. ``.gitignore``) under ``[ignore] files``; all of them compose into a
+(e.g. ``.gitignore``) under ``[app.ignore] sources``; all of them compose into a
 single ruleset, the way git composes ``.gitignore`` files. The ignore files
 themselves are excluded from the result — they are config, not content.
 """

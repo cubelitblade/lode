@@ -119,7 +119,7 @@ def test_assay_json_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
         assert set(source) == {"status", "pool_size", "raw", "prepared", "pool_rank"}
     assert explanation["sources"]["semantic"]["status"] == "matched"
     assert explanation["sources"]["lexical"]["status"] == "matched"
-    assert explanation["norm"] == {"name": "min-max", "params": {}}
+    assert explanation["norm"] == {"name": "softmax", "params": {"temperature": 1.0}}
     assert explanation["fusion"] == {
         "name": "linear",
         "params": {"weights": {"semantic": 0.7, "lexical": 0.3}},

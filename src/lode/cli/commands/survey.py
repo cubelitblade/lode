@@ -43,14 +43,14 @@ def survey(
     workspace = workspace_from(ctx)
     settings = load_settings_or_fail(config, command="survey", as_json=as_json)
     options = render_options(settings, palette, no_color)
-    store = open_store(workspace, None, command="survey", as_json=as_json, tokenizer=settings.lexical.strategy)
+    store = open_store(workspace, None, command="survey", as_json=as_json, tokenizer=settings.fts.strategy)
     if store is None:
         # No index yet: classify against an empty snapshot (all new),
         # without creating a database or touching the embedder.
-        result = classify({}, workspace, settings.ignore.sources)
+        result = classify({}, workspace, settings.app.ignore.sources)
     else:
         with store:
-            result = detect_changes(store, workspace, settings.ignore.sources)
+            result = detect_changes(store, workspace, settings.app.ignore.sources)
     if as_json:
         echo_json(
             json_ok(

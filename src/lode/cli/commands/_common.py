@@ -21,7 +21,7 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TaskID, TextColumn
 
 from lode.cli.render import Intent, RenderOptions, render_options_from_preset
 from lode.cli.render.output import echo_json, json_err, render_message
-from lode.config import DEFAULT_TOKENIZER, Settings, load_settings
+from lode.config import DEFAULT_TOKENIZER, ConfigVersionError, Settings, load_settings
 from lode.embeddings.base import Embedder
 from lode.index import (
     EmbedderUnavailableError,
@@ -111,7 +111,7 @@ def load_settings_or_fail(
     """
     try:
         return load_settings(config)
-    except (ValidationError, TOMLDecodeError, FileNotFoundError) as exc:
+    except (ValidationError, TOMLDecodeError, FileNotFoundError, ConfigVersionError) as exc:
         block(
             require_error_text("config_invalid", detail=str(exc)).error,
             code="config_invalid",
@@ -228,8 +228,8 @@ def render_options(
     ready-made ``RenderOptions``; the render layer never reads config directly.
     """
     return resolve_render_options(
-        configured_palette=settings.output.palette,
-        configured_no_color=settings.output.no_color,
+        configured_palette=settings.app.output.palette,
+        configured_no_color=settings.app.output.no_color,
         palette=palette,
         no_color=no_color,
     )

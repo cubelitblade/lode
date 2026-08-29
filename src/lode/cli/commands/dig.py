@@ -64,14 +64,14 @@ def dig(
         None,
         command="dig",
         as_json=as_json,
-        tokenizer=settings.lexical.strategy,
+        tokenizer=settings.fts.strategy,
         options=options,
     )
     with store:
         # Refresh the stale bits so per-chunk provenance reflects the current
         # workspace (single dependency: only the status update, not the dirty
         # signal).
-        detect_changes(store, workspace, settings.ignore.sources)
+        detect_changes(store, workspace, settings.app.ignore.sources)
         _dig(store, digest, as_json=as_json, radius=radius or 0, options=options)
 
 

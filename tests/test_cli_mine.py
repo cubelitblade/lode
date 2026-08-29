@@ -222,11 +222,11 @@ def test_mine_from_scratch_tokenizer_mismatch_exempt(tmp_path: Path, monkeypatch
     monkeypatch.setattr("lode.cli.build_embedder", fake_embedder)
     (tmp_path / "a.txt").write_text("hello world")
     # Build an index with trigram tokenizer.
-    (tmp_path / "lode.toml").write_text('[lexical]\nstrategy = "trigram"\n')
+    (tmp_path / "lode.toml").write_text('[fts]\nstrategy = "trigram"\n')
     runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
 
     # Switch back to default (simple) without --from-scratch → blocked.
-    (tmp_path / "lode.toml").write_text('[lexical]\nstrategy = "simple"\n')
+    (tmp_path / "lode.toml").write_text('[fts]\nstrategy = "simple"\n')
     result = runner.invoke(app, ["--workspace", str(tmp_path), "mine"])
     assert result.exit_code != 0
 

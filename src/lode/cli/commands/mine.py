@@ -79,16 +79,16 @@ def mine(
         # so every file is re-mined under the current configuration. A failed
         # reset leaves the old index intact.
         try:
-            reset_index(db_path, embedder, tokenizer=settings.lexical.strategy)
+            reset_index(db_path, embedder, tokenizer=settings.fts.strategy)
         except (StoreError, EmbedderUnavailableError) as exc:
             store_failure(exc, command="mine", as_json=as_json)
 
-    store = open_store(workspace, embedder, command="mine", as_json=as_json, tokenizer=settings.lexical.strategy)
+    store = open_store(workspace, embedder, command="mine", as_json=as_json, tokenizer=settings.fts.strategy)
     if store is None:
         # No index yet: classify against an empty snapshot. If there is
         # nothing to embed, report Nothing to do. without creating a database
         # or touching the embedder; otherwise create the index and sync.
-        detect = classify({}, workspace, settings.ignore.sources)
+        detect = classify({}, workspace, settings.app.ignore.sources)
         if detect.pending == 0:
             result = SyncSummary()
             result.unchanged = detect.unchanged
@@ -96,7 +96,7 @@ def mine(
             _emit_mine(workspace, result, from_scratch, as_json, options)
             return
         try:
-            store = Store(db_path, embedder, tokenizer=settings.lexical.strategy)
+            store = Store(db_path, embedder, tokenizer=settings.fts.strategy)
         except (StoreError, EmbedderUnavailableError) as exc:
             store_failure(exc, command="mine", as_json=as_json)
         # A fresh database has no stored model to gate against.
@@ -108,7 +108,7 @@ def mine(
 
     with store:
         splitter = _splitter(settings)
-        detect = detect_changes(store, workspace, settings.ignore.sources)
+        detect = detect_changes(store, workspace, settings.app.ignore.sources)
         result = _run_sync(store, workspace, embedder, splitter, detect, as_json, no_color=options.no_color)
     _emit_mine(workspace, result, from_scratch, as_json, options)
 

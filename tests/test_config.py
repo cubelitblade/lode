@@ -41,9 +41,39 @@ def test_defaults_without_file_or_env(tmp_path: Path, monkeypatch: pytest.Monkey
     assert settings.embedding == config.EmbeddingConfig()
     assert settings.retrieval == config.RetrievalConfig()
     assert settings.chunking == config.ChunkingConfig()
-    assert settings.ignore == config.IgnoreConfig()
-    assert settings.output == config.OutputConfig()
-    assert settings.lexical == config.LexicalConfig()
+    assert settings.app.ignore == config.IgnoreConfig()
+    assert settings.app.output == config.OutputConfig()
+    assert settings.fts == config.FtsConfig()
+
+
+def test_config_version_default() -> None:
+    settings = config.Settings()
+    assert settings.version == config.CONFIG_VERSION
+
+
+def test_config_version_from_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    _write_toml(
+        tmp_path / ".lode" / "config.toml",
+        'version = 1\n[embedding]\nmodel = "m"\n',
+    )
+    settings = config.load_settings()
+    assert settings.version == 1
+    assert settings.embedding.model == "m"
+
+
+def test_config_version_legacy_without_version(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    _write_toml(tmp_path / ".lode" / "config.toml", '[embedding]\nmodel = "m"\n')
+    settings = config.load_settings()
+    assert settings.version == config.CONFIG_VERSION
+
+
+def test_config_version_mismatch_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    _write_toml(tmp_path / ".lode" / "config.toml", "version = 2\n")
+    with pytest.raises(config.ConfigVersionError):
+        config.load_settings()
 
 
 def test_default_path_reads_partial_section(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -60,7 +90,7 @@ batch_size = 8
     assert settings.embedding.model == "BAAI/bge-small-zh-v1.5"
     assert settings.embedding.batch_size == 8
     # Fields not present in the file keep their defaults.
-    assert settings.embedding.openai_compatible.endpoint == "http://localhost:8080"
+    assert settings.embedding.openai_compatible.endpoint == "https://api.openai.com/v1"
     # Sections absent from the file fall back to their defaults entirely.
     assert settings.retrieval == config.RetrievalConfig()
     assert settings.chunking == config.ChunkingConfig()
@@ -68,28 +98,28 @@ batch_size = 8
 
 def test_output_palette_from_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
-    _write_toml(tmp_path / ".lode" / "config.toml", '[output]\npalette = "accessible_light"\n')
+    _write_toml(tmp_path / ".lode" / "config.toml", '[app.output]\npalette = "accessible_light"\n')
     settings = config.load_settings()
-    assert settings.output.palette == "accessible_light"
+    assert settings.app.output.palette == "accessible_light"
 
 
 def test_output_palette_default_ansi(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     settings = config.load_settings()
-    assert settings.output.palette == "ansi"
+    assert settings.app.output.palette == "ansi"
 
 
 def test_output_palette_env_overrides_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
-    _write_toml(tmp_path / ".lode" / "config.toml", '[output]\npalette = "ansi"\n')
-    monkeypatch.setenv("LODE_OUTPUT__PALETTE", "accessible_light")
+    _write_toml(tmp_path / ".lode" / "config.toml", '[app.output]\npalette = "ansi"\n')
+    monkeypatch.setenv("LODE_APP__OUTPUT__PALETTE", "accessible_light")
     settings = config.load_settings()
-    assert settings.output.palette == "accessible_light"
+    assert settings.app.output.palette == "accessible_light"
 
 
 def test_output_palette_invalid_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
-    _write_toml(tmp_path / ".lode" / "config.toml", '[output]\npalette = "neon"\n')
+    _write_toml(tmp_path / ".lode" / "config.toml", '[app.output]\npalette = "neon"\n')
     with pytest.raises(ValidationError):
         config.load_settings()
 
@@ -97,22 +127,22 @@ def test_output_palette_invalid_rejected(tmp_path: Path, monkeypatch: pytest.Mon
 def test_output_no_color_default_none(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     settings = config.load_settings()
-    assert settings.output.no_color is None
+    assert settings.app.output.no_color is None
 
 
 def test_output_no_color_from_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
-    _write_toml(tmp_path / ".lode" / "config.toml", "[output]\nno_color = true\n")
+    _write_toml(tmp_path / ".lode" / "config.toml", "[app.output]\nno_color = true\n")
     settings = config.load_settings()
-    assert settings.output.no_color is True
+    assert settings.app.output.no_color is True
 
 
 def test_output_no_color_env_overrides_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
-    _write_toml(tmp_path / ".lode" / "config.toml", "[output]\nno_color = true\n")
-    monkeypatch.setenv("LODE_OUTPUT__NO_COLOR", "false")
+    _write_toml(tmp_path / ".lode" / "config.toml", "[app.output]\nno_color = true\n")
+    monkeypatch.setenv("LODE_APP__OUTPUT__NO_COLOR", "false")
     settings = config.load_settings()
-    assert settings.output.no_color is False
+    assert settings.app.output.no_color is False
 
 
 def test_chunking_from_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -256,7 +286,7 @@ def test_env_without_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setenv("LODE_RETRIEVAL__TOP_K", "25")
     settings = config.load_settings()
     assert settings.retrieval.top_k == 25
-    assert settings.fusion.linear.semantic_factor == config.DEFAULT_SEMANTIC_FACTOR
+    assert settings.retrieval.fusion.linear.semantic_factor == config.DEFAULT_SEMANTIC_FACTOR
 
 
 def test_explicit_kwargs_win_over_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -310,12 +340,12 @@ def test_ollama_defaults() -> None:
 
 def test_norm_fusion_defaults() -> None:
     settings = config.Settings()
-    assert settings.norm.type == "minmax"
-    assert settings.norm.softmax.temperature == config.DEFAULT_SOFTMAX_TEMPERATURE
-    assert settings.fusion.type == "linear"
-    assert settings.fusion.linear.semantic_factor == config.DEFAULT_SEMANTIC_FACTOR
-    assert settings.fusion.linear.lexical_factor == config.DEFAULT_LEXICAL_FACTOR
-    assert settings.fusion.rrf.k == config.DEFAULT_RRF_K
+    assert settings.retrieval.norm.type == "softmax"
+    assert settings.retrieval.norm.softmax.temperature == config.DEFAULT_SOFTMAX_TEMPERATURE
+    assert settings.retrieval.fusion.type == "linear"
+    assert settings.retrieval.fusion.linear.semantic_factor == config.DEFAULT_SEMANTIC_FACTOR
+    assert settings.retrieval.fusion.linear.lexical_factor == config.DEFAULT_LEXICAL_FACTOR
+    assert settings.retrieval.fusion.rrf.k == config.DEFAULT_RRF_K
 
 
 def test_norm_fusion_from_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -323,61 +353,61 @@ def test_norm_fusion_from_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     _write_toml(
         tmp_path / ".lode" / "config.toml",
         """
-[norm]
+[retrieval.norm]
 type = "softmax"
 
-[norm.softmax]
+[retrieval.norm.softmax]
 temperature = 2.0
 
-[fusion]
+[retrieval.fusion]
 type = "rrf"
 
-[fusion.rrf]
+[retrieval.fusion.rrf]
 k = 100
 """,
     )
     settings = config.load_settings()
-    assert settings.norm.type == "softmax"
-    assert settings.norm.softmax.temperature == 2.0
-    assert settings.fusion.type == "rrf"
-    assert settings.fusion.rrf.k == 100
+    assert settings.retrieval.norm.type == "softmax"
+    assert settings.retrieval.norm.softmax.temperature == 2.0
+    assert settings.retrieval.fusion.type == "rrf"
+    assert settings.retrieval.fusion.rrf.k == 100
 
 
 def test_norm_fusion_invalid_type_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
-    _write_toml(tmp_path / ".lode" / "config.toml", '[norm]\ntype = "bogus"\n')
+    _write_toml(tmp_path / ".lode" / "config.toml", '[retrieval.norm]\ntype = "bogus"\n')
     with pytest.raises(ValidationError):
         config.load_settings()
 
 
 def test_lexical_defaults() -> None:
     settings = config.Settings()
-    assert settings.lexical.strategy == config.DEFAULT_TOKENIZER
+    assert settings.fts.strategy == config.DEFAULT_TOKENIZER
 
 
 def test_lexical_from_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
-    _write_toml(tmp_path / ".lode" / "config.toml", '[lexical]\nstrategy = "trigram"\n')
+    _write_toml(tmp_path / ".lode" / "config.toml", '[fts]\nstrategy = "trigram"\n')
     settings = config.load_settings()
-    assert settings.lexical.strategy == "trigram"
+    assert settings.fts.strategy == "trigram"
 
 
 def test_lexical_from_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("LODE_LEXICAL__STRATEGY", "jieba")
+    monkeypatch.setenv("LODE_FTS__STRATEGY", "jieba")
     settings = config.load_settings()
-    assert settings.lexical.strategy == "jieba"
+    assert settings.fts.strategy == "jieba"
 
 
 def test_lexical_invalid_type_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
-    _write_toml(tmp_path / ".lode" / "config.toml", '[lexical]\nstrategy = "bogus"\n')
+    _write_toml(tmp_path / ".lode" / "config.toml", '[fts]\nstrategy = "bogus"\n')
     with pytest.raises(ValidationError):
         config.load_settings()
 
 
 def test_build_plan_linear_minmax() -> None:
-    plan = config.build_plan(config.NormConfig(), config.FusionConfig())
+    plan = config.build_plan(config.NormConfig(type="minmax"), config.FusionConfig())
     assert isinstance(plan.norm, MinmaxNorm)
     assert isinstance(plan.fusion, LinearFusion)
     assert plan.fusion.weights == {"semantic": 0.7, "lexical": 0.3}
@@ -407,13 +437,13 @@ def test_validate_key_accepts_leaf_keys() -> None:
     config.validate_key("embedding.tei_native.truncate")
     config.validate_key("retrieval.top_k")
     config.validate_key("chunking.size")
-    config.validate_key("ignore.sources")
-    config.validate_key("norm.type")
-    config.validate_key("norm.softmax.temperature")
-    config.validate_key("fusion.type")
-    config.validate_key("fusion.linear.semantic_factor")
-    config.validate_key("fusion.rrf.k")
-    config.validate_key("lexical.strategy")
+    config.validate_key("app.ignore.sources")
+    config.validate_key("retrieval.norm.type")
+    config.validate_key("retrieval.norm.softmax.temperature")
+    config.validate_key("retrieval.fusion.type")
+    config.validate_key("retrieval.fusion.linear.semantic_factor")
+    config.validate_key("retrieval.fusion.rrf.k")
+    config.validate_key("fts.strategy")
 
 
 def test_validate_key_rejects_sections_and_unknown() -> None:
@@ -423,11 +453,13 @@ def test_validate_key_rejects_sections_and_unknown() -> None:
         "embedding.openai_compatible",
         "embedding.tei_native",
         "retrieval",
+        "retrieval.norm",
+        "retrieval.fusion",
         "chunking",
-        "ignore",
-        "norm",
-        "fusion",
-        "lexical",
+        "app",
+        "app.ignore",
+        "app.output",
+        "fts",
     ):
         with pytest.raises(KeyError):
             config.validate_key(key)
@@ -444,14 +476,14 @@ def test_parse_value_types() -> None:
     assert config.parse_value("embedding.tei_native.truncate", "true") is True
     assert config.parse_value("embedding.l2_normalize", "false") is False
     assert config.parse_value("embedding.l2_normalize", "1") is True
-    assert config.parse_value("ignore.sources", ".gitignore, docs") == [".gitignore", "docs"]
-    assert config.parse_value("ignore.sources", '["a", "b"]') == ["a", "b"]
-    assert config.parse_value("norm.type", "softmax") == "softmax"
-    assert config.parse_value("norm.softmax.temperature", "2.0") == 2.0
-    assert config.parse_value("fusion.type", "rrf") == "rrf"
-    assert config.parse_value("fusion.linear.semantic_factor", "0.5") == 0.5
-    assert config.parse_value("fusion.rrf.k", "100") == 100
-    assert config.parse_value("lexical.strategy", "trigram") == "trigram"
+    assert config.parse_value("app.ignore.sources", ".gitignore, docs") == [".gitignore", "docs"]
+    assert config.parse_value("app.ignore.sources", '["a", "b"]') == ["a", "b"]
+    assert config.parse_value("retrieval.norm.type", "softmax") == "softmax"
+    assert config.parse_value("retrieval.norm.softmax.temperature", "2.0") == 2.0
+    assert config.parse_value("retrieval.fusion.type", "rrf") == "rrf"
+    assert config.parse_value("retrieval.fusion.linear.semantic_factor", "0.5") == 0.5
+    assert config.parse_value("retrieval.fusion.rrf.k", "100") == 100
+    assert config.parse_value("fts.strategy", "trigram") == "trigram"
 
 
 def test_parse_value_rejects_bad_types() -> None:
@@ -460,7 +492,7 @@ def test_parse_value_rejects_bad_types() -> None:
     with pytest.raises(ValueError, match=r"embedding\.l2_normalize"):
         config.parse_value("embedding.l2_normalize", "maybe")
     with pytest.raises(ValueError, match=r"ignore\.sources"):
-        config.parse_value("ignore.sources", "[1, 2]")
+        config.parse_value("app.ignore.sources", "[1, 2]")
     with pytest.raises(KeyError):
         config.parse_value("unknown.key", "x")
 
