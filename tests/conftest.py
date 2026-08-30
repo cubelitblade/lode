@@ -30,8 +30,16 @@ def _isolate_user_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
     ``tmp_path`` so neither the host user config nor the project's own
     ``.lode/config.toml`` / ``lode.toml`` leak into tests (the project config
     now carries e.g. ``app.output.palette``).
+
+    ``XDG_CONFIG_HOME`` only affects platformdirs on posix systems; on Windows
+    the user config resolves from ``APPDATA``, so ``user_config_path`` is also
+    patched directly to keep tests hermetic on every platform.
     """
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    user_path = tmp_path / "user-config" / "config.toml"
+    # The CLI binds user_config_path at import time, so patch that reference too.
+    monkeypatch.setattr("lode.config.user_config_path", lambda: user_path)
+    monkeypatch.setattr("lode.cli.commands.config.user_config_path", lambda: user_path)
     monkeypatch.chdir(tmp_path)
 
 

@@ -14,6 +14,7 @@ import pytest
 
 from lode.cli import app
 from lode.ingestion import chunk_digest
+from lode.relpath import to_native, to_rel
 from tests.conftest import fake_embedder, runner
 
 
@@ -44,7 +45,8 @@ def test_dig_returns_full_chunk_text(tmp_path: Path, monkeypatch: pytest.MonkeyP
     digest = chunk_digest(text)
     dig = runner.invoke(app, ["--workspace", str(tmp_path), "dig", digest])
     assert dig.exit_code == 0, dig.output
-    assert "docs/report.txt" in dig.output
+    # The render layer shows OS-native paths.
+    assert str(to_native(to_rel("docs/report.txt"))) in dig.output
     assert text in dig.output
     # Only the short stub is shown, never the full blake3 prefix.
     assert "blake3:" not in dig.output

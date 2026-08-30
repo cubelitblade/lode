@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from lode.cli import app
+from lode.relpath import to_native, to_rel
 from tests.conftest import (
     dimension_mismatch_embedder,
     failing_embedder,
@@ -35,7 +36,8 @@ def test_mine_then_prospect_roundtrip(tmp_path: Path, monkeypatch: pytest.Monkey
 
     prospect = runner.invoke(app, ["--workspace", str(tmp_path), "prospect", "entanglement"])
     assert prospect.exit_code == 0, prospect.output
-    assert "docs/report.txt" in prospect.output
+    # The render layer shows OS-native paths.
+    assert str(to_native(to_rel("docs/report.txt"))) in prospect.output
     assert "quantum entanglement" in prospect.output
     # The short chunk id (blake3: prefix stripped) is appended to the line.
     assert "#" in prospect.output
