@@ -39,10 +39,10 @@ jobs:
         uv sync --python ${{ matrix.python-version }} --all-extras --dev
 
     - name: Lint with Ruff
-      run: uv run ruff check .
+      run: uv run --python ${{ matrix.python-version }} ruff check .
 
     - name: Lint with Pyright
-      run: uv run pyright
+      run: uv run --python ${{ matrix.python-version }} pyright
 
     - name: Test with PyTest
-      run: uv run pytest
+      run: uv run --python ${{ matrix.python-version }} pytest
