@@ -1,9 +1,9 @@
 [project]
 name = "lode"
 version = "0.1.0"
-description = "lode: local knowledge base semantic search exposed over MCP"
+description = "Lode is a local-first knowledge mining engine that turns your workspace into a searchable knowledge lode."
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 dependencies = [
     "blake3>=1.0.9",
     "httpx>=0.28.1",
@@ -39,7 +39,7 @@ evals = [
 ]
 
 [tool.ruff]
-target-version = "py313"
+target-version = "py312"
 line-length = 120
 src = ["src", "tests", "evals"]
 
@@ -47,7 +47,9 @@ src = ["src", "tests", "evals"]
 select = ["E", "F", "I", "UP", "B", "RUF", "SIM"]
 
 [tool.pyright]
-pythonVersion = "3.13"
+pythonVersion = "3.12"
+include = ["src", "tests"]
 typeCheckingMode = "strict"
-venvPath = "."
-venv = ".venv"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
