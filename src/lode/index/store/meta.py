@@ -184,7 +184,9 @@ def reset_index(db_path: Path, embedder: Embedder, tokenizer: str) -> None:
     finally:
         conn.close()
     # fsync the backup so it is durable before we touch the original.
-    with open(tmp_path, "rb") as f:
+    # The handle must be opened for writing: on Windows os.fsync (_commit)
+    # fails with EBADF on a read-only descriptor.
+    with open(tmp_path, "rb+") as f:
         os.fsync(f.fileno())
     # Atomic rename: after this point the backup is committed.
     tmp_path.replace(final_path)
