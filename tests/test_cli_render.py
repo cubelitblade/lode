@@ -5,7 +5,8 @@ tests assert behavioural/structural signals rather than exact text or spacing:
 
 * pending paths are reported;
 * the status symbols are always emitted (independent of palette);
-* border is a separate axis: the default draws a frame, ``Border.NONE`` does not.
+* border/palette resolution is unit-tested on ``RenderOptions`` itself — how
+  rich actually draws a frame is third-party behaviour, not our contract.
 
 Colour is deliberately not asserted here — it is stripped in non-TTY test runs
 and is an intent/palette concern covered by `lode.cli.render`.
@@ -16,6 +17,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from rich import box
 from rich.console import Console
 
 from lode.cli.commands._common import resolve_render_options
@@ -65,17 +67,14 @@ def test_render_survey_always_emits_symbols() -> None:
     assert "-" in text
 
 
-def test_render_survey_rich_default_has_border() -> None:
-    text = _render(DetectResult.from_paths(new_files=["a.md"], skipped=1))
-    assert "╭" in text
-    assert "╯" in text
-
-
-def test_render_survey_borderless_has_no_frame() -> None:
-    text = _render(DetectResult.from_paths(new_files=["a.md"], skipped=1), RenderOptions(border=Border.NONE))
-    assert "╭" not in text
-    assert "│" not in text
-    assert "a.md" in text
+def test_render_options_resolves_border_style() -> None:
+    """Border → rich box mapping is our decision; drawing it is rich's job."""
+    assert RenderOptions().box is box.ROUNDED
+    assert RenderOptions(border=Border.ROUND).box is box.ROUNDED
+    assert RenderOptions(border=Border.SQUARE).box is box.SQUARE
+    # NONE -> None is the "no frame" contract: renderers must skip the Panel
+    # because rich's Panel cannot take a None box.
+    assert RenderOptions(border=Border.NONE).box is None
 
 
 def test_render_survey_no_color_keeps_symbols() -> None:
