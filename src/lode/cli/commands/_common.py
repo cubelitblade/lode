@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from tomllib import TOMLDecodeError
 from typing import Annotated, Literal, NoReturn
 
@@ -33,6 +33,7 @@ from lode.index import (
 from lode.ingestion.pipeline import DetectResult, SyncSummary, sync
 from lode.ingestion.split import SegmentSplitter
 from lode.messages import error_text, require_error_text
+from lode.relpath import to_native
 
 # The index lives next to the workspace's own .lode/ directory.
 INDEX_DB_RELATIVE = Path(".lode") / "index.db"
@@ -257,14 +258,14 @@ def sync_with_progress(
     )
     task_id: TaskID | None = None
 
-    def report(processed: int, total: int, path: str) -> None:
+    def report(processed: int, total: int, path: PurePosixPath | None) -> None:
         nonlocal task_id
         if task_id is None:
             if total == 0:
                 # Nothing to mine; keep the live display empty.
                 return
             task_id = progress.add_task("Mining", total=total)
-        progress.update(task_id, completed=processed, description=path or "done")
+        progress.update(task_id, completed=processed, description=str(to_native(path)) if path else "done")
 
     with progress:
         return sync(store, workspace, embedder, splitter, detect=detect, report=report)

@@ -18,6 +18,7 @@ from rich.text import Text
 
 from lode.cli.render.core import Intent, RenderOptions
 from lode.index import ChunkWithPath, FileStatus
+from lode.relpath import to_native
 
 
 def render_dig(
@@ -55,7 +56,7 @@ def render_dig(
     stale_style = options.intent_colors.get(Intent.WARNING, "")
     muted_style = options.intent_colors.get(Intent.MUTED, "")
     for chunk in chunks:
-        source = chunk.primary.path
+        source = str(to_native(chunk.primary.path))
         if len(chunk.refs) > 1:
             source += f" (+{len(chunk.refs) - 1} more)"
         if chunk.heading:

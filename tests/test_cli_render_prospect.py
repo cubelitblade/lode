@@ -14,7 +14,7 @@ and is an intent/palette concern covered by `lode.cli.render`.
 
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from rich.console import Console
 
@@ -32,7 +32,7 @@ def _hit(*, stale: bool = False) -> SearchHit:
         score=0.75,
         refs=(
             PathRef(
-                path="docs/report.txt",
+                path=PurePosixPath("docs/report.txt"),
                 status=FileStatus.STALE if stale else FileStatus.FRESH,
             ),
         ),
@@ -60,7 +60,7 @@ def _render(result: ProspectResult, options: RenderOptions | None = None) -> str
 def test_render_prospect_lists_hits_as_cards() -> None:
     text = _render(_result([_hit()]))
     assert "#1 · 0.750" in text
-    assert "docs/report.txt > Intro (p.3)" in text
+    assert f"{Path('docs') / 'report.txt'} > Intro (p.3)" in text
     assert "quantum entanglement" in text
 
 

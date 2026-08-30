@@ -29,6 +29,7 @@ from lode.cli.render.output import echo_json, json_err, json_ok, render_message
 from lode.index import ChunkWithPath, Store
 from lode.ingestion.pipeline import detect_changes
 from lode.messages import require_error_text
+from lode.relpath import to_native
 
 
 def register(app: typer.Typer) -> None:
@@ -79,7 +80,7 @@ def _chunk_to_json(chunk: ChunkWithPath, *, include_text: bool = True) -> dict[s
     """Build a `dig` --json payload for one chunk (omit text for candidates)."""
     data: dict[str, Any] = {
         "digest": chunk.digest,
-        "paths": [{"path": ref.path, "state": ref.status.value} for ref in chunk.refs],
+        "paths": [{"path": str(ref.path), "state": ref.status.value} for ref in chunk.refs],
         "heading": chunk.heading,
         "page": chunk.page,
         "seq": chunk.seq,
@@ -164,4 +165,4 @@ def _provenance_line(chunk: ChunkWithPath) -> str:
     more = f" (+{len(chunk.refs) - 1} more)" if len(chunk.refs) > 1 else ""
     heading = f" > {chunk.heading}" if chunk.heading else ""
     page = f" (p.{chunk.page})" if chunk.page is not None else ""
-    return f"  #{short_id} {chunk.primary.path}{more}{heading}{page}"
+    return f"  #{short_id} {to_native(chunk.primary.path)}{more}{heading}{page}"

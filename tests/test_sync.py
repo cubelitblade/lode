@@ -5,7 +5,7 @@ Hermetic: real temp files + FakeEmbedder, no network.
 
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -27,7 +27,7 @@ def test_sync_indexes_new_files(store: Store, tmp_path: Path) -> None:
     assert result.added == 1
     files = store.list_files()
     assert len(files) == 1
-    assert files[0].path == "a.txt"
+    assert files[0].path == PurePosixPath("a.txt")
     assert files[0].status is FileStatus.FRESH
 
 
@@ -46,7 +46,7 @@ def test_sync_reports_progress(store: Store, tmp_path: Path) -> None:
     write(tmp_path, "a.txt", "hello world content")
     write(tmp_path, "b.txt", "more content here")
 
-    calls: list[tuple[int, int, str]] = []
+    calls: list[tuple[int, int, PurePosixPath | None]] = []
     result = run_sync(
         store,
         tmp_path,
@@ -58,7 +58,7 @@ def test_sync_reports_progress(store: Store, tmp_path: Path) -> None:
     # One report before each file to embed (0-based count), then a completion report.
     assert [c[0] for c in calls] == [0, 1, 2]
     assert calls[0][1] == 2 and calls[1][1] == 2
-    assert {c[2] for c in calls[:2]} == {"a.txt", "b.txt"}
+    assert {c[2] for c in calls[:2]} == {PurePosixPath("a.txt"), PurePosixPath("b.txt")}
 
 
 def test_sync_reindexes_changed_file(store: Store, tmp_path: Path) -> None:
@@ -69,7 +69,7 @@ def test_sync_reindexes_changed_file(store: Store, tmp_path: Path) -> None:
     result = run_sync(store, tmp_path, FakeEmbedder())
 
     assert result.updated == 1
-    assert store.get_file("a.txt") is not None
+    assert store.get_file(PurePosixPath("a.txt")) is not None
 
 
 def test_sync_removes_files_gone_from_disk(store: Store, tmp_path: Path) -> None:
@@ -90,7 +90,7 @@ def test_detect_and_sync_report_exact_content_rename(store: Store, tmp_path: Pat
     detect = detect_changes(store, tmp_path)
 
     # Identical content under a new path is a rename, not new + missing.
-    assert detect.renamed_files == [("a.txt", "b.txt")]
+    assert detect.renamed_files == [(PurePosixPath("a.txt"), PurePosixPath("b.txt"))]
     assert detect.new_files == []
     assert detect.missing_files == []
     assert detect.pending == 1
@@ -105,14 +105,14 @@ def test_detect_and_sync_report_exact_content_rename(store: Store, tmp_path: Pat
 
     result = sync(store, tmp_path, CountingEmbedder(), SPLITTER, detect=detect)
 
-    assert result.renamed_files == [("a.txt", "b.txt")]
+    assert result.renamed_files == [(PurePosixPath("a.txt"), PurePosixPath("b.txt"))]
     assert result.added == 0
     assert result.updated == 0
     assert result.removed == 0
     # Zero embedding cost: the indexed content is re-pointed, not rebuilt.
     assert CountingEmbedder.embed_calls == 0
     files = {file.path: file for file in store.list_files()}
-    assert set(files) == {"b.txt"}
+    assert set(files) == {PurePosixPath("b.txt")}
     assert all(file.status is FileStatus.FRESH for file in files.values())
 
 
@@ -126,15 +126,15 @@ def test_rename_pairing_leaves_unmatched_paths_in_place(store: Store, tmp_path: 
     write(tmp_path, "c.txt", "something else entirely")
 
     detect = detect_changes(store, tmp_path)
-    assert detect.renamed_files == [("a.txt", "b.txt")]
-    assert detect.new_files == ["c.txt"]
+    assert detect.renamed_files == [(PurePosixPath("a.txt"), PurePosixPath("b.txt"))]
+    assert detect.new_files == [PurePosixPath("c.txt")]
     assert detect.missing_files == []
 
     result = sync(store, tmp_path, FakeEmbedder(), SPLITTER, detect=detect)
-    assert [pair for pair in result.renamed_files] == [("a.txt", "b.txt")]
-    assert result.added_files == ["c.txt"]
+    assert [pair for pair in result.renamed_files] == [(PurePosixPath("a.txt"), PurePosixPath("b.txt"))]
+    assert result.added_files == [PurePosixPath("c.txt")]
     assert result.removed == 0
-    assert {file.path for file in store.list_files()} == {"b.txt", "c.txt"}
+    assert {file.path for file in store.list_files()} == {PurePosixPath("b.txt"), PurePosixPath("c.txt")}
 
 
 def test_changed_file_is_never_paired_as_rename(store: Store, tmp_path: Path) -> None:
@@ -145,7 +145,7 @@ def test_changed_file_is_never_paired_as_rename(store: Store, tmp_path: Path) ->
     path.write_text("totally different text now")
     detect = detect_changes(store, tmp_path)
     assert detect.renamed_files == []
-    assert detect.changed_files == ["a.txt"]
+    assert detect.changed_files == [PurePosixPath("a.txt")]
 
 
 def test_sync_skips_unsupported_formats(store: Store, tmp_path: Path) -> None:
@@ -167,10 +167,10 @@ def test_sync_failure_marks_file_stale_and_keeps_going(store: Store, tmp_path: P
 
     assert len(result.failed) == 2
     assert all(isinstance(failure, FailedFile) for failure in result.failed)
-    assert {failure.path for failure in result.failed} == {"a.txt", "b.txt"}
+    assert {failure.path for failure in result.failed} == {PurePosixPath("a.txt"), PurePosixPath("b.txt")}
     assert all(failure.error for failure in result.failed)
-    file_a = store.get_file("a.txt")
-    file_b = store.get_file("b.txt")
+    file_a = store.get_file(PurePosixPath("a.txt"))
+    file_b = store.get_file(PurePosixPath("b.txt"))
     assert file_a is not None
     assert file_b is not None
     assert file_a.status is FileStatus.STALE
@@ -204,10 +204,10 @@ def test_sync_corrupt_docx_fails_and_keeps_going(store: Store, tmp_path: Path) -
     result = run_sync(store, tmp_path, FakeEmbedder())
 
     assert len(result.failed) == 1
-    assert result.failed[0].path == "bad.docx"
+    assert result.failed[0].path == PurePosixPath("bad.docx")
     assert result.failed[0].error
     # Never successfully indexed, so no snapshot row exists to flag stale.
-    assert store.get_file("bad.docx") is None
+    assert store.get_file(PurePosixPath("bad.docx")) is None
 
 
 def test_sync_retries_stale_files_even_if_unchanged(store: Store, tmp_path: Path) -> None:
@@ -216,7 +216,7 @@ def test_sync_retries_stale_files_even_if_unchanged(store: Store, tmp_path: Path
 
     path.write_text("changed content here")
     run_sync(store, tmp_path, FailingEmbedder())
-    file_a = store.get_file("a.txt")
+    file_a = store.get_file(PurePosixPath("a.txt"))
     assert file_a is not None
     assert file_a.status is FileStatus.STALE
 
@@ -224,7 +224,7 @@ def test_sync_retries_stale_files_even_if_unchanged(store: Store, tmp_path: Path
     result = run_sync(store, tmp_path, FakeEmbedder())
 
     assert result.updated == 1
-    file_a = store.get_file("a.txt")
+    file_a = store.get_file(PurePosixPath("a.txt"))
     assert file_a is not None
     assert file_a.status is FileStatus.FRESH
 
@@ -237,7 +237,7 @@ def test_sync_indexes_docx_and_surfaces_heading(store: Store, tmp_path: Path) ->
     assert result.added == 1
     files = store.list_files()
     assert len(files) == 1
-    assert files[0].path == "report.docx"
+    assert files[0].path == PurePosixPath("report.docx")
     assert files[0].status is FileStatus.FRESH
 
     # The heading chain is written onto the stored chunks (provenance).

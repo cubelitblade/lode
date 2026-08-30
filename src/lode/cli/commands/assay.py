@@ -42,6 +42,7 @@ from lode.index.search import explain
 from lode.ingestion.pipeline import detect_changes
 from lode.lexical import STRATEGIES, distinct_terms, tokenize_text
 from lode.messages import require_error_text
+from lode.relpath import to_native
 
 
 def register(app: typer.Typer) -> None:
@@ -251,7 +252,7 @@ def _how_json(chunk: Any, strategy: Any, tokens: list[str], terms: list[Any]) ->
     distinct = distinct_terms(terms)
     return {
         "digest": chunk.digest,
-        "paths": [{"path": ref.path, "state": ref.status.value} for ref in chunk.refs],
+        "paths": [{"path": str(ref.path), "state": ref.status.value} for ref in chunk.refs],
         "heading": chunk.heading,
         "page": chunk.page,
         "seq": chunk.seq,
@@ -272,7 +273,7 @@ def _candidate_line(store: Store, rowid: int) -> str:
         return f"  #{rowid}"
     short_id = chunk.digest.removeprefix("blake3:")[:12]
     heading = f" > {chunk.heading}" if chunk.heading else ""
-    return f"  #{short_id} {chunk.primary.path}{heading}"
+    return f"  #{short_id} {to_native(chunk.primary.path)}{heading}"
 
 
 def _candidate_json(store: Store, rowid: int) -> dict[str, Any]:
@@ -283,7 +284,7 @@ def _candidate_json(store: Store, rowid: int) -> dict[str, Any]:
     return {
         "rowid": rowid,
         "digest": chunk.digest,
-        "paths": [{"path": ref.path, "state": ref.status.value} for ref in chunk.refs],
+        "paths": [{"path": str(ref.path), "state": ref.status.value} for ref in chunk.refs],
         "heading": chunk.heading,
         "page": chunk.page,
     }
@@ -296,7 +297,7 @@ def _explanation_json(explanation: Any) -> dict[str, Any]:
     norm_params = dict(plan.norm.params) if plan.norm is not None else {}
     return {
         "digest": chunk.digest,
-        "paths": [{"path": ref.path, "state": ref.status.value} for ref in chunk.refs],
+        "paths": [{"path": str(ref.path), "state": ref.status.value} for ref in chunk.refs],
         "heading": chunk.heading,
         "page": chunk.page,
         "seq": chunk.seq,

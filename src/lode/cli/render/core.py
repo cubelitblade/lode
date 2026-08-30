@@ -23,6 +23,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
+from pathlib import PurePosixPath
 
 from rich import box
 from rich.console import Console
@@ -30,13 +31,18 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-# Change-list entries are plain paths except renames, which carry ``(old, new)``.
-type Entry = str | tuple[str, str]
+from lode.relpath import to_native
+
+# Change-list entries are workspace-relative domain paths except renames, which
+# carry ``(old, new)``. Labels are rendered OS-natively for human display.
+type Entry = PurePosixPath | tuple[PurePosixPath, PurePosixPath]
 
 
 def entry_label(entry: Entry) -> str:
     """Display label for a change-list entry; renames render as ``old -> new``."""
-    return f"{entry[0]} -> {entry[1]}" if isinstance(entry, tuple) else entry
+    if isinstance(entry, tuple):
+        return f"{to_native(entry[0])} -> {to_native(entry[1])}"
+    return str(to_native(entry))
 
 
 class Status(StrEnum):

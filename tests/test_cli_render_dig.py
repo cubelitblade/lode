@@ -14,6 +14,8 @@ and is an intent/palette concern covered by `lode.cli.render`.
 
 from __future__ import annotations
 
+from pathlib import Path, PurePosixPath
+
 from rich.console import Console
 
 from lode.cli.render import RenderOptions
@@ -26,7 +28,7 @@ def _chunk(seq: int, *, stale: bool = False, text: str = "full chunk text") -> C
         digest="blake3:0123456789abcdef",
         text=text,
         heading="Intro",
-        refs=(PathRef(path="docs/report.txt", status=FileStatus.STALE if stale else FileStatus.FRESH),),
+        refs=(PathRef(path=PurePosixPath("docs/report.txt"), status=FileStatus.STALE if stale else FileStatus.FRESH),),
         page=3,
         seq=seq,
     )
@@ -61,7 +63,7 @@ def test_render_dig_reports_dug_digest_without_radius() -> None:
 def test_render_dig_marks_center_chunk() -> None:
     text = _render([_chunk(5)], center_seq=5, radius=0)
     assert "5 · center" in text
-    assert "docs/report.txt > Intro (p.3)" in text
+    assert f"{Path('docs') / 'report.txt'} > Intro (p.3)" in text
     assert "full chunk text" in text
 
 

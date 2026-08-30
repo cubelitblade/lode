@@ -99,14 +99,14 @@ def prospect(
             echo_json(
                 json_ok(
                     "prospect",
-                    workspace=str(workspace),
+                    workspace=workspace.as_posix(),
                     query=query,
                     top_k=top_k,
                     hits=[
                         {
                             "rank": index,
                             "score": hit.score,
-                            "paths": [{"path": ref.path, "state": ref.status.value} for ref in hit.refs],
+                            "paths": [{"path": str(ref.path), "state": ref.status.value} for ref in hit.refs],
                             "heading": hit.heading,
                             "page": hit.page,
                             "digest": hit.digest,

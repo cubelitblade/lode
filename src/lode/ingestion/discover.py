@@ -16,7 +16,7 @@ themselves are excluded from the result — they are config, not content.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pathspec
 
@@ -26,12 +26,15 @@ DEFAULT_IGNORES = (".lode/**",)
 LODEIGNORE = ".lodeignore"
 
 
-def discover(root: Path, ignore_files: Sequence[str] = ()) -> list[Path]:
+def discover(root: Path, ignore_files: Sequence[str] = ()) -> list[PurePosixPath]:
     """Workspace-relative paths of all files under ``root``, ignore-filtered.
 
     ``root`` must be an existing directory. ``ignore_files`` lists additional
     ignore-like files (read relative to ``root``), loaded after
     ``.lodeignore``. Ignore files themselves are never returned.
+
+    Paths are returned as the platform-independent domain type
+    (:class:`~pathlib.PurePosixPath`, see ``lode.relpath``).
     """
     if not root.is_dir():
         raise FileNotFoundError(f"workspace directory not found: {root}")
@@ -39,17 +42,16 @@ def discover(root: Path, ignore_files: Sequence[str] = ()) -> list[Path]:
     spec = _build_ignore_spec(root, ignore_files)
     excluded = _ignore_file_paths(ignore_files)
 
-    files: list[Path] = []
+    files: list[PurePosixPath] = []
     for path in sorted(root.rglob("*")):
         if not path.is_file():
             continue
-        rel = path.relative_to(root)
-        rel_text = rel.as_posix()
+        rel_text = path.relative_to(root).as_posix()
         if rel_text in excluded:
             continue
         if spec.match_file(rel_text):
             continue
-        files.append(rel)
+        files.append(PurePosixPath(rel_text))
     return files
 
 

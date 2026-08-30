@@ -5,7 +5,7 @@ Hermetic: real temp files + FakeEmbedder, no network.
 
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from lode.index import FileStatus, Store
 from lode.ingestion.pipeline import classify, detect_changes
@@ -45,7 +45,7 @@ def test_survey_reports_residual_stale_marker_as_changed(store: Store, tmp_path:
     write(tmp_path, "a.txt", "hello world content")
     run_sync(store, tmp_path, FakeEmbedder())
     # Simulate a failed sync that left a stale marker without any disk change.
-    store.mark_stale("a.txt")
+    store.mark_stale(PurePosixPath("a.txt"))
 
     summary = detect_changes(store, tmp_path)
 
@@ -67,7 +67,7 @@ def test_detect_marks_changed_stale_and_missing_not(store: Store, tmp_path: Path
     summary = detect_changes(store, tmp_path)
 
     # Changed file is marked stale; missing file is not (no snapshot to flag).
-    file_a = store.get_file("a.txt")
+    file_a = store.get_file(PurePosixPath("a.txt"))
     assert file_a is not None
     assert file_a.status is FileStatus.STALE
     assert summary.changed == 1
@@ -78,12 +78,12 @@ def test_detect_marks_changed_stale_and_missing_not(store: Store, tmp_path: Path
 def test_detect_residual_stale_not_remark(store: Store, tmp_path: Path) -> None:
     write(tmp_path, "a.txt", "hello world content")
     run_sync(store, tmp_path, FakeEmbedder())
-    store.mark_stale("a.txt")
+    store.mark_stale(PurePosixPath("a.txt"))
 
     detect_changes(store, tmp_path)
 
     # Residual stale is folded into changed but not re-marked (already stale).
-    file_a = store.get_file("a.txt")
+    file_a = store.get_file(PurePosixPath("a.txt"))
     assert file_a is not None
     assert file_a.status is FileStatus.STALE
 
@@ -116,8 +116,8 @@ def test_classify_reports_stale_paths_without_touching_store(store: Store, tmp_p
 
     # The changed path is reported as a side effect to apply, but classify
     # itself must not have flipped the marker (that is detect_changes' job).
-    assert summary.stale_paths == ["a.txt"]
+    assert summary.stale_paths == [PurePosixPath("a.txt")]
     assert summary.changed == 1
-    file_a = store.get_file("a.txt")
+    file_a = store.get_file(PurePosixPath("a.txt"))
     assert file_a is not None
     assert file_a.status is FileStatus.FRESH

@@ -28,6 +28,7 @@ from lode.cli.render.core import (
     render_change_list,
 )
 from lode.ingestion.pipeline import SyncSummary
+from lode.relpath import to_native
 
 
 def _processed_entries(result: SyncSummary) -> Sequence[tuple[Status, Sequence[Entry]]]:
@@ -109,7 +110,7 @@ def render_mine(
             for index, failure in enumerate(result.failed):
                 if index:
                     failed_text.append("\n")
-                failed_text.append(f"{failed_marker} {failure.path}\n", style=error_style)
+                failed_text.append(f"{failed_marker} {to_native(failure.path)}\n", style=error_style)
                 failed_text.append(f"  {failure.error}", style=error_style)
             console.print()
             console.print(
@@ -125,7 +126,7 @@ def render_mine(
             console.print()
             console.print("Stumbled on", style=error_style)
             for failure in result.failed:
-                console.print(f"{failed_marker} {failure.path}", style=error_style)
+                console.print(f"{failed_marker} {to_native(failure.path)}", style=error_style)
                 console.print(f"  {failure.error}", style=error_style)
         hint_indent = " " if frame is not None else "  "
         console.print()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from io import BytesIO
+from pathlib import PurePosixPath
 
 from docx import Document
 
@@ -71,7 +72,7 @@ def make_chunks(texts: list[str], *, pages: list[int | None] | None = None) -> t
 
 
 def file_record(path: str = "a.txt", *, digest: str = "blake3:aa", size: int = 1) -> FileRecord:
-    return FileRecord(path=path, digest=digest, mtime=1.0, size=size)
+    return FileRecord(path=PurePosixPath(path), digest=digest, mtime=1.0, size=size)
 
 
 def make_docx_bytes() -> bytes:

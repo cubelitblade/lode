@@ -7,7 +7,7 @@ everything else runs through the actual code under test.
 from __future__ import annotations
 
 from collections.abc import Callable
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 from typer.testing import CliRunner
@@ -57,7 +57,7 @@ def run_sync(
     tmp_path: Path,
     embedder: FakeEmbedder | FailingEmbedder,
     *,
-    report: Callable[[int, int, str], None] | None = None,
+    report: Callable[[int, int, PurePosixPath | None], None] | None = None,
 ) -> SyncSummary:
     """detect then sync — the two-stage shape the CLI now uses."""
     detect = detect_changes(store, tmp_path)

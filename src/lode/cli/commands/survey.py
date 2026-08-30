@@ -55,7 +55,7 @@ def survey(
         echo_json(
             json_ok(
                 "survey",
-                workspace=str(workspace),
+                workspace=workspace.as_posix(),
                 summary={
                     "unchanged": result.unchanged,
                     "new": result.new,
@@ -66,11 +66,11 @@ def survey(
                     "pending": result.pending,
                 },
                 paths={
-                    "new": result.new_files,
-                    "changed": result.changed_files,
-                    "missing": result.missing_files,
-                    "renamed": [{"from": old, "to": new} for old, new in result.renamed_files],
-                    "unchanged": result.unchanged_files,
+                    "new": [str(path) for path in result.new_files],
+                    "changed": [str(path) for path in result.changed_files],
+                    "missing": [str(path) for path in result.missing_files],
+                    "renamed": [{"from": str(old), "to": str(new)} for old, new in result.renamed_files],
+                    "unchanged": [str(path) for path in result.unchanged_files],
                 },
             )
         )

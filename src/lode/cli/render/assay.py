@@ -29,6 +29,7 @@ from lode.cli.render.core import Intent, RenderOptions
 from lode.index import ChunkWithPath
 from lode.index.explanation import RetrievalStatus, ScoreExplanation
 from lode.lexical.base import IndexedTerm, distinct_terms
+from lode.relpath import to_native
 
 # Human-output caps so a large chunk cannot flood the terminal; ``--json``
 # always carries the full text and term stream. The term cap is in display
@@ -387,7 +388,7 @@ def _terms_line(terms: Sequence[IndexedTerm]) -> str:
 
 def _source_label(chunk: ChunkWithPath) -> str:
     """One-line provenance for a chunk: path(s), heading chain, page."""
-    source = chunk.primary.path
+    source = str(to_native(chunk.primary.path))
     if len(chunk.refs) > 1:
         source += f" (+{len(chunk.refs) - 1} more)"
     if chunk.heading:

@@ -9,6 +9,8 @@ relevance thresholds are a retrieval-quality concern deferred to M2.
 
 from __future__ import annotations
 
+from pathlib import PurePosixPath
+
 import pytest
 
 from lode.index import Store
@@ -29,7 +31,7 @@ def test_search_returns_hits_with_provenance(seeded_store: Store) -> None:
 
     assert hits
     hit = hits[0]
-    assert hit.primary.path == "a.txt"
+    assert hit.primary.path == PurePosixPath("a.txt")
     assert "fox" in hit.text
     assert hit.score > 0
 
@@ -48,7 +50,7 @@ def test_search_exposes_page_metadata(seeded_store: Store) -> None:
         top_k=5,
     )
 
-    pdf_hits = [hit for hit in hits if hit.primary.path == "report.pdf"]
+    pdf_hits = [hit for hit in hits if hit.primary.path == PurePosixPath("report.pdf")]
     assert pdf_hits
     assert {hit.page for hit in pdf_hits} == {1, 2}
 
@@ -63,7 +65,7 @@ def test_sparse_only_weight_uses_bm25(seeded_store: Store) -> None:
     )
 
     assert hits
-    assert all(hit.primary.path == "a.txt" for hit in hits)
+    assert all(hit.primary.path == PurePosixPath("a.txt") for hit in hits)
 
 
 def test_dense_only_weight_uses_knn(seeded_store: Store) -> None:
@@ -78,7 +80,7 @@ def test_dense_only_weight_uses_knn(seeded_store: Store) -> None:
     assert hits
     # The fake query vector is closest to seq=0 chunks; at least one hit
     # must come from the seeded data regardless of query text.
-    assert all(hit.primary.path in {"a.txt", "b.md"} for hit in hits)
+    assert all(hit.primary.path in {PurePosixPath("a.txt"), PurePosixPath("b.md")} for hit in hits)
 
 
 def test_search_respects_top_k(seeded_store: Store) -> None:
@@ -93,7 +95,7 @@ def test_search_respects_top_k(seeded_store: Store) -> None:
 
 
 def test_search_flags_stale_files(seeded_store: Store) -> None:
-    seeded_store.mark_stale("a.txt")
+    seeded_store.mark_stale(PurePosixPath("a.txt"))
 
     hits = search(
         seeded_store,
@@ -167,5 +169,5 @@ def test_rrf_search_ranks_by_position(seeded_store: Store) -> None:
     )
 
     assert hits
-    assert hits[0].primary.path == "a.txt"
+    assert hits[0].primary.path == PurePosixPath("a.txt")
     assert hits[0].score > 0

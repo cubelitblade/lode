@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
 # The sqlite_vec package ships no type stubs; the ignore is scoped to this
@@ -246,7 +246,7 @@ class Store:
         if len(chunks) != len(vectors):
             raise ValueError(f"got {len(chunks)} chunks but {len(vectors)} vectors")
         with self._lock, self._conn:
-            row = self._conn.execute("SELECT content_id FROM files WHERE path = ?", (file.path,)).fetchone()
+            row = self._conn.execute("SELECT content_id FROM files WHERE path = ?", (str(file.path),)).fetchone()
             previous_content_id = int(row[0]) if row is not None else None
             content_id, created = self._ensure_content(file.digest)
             self._conn.execute(
@@ -259,7 +259,7 @@ class Store:
                     size = excluded.size,
                     status = excluded.status
                 """,
-                (file.path, content_id, file.mtime, file.size, file.status.value),
+                (str(file.path), content_id, file.mtime, file.size, file.status.value),
             )
             if created:
                 self._insert_chunks(content_id, chunks, vectors)
@@ -278,7 +278,7 @@ class Store:
             if row is None:
                 return False
             content_id = int(row[0])
-            previous = self._conn.execute("SELECT content_id FROM files WHERE path = ?", (file.path,)).fetchone()
+            previous = self._conn.execute("SELECT content_id FROM files WHERE path = ?", (str(file.path),)).fetchone()
             self._conn.execute(
                 """
                 INSERT INTO files (path, content_id, mtime, size, status)
@@ -289,22 +289,22 @@ class Store:
                     size = excluded.size,
                     status = excluded.status
                 """,
-                (file.path, content_id, file.mtime, file.size, file.status.value),
+                (str(file.path), content_id, file.mtime, file.size, file.status.value),
             )
             if previous is not None and int(previous[0]) != content_id:
                 self._gc_content_if_orphaned(int(previous[0]))
             return True
 
-    def remove_file(self, path: str) -> None:
+    def remove_file(self, path: PurePosixPath) -> None:
         """Delete a path reference; drop its content when this was the last one."""
         with self._lock, self._conn:
-            row = self._conn.execute("SELECT content_id FROM files WHERE path = ?", (path,)).fetchone()
+            row = self._conn.execute("SELECT content_id FROM files WHERE path = ?", (str(path),)).fetchone()
             if row is None:
                 return
-            self._conn.execute("DELETE FROM files WHERE path = ?", (path,))
+            self._conn.execute("DELETE FROM files WHERE path = ?", (str(path),))
             self._gc_content_if_orphaned(int(row[0]))
 
-    def mark_stale(self, path: str) -> None:
+    def mark_stale(self, path: PurePosixPath) -> None:
         """Mark a path's snapshot as outdated (content changed, sync pending).
 
         Unknown paths are ignored: a new file that fails before its first
@@ -313,7 +313,7 @@ class Store:
         with self._lock, self._conn:
             self._conn.execute(
                 "UPDATE files SET status = ? WHERE path = ?",
-                (FileStatus.STALE.value, path),
+                (FileStatus.STALE.value, str(path)),
             )
 
     def content_id_for(self, digest: str) -> int | None:
@@ -455,14 +455,14 @@ class Store:
             ).fetchall()
         return [row_to_file(row) for row in rows]
 
-    def get_file(self, path: str) -> FileRecord | None:
+    def get_file(self, path: PurePosixPath) -> FileRecord | None:
         """Metadata for one indexed path, or None when it is not indexed."""
         with self._lock:
             row = self._conn.execute(
                 "SELECT f.path, c.digest, f.mtime, f.size, f.status "
                 "FROM files f JOIN contents c ON c.id = f.content_id "
                 "WHERE f.path = ?",
-                (path,),
+                (str(path),),
             ).fetchone()
         return row_to_file(row) if row is not None else None
 

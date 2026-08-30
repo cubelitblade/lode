@@ -157,7 +157,7 @@ def _emit_mine(
         echo_json(
             json_ok(
                 "mine",
-                workspace=str(workspace),
+                workspace=workspace.as_posix(),
                 from_scratch=from_scratch,
                 summary={
                     "added": result.added,
@@ -168,12 +168,12 @@ def _emit_mine(
                     "skipped": result.skipped,
                 },
                 paths={
-                    "added": result.added_files,
-                    "updated": result.updated_files,
-                    "removed": result.removed_files,
-                    "renamed": [{"from": old, "to": new} for old, new in result.renamed_files],
+                    "added": [str(path) for path in result.added_files],
+                    "updated": [str(path) for path in result.updated_files],
+                    "removed": [str(path) for path in result.removed_files],
+                    "renamed": [{"from": str(old), "to": str(new)} for old, new in result.renamed_files],
                 },
-                failed=[{"path": failure.path, "error": failure.error} for failure in result.failed],
+                failed=[{"path": str(failure.path), "error": failure.error} for failure in result.failed],
             )
         )
     else:

@@ -46,7 +46,7 @@ def test_render_survey_lists_pending_paths() -> None:
         skipped=3,
     )
     text = _render(result)
-    assert "docs/intro.md" in text
+    assert str(Path("docs") / "intro.md") in text
     assert "README.md" in text
     assert "old.txt" in text
 

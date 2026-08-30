@@ -70,7 +70,7 @@ def test_config_set_workspace_creates_default_file(tmp_path: Path, monkeypatch: 
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(app, ["config", "set", "embedding.model", "BAAI/bge-small-zh-v1.5"])
     assert result.exit_code == 0, result.output
-    assert ".lode/config.toml" in result.output
+    assert str(Path(".lode") / "config.toml") in result.output
     path = _config_path("workspace")
     assert path.is_file()
     assert 'model = "BAAI/bge-small-zh-v1.5"' in path.read_text()
@@ -166,7 +166,7 @@ def test_config_path_shows_target(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(app, ["config", "path"])
     assert result.exit_code == 0, result.output
-    assert result.output.strip().endswith(".lode/config.toml")
+    assert result.output.strip().endswith(str(Path(".lode") / "config.toml"))
 
 
 # -- config loading failures reach the user as friendly exits ------------------

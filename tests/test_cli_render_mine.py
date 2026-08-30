@@ -14,7 +14,7 @@ and is an intent/palette concern covered by `lode.cli.render`.
 
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from rich.console import Console
 
@@ -32,9 +32,9 @@ def _render(result: SyncSummary, options: RenderOptions | None = None) -> str:
 
 def test_render_mine_reports_counts() -> None:
     result = SyncSummary(
-        added_files=["a.md"],
-        updated_files=["b.md"],
-        removed_files=["c.md"],
+        added_files=[PurePosixPath("a.md")],
+        updated_files=[PurePosixPath("b.md")],
+        removed_files=[PurePosixPath("c.md")],
         unchanged=2,
         skipped=1,
     )
@@ -50,25 +50,29 @@ def test_render_mine_reports_counts() -> None:
 
 
 def test_render_mine_reports_renamed() -> None:
-    result = SyncSummary(renamed_files=[("old.txt", "new.txt")])
+    result = SyncSummary(renamed_files=[(PurePosixPath("old.txt"), PurePosixPath("new.txt"))])
     text = _render(result)
     assert "old.txt -> new.txt" in text
 
 
 def test_render_mine_lists_changed_paths() -> None:
     result = SyncSummary(
-        added_files=["docs/intro.md"],
-        updated_files=["README.md"],
-        removed_files=["old.txt"],
+        added_files=[PurePosixPath("docs/intro.md")],
+        updated_files=[PurePosixPath("README.md")],
+        removed_files=[PurePosixPath("old.txt")],
     )
     text = _render(result)
-    assert "docs/intro.md" in text
+    assert str(Path("docs") / "intro.md") in text
     assert "README.md" in text
     assert "old.txt" in text
 
 
 def test_render_mine_always_emits_symbols() -> None:
-    result = SyncSummary(added_files=["a.md"], updated_files=["b.md"], removed_files=["c.md"])
+    result = SyncSummary(
+        added_files=[PurePosixPath("a.md")],
+        updated_files=[PurePosixPath("b.md")],
+        removed_files=[PurePosixPath("c.md")],
+    )
     text = _render(result)
     assert "+" in text
     assert "~" in text
@@ -76,7 +80,10 @@ def test_render_mine_always_emits_symbols() -> None:
 
 
 def test_render_mine_reports_failures() -> None:
-    result = SyncSummary(added_files=[], failed=[FailedFile(path="bad.docx", error="unsupported format")])
+    result = SyncSummary(
+        added_files=[],
+        failed=[FailedFile(path=PurePosixPath("bad.docx"), error="unsupported format")],
+    )
     text = _render(result)
     assert "Stumbled on" in text
     assert "× failed 1" in text  # noqa: RUF001 — multiplication-sign glyph is the intentional error marker
@@ -87,7 +94,7 @@ def test_render_mine_reports_failures() -> None:
 
 
 def test_render_mine_no_color_keeps_symbols() -> None:
-    result = SyncSummary(added_files=["a.md"], skipped=1)
+    result = SyncSummary(added_files=[PurePosixPath("a.md")], skipped=1)
     text = _render(result, RenderOptions(no_color=True))
     assert "+" in text
     assert "a.md" in text

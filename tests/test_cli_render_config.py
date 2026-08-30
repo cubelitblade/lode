@@ -48,18 +48,21 @@ def test_render_config_value_formats_bool_lowercase() -> None:
 
 
 def test_render_config_set_confirmation() -> None:
-    text = _render(lambda console: render_config_set("embedding.model", "m", Path("/tmp/lode.toml"), console=console))
-    assert 'set embedding.model = "m" in /tmp/lode.toml' in text
+    path = Path("/tmp/lode.toml")
+    text = _render(lambda console: render_config_set("embedding.model", "m", path, console=console))
+    assert f'set embedding.model = "m" in {path}' in text
 
 
 def test_render_config_unset_confirmation() -> None:
-    text = _render(lambda console: render_config_unset("embedding.model", Path("/tmp/lode.toml"), console=console))
-    assert "unset embedding.model in /tmp/lode.toml" in text
+    path = Path("/tmp/lode.toml")
+    text = _render(lambda console: render_config_unset("embedding.model", path, console=console))
+    assert f"unset embedding.model in {path}" in text
 
 
 def test_render_config_path() -> None:
-    text = _render(lambda console: render_config_path(Path("/tmp/lode.toml"), console=console))
-    assert "/tmp/lode.toml" in text
+    path = Path("/tmp/lode.toml")
+    text = _render(lambda console: render_config_path(path, console=console))
+    assert str(path) in text
 
 
 def test_render_config_message_error() -> None:

@@ -19,6 +19,7 @@ from lode.cli.render.core import Intent, RenderOptions
 from lode.cli.render.output import preview
 from lode.index import FileStatus
 from lode.index.search import ProspectResult
+from lode.relpath import to_native
 
 
 def render_prospect(
@@ -61,7 +62,7 @@ def render_prospect(
     muted_style = options.intent_colors.get(Intent.MUTED, "")
     for index, hit in enumerate(hits, start=1):
         title = f"#{index} · {hit.score:.3f}"
-        source = hit.primary.path
+        source = str(to_native(hit.primary.path))
         if len(hit.refs) > 1:
             source += f" (+{len(hit.refs) - 1} more)"
         if hit.heading:

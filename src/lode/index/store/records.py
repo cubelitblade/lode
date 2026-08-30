@@ -5,6 +5,7 @@ from __future__ import annotations
 import enum
 import sqlite3
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 from typing import Any
 
 
@@ -25,9 +26,13 @@ class FileStatus(enum.StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class FileRecord:
-    """One indexed path joined with its content metadata (mirrors `files` ⋈ `contents`)."""
+    """One indexed path joined with its content metadata (mirrors `files` ⋈ `contents`).
 
-    path: str
+    ``path`` is a workspace-relative :class:`~pathlib.PurePosixPath`: the
+    platform-independent domain type (see ``lode.relpath``).
+    """
+
+    path: PurePosixPath
     digest: str
     mtime: float
     size: int
@@ -38,7 +43,7 @@ class FileRecord:
 class PathRef:
     """One workspace path referencing a shared content, with its freshness."""
 
-    path: str
+    path: PurePosixPath
     status: FileStatus
 
 
@@ -86,7 +91,7 @@ class SparseMatch:
 
 def row_to_file(row: sqlite3.Row) -> FileRecord:
     return FileRecord(
-        path=row[0],
+        path=PurePosixPath(row[0]),
         digest=row[1],
         mtime=row[2],
         size=row[3],
@@ -102,7 +107,7 @@ def chunk_from_rows(rows: list[tuple[Any, ...]]) -> ChunkWithPath:
     """
     head = rows[0]
     refs = tuple(
-        PathRef(path=path, status=FileStatus(status))
+        PathRef(path=PurePosixPath(path), status=FileStatus(status))
         for path, status in sorted({(str(row[4]), str(row[5])) for row in rows})
     )
     return ChunkWithPath(

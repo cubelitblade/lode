@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -14,7 +14,7 @@ def test_discovers_files_as_workspace_relative_paths(tmp_path: Path) -> None:
     (tmp_path / "docs").mkdir()
     (tmp_path / "docs" / "b.md").write_text("b")
 
-    assert discover(tmp_path) == [Path("a.txt"), Path("docs/b.md")]
+    assert discover(tmp_path) == [PurePosixPath("a.txt"), PurePosixPath("docs/b.md")]
 
 
 def test_always_ignores_lode_data_directory(tmp_path: Path) -> None:
@@ -22,7 +22,7 @@ def test_always_ignores_lode_data_directory(tmp_path: Path) -> None:
     (tmp_path / ".lode" / "index.db").write_text("x")
     (tmp_path / "keep.txt").write_text("k")
 
-    assert discover(tmp_path) == [Path("keep.txt")]
+    assert discover(tmp_path) == [PurePosixPath("keep.txt")]
 
 
 def test_lodeignore_is_first_class(tmp_path: Path) -> None:
@@ -30,7 +30,7 @@ def test_lodeignore_is_first_class(tmp_path: Path) -> None:
     (tmp_path / "drop.log").write_text("l")
     (tmp_path / ".lodeignore").write_text("*.log\n")
 
-    assert discover(tmp_path) == [Path("keep.txt")]
+    assert discover(tmp_path) == [PurePosixPath("keep.txt")]
 
 
 def test_loads_configured_ignore_files(tmp_path: Path) -> None:
@@ -44,7 +44,7 @@ def test_loads_configured_ignore_files(tmp_path: Path) -> None:
 
     result = discover(tmp_path, ignore_files=[".gitignore"])
 
-    assert result == [Path("keep.txt")]
+    assert result == [PurePosixPath("keep.txt")]
 
 
 def test_bare_directory_pattern_ignores_subtree(tmp_path: Path) -> None:
@@ -55,7 +55,7 @@ def test_bare_directory_pattern_ignores_subtree(tmp_path: Path) -> None:
     (tmp_path / "main.txt").write_text("m")
     (tmp_path / ".lodeignore").write_text("vendor\n")
 
-    assert discover(tmp_path) == [Path("main.txt")]
+    assert discover(tmp_path) == [PurePosixPath("main.txt")]
 
 
 def test_gitignore_negation(tmp_path: Path) -> None:
@@ -63,7 +63,7 @@ def test_gitignore_negation(tmp_path: Path) -> None:
     (tmp_path / "keep.log").write_text("k")
     (tmp_path / ".lodeignore").write_text("*.log\n!keep.log\n")
 
-    assert discover(tmp_path) == [Path("keep.log")]
+    assert discover(tmp_path) == [PurePosixPath("keep.log")]
 
 
 def test_ignore_files_themselves_are_excluded(tmp_path: Path) -> None:
@@ -73,7 +73,7 @@ def test_ignore_files_themselves_are_excluded(tmp_path: Path) -> None:
 
     result = discover(tmp_path, ignore_files=[".gitignore"])
 
-    assert result == [Path("a.txt")]
+    assert result == [PurePosixPath("a.txt")]
 
 
 def test_missing_root_raises(tmp_path: Path) -> None:

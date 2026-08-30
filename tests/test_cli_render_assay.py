@@ -19,6 +19,8 @@ and is an intent/palette concern covered by `lode.cli.render`.
 
 from __future__ import annotations
 
+from pathlib import Path, PurePosixPath
+
 from rich.console import Console
 
 from lode.cli.render import RenderOptions
@@ -68,7 +70,7 @@ def _explanation(
             digest="blake3:0123456789abcdef",
             text="quantum entanglement",
             heading="Intro",
-            refs=(PathRef(path="docs/report.txt", status=FileStatus.FRESH),),
+            refs=(PathRef(path=PurePosixPath("docs/report.txt"), status=FileStatus.FRESH),),
             page=3,
             seq=2,
         ),
@@ -101,7 +103,7 @@ def test_render_assay_shows_query_and_result() -> None:
 
 def test_render_assay_shows_provenance() -> None:
     text = _render(_explanation())
-    assert "docs/report.txt > Intro (p.3)" in text
+    assert f"{Path('docs') / 'report.txt'} > Intro (p.3)" in text
 
 
 def test_render_assay_shows_four_sections() -> None:
@@ -210,7 +212,7 @@ def test_render_how_shows_provenance_and_tokenizer() -> None:
         digest="blake3:0123456789abcdef",
         text="quantum entanglement",
         heading="Intro",
-        refs=(PathRef(path="docs/report.txt", status=FileStatus.FRESH),),
+        refs=(PathRef(path=PurePosixPath("docs/report.txt"), status=FileStatus.FRESH),),
         page=3,
         seq=2,
     )
@@ -224,7 +226,7 @@ def test_render_how_shows_provenance_and_tokenizer() -> None:
         console=console,
     )
     text = console.export_text()
-    assert "docs/report.txt > Intro (p.3)" in text
+    assert f"{Path('docs') / 'report.txt'} > Intro (p.3)" in text
     assert "Lexical analyzer: simple" in text
     assert "Storage tokenizer: simple" in text
     assert "quantum entanglement" in text
@@ -236,7 +238,7 @@ def test_render_how_shows_variants() -> None:
         digest="blake3:0123456789abcdef",
         text="知识",
         heading="",
-        refs=(PathRef(path="a.txt", status=FileStatus.FRESH),),
+        refs=(PathRef(path=PurePosixPath("a.txt"), status=FileStatus.FRESH),),
         seq=0,
     )
     console = Console(record=True, force_terminal=False)
@@ -268,7 +270,7 @@ def test_render_how_caps_term_stream_by_width() -> None:
         digest="blake3:0123456789abcdef",
         text=" ".join(f"w{i}" for i in range(total)),
         heading="",
-        refs=(PathRef(path="a.txt", status=FileStatus.FRESH),),
+        refs=(PathRef(path=PurePosixPath("a.txt"), status=FileStatus.FRESH),),
         seq=0,
     )
     console = Console(record=True, force_terminal=False)
@@ -294,7 +296,7 @@ def test_render_how_terms_keep_original_order() -> None:
         digest="blake3:0123456789abcdef",
         text="zeta alpha zeta beta",
         heading="",
-        refs=(PathRef(path="a.txt", status=FileStatus.FRESH),),
+        refs=(PathRef(path=PurePosixPath("a.txt"), status=FileStatus.FRESH),),
         seq=0,
     )
     console = Console(record=True, force_terminal=False)

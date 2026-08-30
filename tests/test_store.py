@@ -9,7 +9,7 @@ raw-SQL probes open a *second* connection to read what the store wrote.
 from __future__ import annotations
 
 import sqlite3
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -76,7 +76,7 @@ def make_chunks(texts: list[str]) -> tuple[list[Chunk], list[list[float]]]:
 
 
 def file_record(path: str = "a.txt", *, digest: str = "blake3:aa", size: int = 1) -> FileRecord:
-    return FileRecord(path=path, digest=digest, mtime=1.0, size=size)
+    return FileRecord(path=PurePosixPath(path), digest=digest, mtime=1.0, size=size)
 
 
 def open_db(path: Path) -> sqlite3.Connection:
@@ -271,7 +271,7 @@ def test_replace_file_writes_files_chunks_vectors_and_fts(db_path: Path) -> None
     chunks, vectors = make_chunks(["hello world", "second chunk"])
     with Store(db_path, FakeEmbedder()) as store:
         store.replace_file(file_record(), chunks, vectors)
-        assert store.get_file("a.txt") == file_record()
+        assert store.get_file(PurePosixPath("a.txt")) == file_record()
         assert len(store.list_files()) == 1
 
     conn = open_db(db_path)
@@ -293,7 +293,7 @@ def test_replace_file_writes_files_chunks_vectors_and_fts(db_path: Path) -> None
 def test_replace_file_with_no_chunks_keeps_file_record(db_path: Path) -> None:
     with Store(db_path, FakeEmbedder()) as store:
         store.replace_file(file_record(), [], [])
-        assert store.get_file("a.txt") is not None
+        assert store.get_file(PurePosixPath("a.txt")) is not None
 
 
 def test_trigram_tokenizer_queries_by_3grams(db_path: Path) -> None:
@@ -330,7 +330,7 @@ def test_replace_file_rolls_back_on_vector_error(db_path: Path) -> None:
         with pytest.raises(DimensionMismatchError):
             store.replace_file(file_record(), chunks, bad_vectors)
         # The failed transaction left no partial state behind.
-        assert store.get_file("a.txt") is None
+        assert store.get_file(PurePosixPath("a.txt")) is None
         assert store.list_files() == []
 
 
@@ -346,8 +346,8 @@ def test_replace_file_rejects_mismatched_chunk_vector_counts(db_path: Path) -> N
 def test_remove_file_cleans_files_chunks_vectors_and_fts(db_path: Path) -> None:
     with Store(db_path, FakeEmbedder()) as store:
         store.replace_file(file_record(), *make_chunks(["hello world"]))
-        store.remove_file("a.txt")
-        assert store.get_file("a.txt") is None
+        store.remove_file(PurePosixPath("a.txt"))
+        assert store.get_file(PurePosixPath("a.txt")) is None
         assert store.list_files() == []
 
     conn = open_db(db_path)
@@ -360,7 +360,7 @@ def test_remove_file_cleans_files_chunks_vectors_and_fts(db_path: Path) -> None:
 
 def test_remove_missing_file_is_a_noop(db_path: Path) -> None:
     with Store(db_path, FakeEmbedder()) as store:
-        store.remove_file("nope.txt")
+        store.remove_file(PurePosixPath("nope.txt"))
         assert store.list_files() == []
 
 
@@ -397,7 +397,7 @@ def test_find_chunks_by_digest_returns_provenance(db_path: Path) -> None:
     chunk = found[0]
     assert chunk.digest == "blake3:cccc1111"
     assert chunk.text == "content"
-    assert chunk.primary.path == "report.pdf"
+    assert chunk.primary.path == PurePosixPath("report.pdf")
     assert chunk.heading == "Section 1"
     assert chunk.page == 2
     assert chunk.primary.status is FileStatus.FRESH

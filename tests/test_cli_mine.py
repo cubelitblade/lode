@@ -122,7 +122,7 @@ def test_mine_json_reports_changes(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     assert payload["success"] is True
     assert payload["schema_version"] == 1
     assert payload["from_scratch"] is False
-    assert payload["workspace"] == str(tmp_path)
+    assert payload["workspace"] == tmp_path.as_posix()
     assert payload["summary"] == {
         "added": 2,
         "updated": 0,

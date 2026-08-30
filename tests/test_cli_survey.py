@@ -151,7 +151,7 @@ def test_survey_json_reports_changes(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert payload["command"] == "survey"
     assert payload["success"] is True
     assert payload["schema_version"] == 1
-    assert payload["workspace"] == str(tmp_path)
+    assert payload["workspace"] == tmp_path.as_posix()
     assert payload["summary"] == {
         "unchanged": 0,
         "new": 1,
