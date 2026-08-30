@@ -192,9 +192,9 @@ def test_dig_radius_returns_section_window(tmp_path: Path, monkeypatch: pytest.M
     assert result.exit_code == 0, result.output
     short = digest.removeprefix("blake3:")[:12]
     assert f"Dug {short} with radius 1" in result.output
-    # The center chunk is marked and a neighbor card is present.
+    # The center chunk is marked and the neighbour card carries its own text.
     assert "0 · center" in result.output
-    assert result.output.count("╭─") >= 2
+    assert "iota kappa lambda" in result.output
 
 
 def test_dig_json_radius_window(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -246,6 +246,10 @@ def test_get_alias_is_hidden_and_works(tmp_path: Path, monkeypatch: pytest.Monke
     assert result.exit_code == 0, result.output
     assert text in result.output
 
-    help_out = runner.invoke(app, ["--help"]).output
-    assert "│ get " not in help_out
-    assert "│ dig " in help_out
+    # Hidden aliases must be registered but not listed as visible commands.
+    # Checked via the Typer registry, not help rendering, so the assertion
+    # does not depend on presentation (colours, borders, wrapping).
+    visible = {c.name for c in app.registered_commands if not c.hidden}
+    hidden = {c.name for c in app.registered_commands if c.hidden}
+    assert "get" in hidden
+    assert "dig" in visible

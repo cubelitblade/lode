@@ -47,14 +47,14 @@ def test_search_alias_is_hidden_and_works(tmp_path: Path, monkeypatch: pytest.Mo
     assert result.exit_code == 0, result.output
     assert "a.txt" in result.output
 
-    help_out = runner.invoke(app, ["--help"]).output
-    # Hidden aliases (status/index/search) must not show in the command list.
-    assert "│ search " not in help_out
-    assert "│ status " not in help_out
-    assert "│ index " not in help_out
-    assert "│ survey " in help_out
-    assert "│ mine " in help_out
-    assert "│ prospect " in help_out
+    # Hidden aliases (status/index/search) must be registered but not listed
+    # as visible commands. Checked via the Typer registry, not help rendering,
+    # so the assertion does not depend on presentation (colours, borders,
+    # wrapping).
+    visible = {c.name for c in app.registered_commands if not c.hidden}
+    hidden = {c.name for c in app.registered_commands if c.hidden}
+    assert {"search", "status", "index"} <= hidden
+    assert {"survey", "mine", "prospect"} <= visible
 
 
 def test_prospect_warns_stale_files_outside_results(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
