@@ -12,9 +12,8 @@ Lode focuses on document-oriented knowledge retrieval. Do not assume that Lode u
 
 Current status:
 
-* Early development stage.
-* Embedding layer is implemented.
-* Document loading, indexing, retrieval, and MCP integration are under development.
+* Embedding, ingestion (discovery/extraction/chunking), the SQLite index, hybrid retrieval, and the CLI are implemented.
+* MCP integration is not started; the CLI command layer is the intended reuse seam for it.
 
 The product vision and roadmap live in `.vscode/docs/PLAN.md`. Read it before making large changes, and link to it instead of duplicating roadmap content.
 
@@ -43,13 +42,16 @@ Current composition root:
 
 * `src/lode/config.py`
 
-Configuration models:
+Configuration models (under `Settings`):
 
-* `EmbeddingConfig`
-* `RetrievalConfig`
+* `AppConfig` (output, ignore)
+* `EmbeddingConfig` (provider: `openai_compatible` / `tei_native` / `ollama`)
+* `RetrievalConfig` (norm, fusion)
+* `ChunkingConfig`
+* `FtsConfig`
 * `IgnoreConfig`
 
-Settings are loaded through `load_settings()`.
+Settings are loaded through `load_settings()`; providers and retrieval plans are built through `build_embedder()` and `build_plan()`.
 
 Configuration precedence:
 
@@ -72,6 +74,16 @@ Keep changes focused on the requested task.
 ## Architecture
 
 Important modules:
+
+### Path conventions
+
+`src/lode/relpath.py` is the single home for workspace-relative path rules:
+
+* The domain type for workspace-relative paths is `PurePosixPath` (`FileRecord.path`, `PathRef.path`, `FailedFile.path`, and the `DetectResult`/`SyncSummary` buckets).
+* Persistence (the SQLite `files.path` column) and JSON structured fields always carry posix text; `workspace` in JSON payloads uses `as_posix()`.
+* Human-facing output (render layer, error prose, progress bars) converts to OS-native paths via `to_native()`.
+* Never mix path flavours when joining: use `root / str(rel)`, not `root / rel`.
+* `sync`'s completion report passes `None` as the path (an empty `PurePosixPath` is always truthy and would render as `.`).
 
 ### Embeddings
 
@@ -111,7 +123,46 @@ Contains embedding interfaces and implementations.
   * Returns bare vectors in input order (no `index` wrapper).
   * `424` (backend inference failure) is not retryable; only `429` is.
 
+* `ollama.py`
+
+  * Implements `OllamaEmbedder` (Ollama native API: `GET /api/tags`, `POST /api/embed`).
+
 Adding a new embedding backend should not require changes to core business logic.
+
+### Ingestion
+
+`src/lode/ingestion/`
+
+* `discover.py` — workspace walk + gitignore-style ignore rules (`pathspec`); `.lodeignore` is always loaded; returns `PurePosixPath` values.
+* `extract.py` — format detection and text extraction (txt/md, pdf via pymupdf, docx via python-docx); returns `Segment`s.
+* `split.py` — splitter abstraction (`SegmentSplitter`) and `RecursiveSegmentSplitter` over the vendored text splitter (`src/lode/_vendor/langchain_text_splitters/`).
+* `digest.py` — content addressing (`blake3:<hex>`).
+* `pipeline.py` — the two-stage update flow: `detect_changes` (classify + mark stale, never touches the embedder) and `sync` (re-embed flagged files, prune removed ones). Per-file domain failures are recorded, never abort the run.
+
+### Index
+
+`src/lode/index/`
+
+* `store/` — SQLite storage (WAL, content-addressed `contents` + `files` references, FTS5, sqlite-vec). Schema version, model, dimension, and tokenizer mismatches are refused at open time.
+* `search.py` — hybrid retrieval: dense (vec0 kNN) + sparse (BM25) fused by a pluggable `RetrievalPlan`.
+* `ranking.py` — `Norm` (min-max, softmax) and `Fusion` (linear, RRF) building blocks.
+* `explanation.py` — score explanation structures backing `assay why`.
+
+### Lexical
+
+`src/lode/lexical/`
+
+* `base.py` / `strategies.py` — `LexicalStrategy` abstraction and the FTS5 strategy registry (`unicode61`, `trigram`, native `simple`).
+* `simple/` — native SQLite extension tokenizer with pinyin folding.
+* `preview.py` — tokenization preview backing `assay how`.
+
+### CLI
+
+`src/lode/cli/`
+
+* `commands/` — typer command layer: `survey` (alias `status`), `mine` (`index`), `prospect` (`search`), `dig` (`get`), `assay why|how` (`analyze`), `config show|get|set|unset|path`. Shared plumbing (store opening, error exits, progress) lives in `commands/_common.py`.
+* `render/` — all human-readable output; separated from commands so rendering can be tested with a recording console.
+* `messages.py` (project root) — user-facing error templates; exception messages are diagnostics, user text comes from this table.
 
 ## Development Workflow
 
@@ -119,7 +170,7 @@ The project uses `uv`.
 
 Requirements:
 
-* Python >= 3.13
+* Python >= 3.12
 * `src/` layout
 
 Common commands:
@@ -131,6 +182,8 @@ uv run ruff check
 uv run pyright
 uv run pytest
 ```
+
+CI runs ruff, pyright, and pytest on Linux/macOS/Windows across Python 3.12–3.14, so keep path handling and output platform-neutral (see Path conventions above).
 
 ## Code Style
 
@@ -164,7 +217,7 @@ Prefer:
 
 * `TypedDict` for structured dictionary payloads.
 * `Self` for self-returning methods.
-* `TypeAlias` for complex reusable types.
+* `type X = ...` (PEP 695) for reusable type aliases.
 * `dataclass(slots=True)` or pydantic models over manually written constructors.
 
 ### Exceptions
@@ -247,10 +300,11 @@ Rules:
   Prefer testing semantic output, command behavior, exit codes, and
   structured data where possible.
 
-Current HTTP testing approach:
+Current testing approaches:
 
-* Use `httpx.MockTransport` for fake OpenAI-compatible servers.
-* Assert both returned behavior and outgoing requests.
+* `httpx.MockTransport` for fake embedding servers; assert both returned behavior and outgoing requests.
+* Render-layer tests use `Console(record=True, force_terminal=False)` + `export_text()`.
+* Pyright strict covers `src` and `tests`, so test code must type-check too.
 
 When adding tests:
 
