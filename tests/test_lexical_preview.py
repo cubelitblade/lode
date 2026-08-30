@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 
 from lode.lexical import STRATEGIES, tokenize_text
+from lode.lexical.errors import ExtensionCapability
 
 
 def test_unicode61_splits_words_and_folds_case() -> None:
@@ -23,13 +24,13 @@ def test_trigram_produces_three_char_grams() -> None:
     assert tokens == ["abc", "bcd"]
 
 
-def test_simple_indexes_han_characters_and_pinyin() -> None:
+def test_simple_indexes_han_characters_and_pinyin(native_extensions: None) -> None:
     tokens = tokenize_text(STRATEGIES["simple"], "知识")
     # Each Han character is indexed alongside its pinyin reading.
     assert tokens == ["z", "zhi", "知", "s", "shi", "z", "zhi", "识"]
 
 
-def test_jieba_index_side_is_character_level() -> None:
+def test_jieba_index_side_is_character_level(native_extensions: None) -> None:
     tokens = tokenize_text(STRATEGIES["jieba"], "知识挖掘")
     # At index time jieba stores the same Han-character + pinyin stream as
     # ``simple``; word-level segmentation happens on the query side via
@@ -50,7 +51,12 @@ def test_duplicates_are_kept_in_document_order() -> None:
 
 
 @pytest.mark.parametrize("name", sorted(STRATEGIES))
-def test_every_strategy_returns_a_list(name: str) -> None:
+def test_every_strategy_returns_a_list(
+    name: str,
+    extension_capability: ExtensionCapability,
+) -> None:
+    if STRATEGIES[name].uses_helper and not extension_capability.can_load:
+        pytest.skip(extension_capability.skip_reason())
     result = tokenize_text(STRATEGIES[name], "mixed 中文 text")
     assert isinstance(result, list)
     assert all(isinstance(token, str) for token in result)

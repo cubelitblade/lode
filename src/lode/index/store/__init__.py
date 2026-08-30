@@ -14,6 +14,7 @@ from lode.index.store.core import BUSY_TIMEOUT_MS, Store
 from lode.index.store.errors import (
     DimensionMismatchError,
     EmbedderUnavailableError,
+    ExtensionLoadError,
     MissingEmbedderError,
     SchemaVersionError,
     StoreError,
@@ -44,6 +45,7 @@ __all__ = [
     "DenseMatch",
     "DimensionMismatchError",
     "EmbedderUnavailableError",
+    "ExtensionLoadError",
     "FileRecord",
     "FileStatus",
     "IndexIssue",

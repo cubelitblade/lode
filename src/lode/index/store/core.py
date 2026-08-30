@@ -16,6 +16,7 @@ from lode.embeddings.base import Embedder
 from lode.index.store.errors import (
     DimensionMismatchError,
     EmbedderUnavailableError,
+    ExtensionLoadError,
     MissingEmbedderError,
     SchemaVersionError,
     StoreError,
@@ -35,6 +36,7 @@ from lode.index.store.records import (
 from lode.index.store.schema import SCHEMA_VERSION, create_schema
 from lode.ingestion import Chunk
 from lode.lexical import HELPER_SQL, STRATEGIES
+from lode.lexical.errors import detect_extension_capability
 
 BUSY_TIMEOUT_MS = 5000
 
@@ -108,9 +110,22 @@ class Store:
         # lowercase hex, so case-sensitive matching both preserves that
         # contract and lets prefix lookups use idx_chunks_digest.
         self._conn.execute("PRAGMA case_sensitive_like=ON")
-        self._conn.enable_load_extension(True)
-        sqlite_vec.load(self._conn)
-        self._conn.enable_load_extension(False)
+        # Whether the interpreter can load extensions is a build property;
+        # report it clearly instead of a bare AttributeError cascade.
+        if not hasattr(self._conn, "enable_load_extension"):
+            raise ExtensionLoadError(
+                detect_extension_capability(self._conn),
+                detail="the index needs the sqlite-vec extension",
+            )
+        try:
+            self._conn.enable_load_extension(True)
+            sqlite_vec.load(self._conn)
+            self._conn.enable_load_extension(False)
+        except sqlite3.Error as exc:
+            raise ExtensionLoadError(
+                detect_extension_capability(self._conn),
+                detail=f"sqlite-vec failed to load: {exc}",
+            ) from exc
 
     def _require_embedder(self) -> Embedder:
         if self._embedder is None:

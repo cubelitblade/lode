@@ -25,6 +25,7 @@ from lode.config import DEFAULT_TOKENIZER, ConfigVersionError, Settings, load_se
 from lode.embeddings.base import Embedder
 from lode.index import (
     EmbedderUnavailableError,
+    ExtensionLoadError,
     Store,
     StoreError,
     check_index_compatibility,
@@ -129,7 +130,9 @@ def store_failure(exc: Exception, *, command: str, as_json: bool) -> NoReturn:
     Codes without a template fall back to the exception's diagnostic message.
     """
     code = getattr(exc, "code", "store_error")
-    fields = exc.template_fields() if isinstance(exc, StoreError) else {}
+    # ``ExtensionLoadError`` is not a ``StoreError`` but carries the same
+    # ``template_fields`` contract; both fill their message template.
+    fields = exc.template_fields() if isinstance(exc, (StoreError, ExtensionLoadError)) else {}
     text = error_text(code, **fields)
     if text is None:
         block(str(exc), code=code, as_json=as_json, command=command)
@@ -164,7 +167,7 @@ def open_store(
         block(text.error, code=issue.code, as_json=as_json, command=command, hint=text.hint or None)
     try:
         return Store(db_path, embedder, tokenizer=tokenizer, meta=meta)
-    except (StoreError, EmbedderUnavailableError) as exc:
+    except (StoreError, EmbedderUnavailableError, ExtensionLoadError) as exc:
         store_failure(exc, command=command, as_json=as_json)
 
 

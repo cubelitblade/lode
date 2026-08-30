@@ -70,6 +70,16 @@ _TEMPLATES: Final[Mapping[str, ErrorText]] = {
         hint="Run `lode mine --from-scratch` to reshape it, or switch back to that model.",
     ),
     "config_invalid": ErrorText(error="The lode cannot use this configuration: {detail}."),
+    "extension_load": ErrorText(
+        error=(
+            "This Python cannot load SQLite extensions (python {python}, sqlite {sqlite_version}, "
+            "SQLITE_OMIT_LOAD_EXTENSION={omit_load_extension}), so lode cannot load its native index extension."
+        ),
+        hint=(
+            "Use a Python built with --enable-loadable-sqlite-extensions "
+            "(e.g. `uv python install`), then run the command again."
+        ),
+    ),
 }
 
 

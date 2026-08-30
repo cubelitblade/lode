@@ -6,6 +6,8 @@ everything else runs through the actual code under test.
 
 from __future__ import annotations
 
+import importlib.metadata
+import sys
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 
@@ -17,9 +19,44 @@ from lode.index import Store
 from lode.index.ranking import LinearFusion, MinmaxNorm, RetrievalPlan
 from lode.ingestion.pipeline import SyncSummary, detect_changes, sync
 from lode.ingestion.split import RecursiveSegmentSplitter
+from lode.lexical.errors import ExtensionCapability, detect_extension_capability
+from lode.lexical.simple.native import _library_path  # pyright: ignore[reportPrivateUsage]
 from tests.fakes import FailingEmbedder, FakeEmbedder, file_record, make_chunks
 
 runner = CliRunner()
+
+
+def _sqlite_vec_version() -> str:
+    """The installed sqlite-vec distribution version, or a fallback marker."""
+    try:
+        return importlib.metadata.version("sqlite-vec")
+    except importlib.metadata.PackageNotFoundError:
+        return "not installed"
+
+
+def _simple_library_path() -> str:
+    """The bundled ``simple`` library path for this platform, or a marker."""
+    try:
+        return _library_path()
+    except RuntimeError:
+        return "not bundled for this platform"
+
+
+def pytest_report_header(config: pytest.Config, start_path: Path) -> list[str]:  # pyright: ignore[reportUnusedFunction]  # pytest hook: called by the runner, not referenced directly
+    """Print the extension-loading capability matrix on every run.
+
+    Lets CI logs show *why* a platform can or cannot load sqlite-vec / the
+    ``simple`` tokenizer without needing a dedicated diagnostic step.
+    """
+    cap = detect_extension_capability()
+    return [
+        f"python: {cap.python} ({sys.executable})",
+        f"sqlite: {cap.sqlite_version}",
+        f"enable_load_extension: {cap.can_load}",
+        f"SQLITE_OMIT_LOAD_EXTENSION: {'present' if cap.omit_load_extension else 'absent'}",
+        f"sqlite-vec: {_sqlite_vec_version()}",
+        f"simple library: {_simple_library_path()}",
+    ]
 
 
 @pytest.fixture(autouse=True)
@@ -41,6 +78,24 @@ def _isolate_user_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
     monkeypatch.setattr("lode.config.user_config_path", lambda: user_path)
     monkeypatch.setattr("lode.cli.commands.config.user_config_path", lambda: user_path)
     monkeypatch.chdir(tmp_path)
+
+
+@pytest.fixture(scope="session")
+def extension_capability() -> ExtensionCapability:
+    """Whether this Python's sqlite3 module can load shared extensions.
+
+    Session-scoped so the probe runs once; tests that need native extensions
+    (sqlite-vec, the ``simple`` tokenizer) skip when ``can_load`` is False
+    instead of failing at fixture setup.
+    """
+    return detect_extension_capability()
+
+
+@pytest.fixture
+def native_extensions(extension_capability: ExtensionCapability) -> None:
+    """Skip a test when the interpreter cannot load native SQLite extensions."""
+    if not extension_capability.can_load:
+        pytest.skip(extension_capability.skip_reason())
 
 
 @pytest.fixture

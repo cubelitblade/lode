@@ -7,6 +7,9 @@ wording lives in the ``lode.messages`` template table, keyed by each class's
 ``EmbedderUnavailableError`` is defined in the embedding layer and re-exported
 here so embedding backends can raise it without depending on the index
 package; callers that catch it alongside store errors keep a single import.
+``ExtensionLoadError`` follows the same pattern from the lexical layer: the
+``simple`` tokenizer and the vec0 index both load shared SQLite extensions,
+and the error lives where the capability is detected.
 """
 
 from __future__ import annotations
@@ -14,6 +17,7 @@ from __future__ import annotations
 from typing import ClassVar
 
 from lode.embeddings.errors import EmbedderUnavailableError
+from lode.lexical.errors import ExtensionLoadError
 
 # Diagnostic message templates; never shown to users (see module docstring).
 _TOKENIZER_MISMATCH_DETAIL = "index was built with tokenizer {stored!r}, but {current!r} is configured"
@@ -22,6 +26,7 @@ _DIMENSION_MISMATCH_DETAIL = "vector has {current} dimensions; the index expects
 __all__ = [
     "DimensionMismatchError",
     "EmbedderUnavailableError",
+    "ExtensionLoadError",
     "MissingEmbedderError",
     "SchemaVersionError",
     "StoreError",

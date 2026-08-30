@@ -35,7 +35,7 @@ from lode.cli.render import RenderOptions
 from lode.cli.render.output import echo_json, json_ok
 from lode.config import Settings
 from lode.embeddings.base import Embedder
-from lode.index import EmbedderUnavailableError, Store, StoreError, reset_index
+from lode.index import EmbedderUnavailableError, ExtensionLoadError, Store, StoreError, reset_index
 from lode.ingestion.pipeline import (
     DetectResult,
     SyncSummary,
@@ -80,7 +80,7 @@ def mine(
         # reset leaves the old index intact.
         try:
             reset_index(db_path, embedder, tokenizer=settings.fts.strategy)
-        except (StoreError, EmbedderUnavailableError) as exc:
+        except (StoreError, EmbedderUnavailableError, ExtensionLoadError) as exc:
             store_failure(exc, command="mine", as_json=as_json)
 
     store = open_store(workspace, embedder, command="mine", as_json=as_json, tokenizer=settings.fts.strategy)
@@ -97,7 +97,7 @@ def mine(
             return
         try:
             store = Store(db_path, embedder, tokenizer=settings.fts.strategy)
-        except (StoreError, EmbedderUnavailableError) as exc:
+        except (StoreError, EmbedderUnavailableError, ExtensionLoadError) as exc:
             store_failure(exc, command="mine", as_json=as_json)
         # A fresh database has no stored model to gate against.
         with store:

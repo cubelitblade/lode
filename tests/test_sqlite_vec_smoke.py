@@ -15,12 +15,16 @@ import pytest
 # import line and should be revisited after a dependency upgrade.
 import sqlite_vec  # pyright: ignore[reportMissingTypeStubs]
 
+from lode.lexical.errors import ExtensionCapability
+
 VEC_VERSION_PREFIX = "v0.1"
 
 
 @pytest.fixture
-def db() -> sqlite3.Connection:
+def db(extension_capability: ExtensionCapability) -> sqlite3.Connection:
     """In-memory connection with the sqlite-vec extension loaded."""
+    if not extension_capability.can_load:
+        pytest.skip(extension_capability.skip_reason())
     connection = sqlite3.connect(":memory:")
     connection.enable_load_extension(True)
     sqlite_vec.load(connection)

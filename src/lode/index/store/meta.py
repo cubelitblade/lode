@@ -74,10 +74,14 @@ def read_index_meta(db_path: Path) -> IndexMeta | None:
         return None
     try:
         # The schema declares vec0/FTS5 virtual tables; loading the extension
-        # keeps even eager schema parsing working on any connection.
-        conn.enable_load_extension(True)
-        sqlite_vec.load(conn)
-        conn.enable_load_extension(False)
+        # keeps even eager schema parsing working on any connection. When the
+        # interpreter cannot load extensions, the meta table (a plain table)
+        # is still readable — the Store constructor reports the capability
+        # failure with a clear error instead.
+        if hasattr(conn, "enable_load_extension"):
+            conn.enable_load_extension(True)
+            sqlite_vec.load(conn)
+            conn.enable_load_extension(False)
         has_meta = conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'meta'").fetchone()
         if has_meta is None:
             return None
