@@ -24,9 +24,21 @@ _LIBRARIES: dict[tuple[str, str], tuple[str, str]] = {
     ("linux", "aarch64"): ("linux", "libsimple.so"),
     ("darwin", "arm64"): ("darwin/arm64", "libsimple.dylib"),
     ("darwin", "x86_64"): ("darwin/x86_64", "libsimple.dylib"),
-    ("win32", "arm64"): ("win32/arm64", "simple.dll"),
-    ("win32", "x86_64"): ("win32/x86_64", "simple.dll"),
+    ("win32", "arm64"): ("windows/arm64", "simple.dll"),
+    ("win32", "x86_64"): ("windows/x86_64", "simple.dll"),
 }
+
+#: ``platform.machine()`` spellings that all mean x86-64.
+_X86_64_MACHINES = frozenset({"x86_64", "amd64", "x86-64"})
+
+
+def _normalized_machine() -> str:
+    """Return ``platform.machine()`` normalized to the release-asset naming.
+
+    Windows reports ``AMD64`` for x86-64, which must map to ``x86_64``.
+    """
+    machine = platform.machine().lower()
+    return "x86_64" if machine in _X86_64_MACHINES else machine
 
 
 def _resource_path(name: str) -> str:
@@ -39,7 +51,7 @@ def _library_path() -> str:
 
     Raises ``RuntimeError`` when no binary is bundled for this platform.
     """
-    machine = platform.machine().lower()
+    machine = _normalized_machine()
     key = (sys.platform, machine)
     entry = _LIBRARIES.get(key)
     if entry is None:
