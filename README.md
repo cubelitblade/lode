@@ -140,3 +140,39 @@ lode --workspace <path> dig <digest>
 ```
 
 This returns the complete content associated with the digest.
+
+## FAQ
+
+### Why does lode fail to load SQLite extensions on macOS?
+
+#### Possible reason
+
+Lode requires SQLite extension loading for certain features.
+
+Some Python builds, especially those linked against SQLite libraries without
+loadable extension support, may not provide
+`sqlite3.Connection.enable_load_extension()`.
+
+This depends on how Python and SQLite were built, not only on the Python version.
+CPython documents that loadable SQLite extension support is disabled by default
+and notes macOS as a notable platform where the underlying SQLite library may
+lack this capability.
+
+You can verify the capability with:
+
+```python
+import sqlite3
+
+print(hasattr(sqlite3.Connection, "enable_load_extension"))
+
+```
+
+#### Solution
+
+- Use a separately installed Python distribution instead of the system-provided Python.
+- In CI environments, explicitly configure the Python version and interpreter used by `uv`
+  to avoid relying on the runner's preinstalled Python.
+
+> For more information, see:
+> - https://github.com/python/cpython/blob/main/Doc/library/sqlite3.rst
+> - https://github.com/python/cpython/blob/main/Doc/using/configure.rst
