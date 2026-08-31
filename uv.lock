@@ -10,6 +10,17 @@ resolution-markers = [
     "python_full_version < '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 
+[manifest]
+members = [
+    "lode",
+    "lode-simple-native-linux-aarch64",
+    "lode-simple-native-linux-x86-64",
+    "lode-simple-native-macos-arm64",
+    "lode-simple-native-macos-x86-64",
+    "lode-simple-native-win-amd64",
+    "lode-simple-native-win-arm64",
+]
+
 [[package]]
 name = "aiohappyeyeballs"
 version = "2.7.1"
@@ -563,6 +574,22 @@ wheels = [
 ]
 
 [[package]]
+name = "hatchling"
+version = "1.32.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "packaging" },
+    { name = "pathspec" },
+    { name = "pluggy" },
+    { name = "tomlkit" },
+    { name = "trove-classifiers" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/69/08/33331757185504aae48b8d9bd78cec03a76e3aecfb52e549d05a2347c0dd/hatchling-1.32.0.tar.gz", hash = "sha256:0bdbde4a52b06c37e3eca395f85a762bf0ef06fe374fd8ae429dc6be10230f5f", size = 57783, upload-time = "2026-08-11T05:03:44.114Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a9/84/1798b6d85ecde0e31546004efd25c5de1b1f49250644a60cce460e12593a/hatchling-1.32.0-py3-none-any.whl", hash = "sha256:0e17c9c3b9aa7c625acc8d0f5b622f107d5049af9ecf5ada4de1aada5be7cdbc", size = 78435, upload-time = "2026-08-11T05:03:42.644Z" },
+]
+
+[[package]]
 name = "hf-xet"
 version = "1.6.0"
 source = { registry = "https://pypi.org/simple" }
@@ -659,6 +686,12 @@ source = { editable = "." }
 dependencies = [
     { name = "blake3" },
     { name = "httpx" },
+    { name = "lode-simple-native-linux-aarch64", marker = "platform_machine == 'aarch64' and sys_platform == 'linux'" },
+    { name = "lode-simple-native-linux-x86-64", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "lode-simple-native-macos-arm64", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
+    { name = "lode-simple-native-macos-x86-64", marker = "platform_machine == 'x86_64' and sys_platform == 'darwin'" },
+    { name = "lode-simple-native-win-amd64", marker = "platform_machine == 'AMD64' and sys_platform == 'win32'" },
+    { name = "lode-simple-native-win-arm64", marker = "platform_machine == 'ARM64' and sys_platform == 'win32'" },
     { name = "pathspec" },
     { name = "platformdirs" },
     { name = "pydantic" },
@@ -674,6 +707,7 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "build" },
+    { name = "hatchling" },
     { name = "pyright" },
     { name = "pytest" },
     { name = "ruff" },
@@ -689,6 +723,12 @@ evals = [
 requires-dist = [
     { name = "blake3", specifier = ">=1.0.9" },
     { name = "httpx", specifier = ">=0.28.1" },
+    { name = "lode-simple-native-linux-aarch64", marker = "platform_machine == 'aarch64' and sys_platform == 'linux'", editable = "packages/lode-simple-native-linux-aarch64" },
+    { name = "lode-simple-native-linux-x86-64", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", editable = "packages/lode-simple-native-linux-x86_64" },
+    { name = "lode-simple-native-macos-arm64", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", editable = "packages/lode-simple-native-macos-arm64" },
+    { name = "lode-simple-native-macos-x86-64", marker = "platform_machine == 'x86_64' and sys_platform == 'darwin'", editable = "packages/lode-simple-native-macos-x86_64" },
+    { name = "lode-simple-native-win-amd64", marker = "platform_machine == 'AMD64' and sys_platform == 'win32'", editable = "packages/lode-simple-native-win-amd64" },
+    { name = "lode-simple-native-win-arm64", marker = "platform_machine == 'ARM64' and sys_platform == 'win32'", editable = "packages/lode-simple-native-win-arm64" },
     { name = "pathspec", specifier = ">=0.11.0" },
     { name = "platformdirs", specifier = ">=4.2.0" },
     { name = "pydantic", specifier = ">=2.13.4" },
@@ -704,6 +744,7 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "build", specifier = ">=1.6.0" },
+    { name = "hatchling", specifier = ">=1.32" },
     { name = "pyright", specifier = ">=1.1.411" },
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "ruff", specifier = ">=0.16.3" },
@@ -714,6 +755,36 @@ evals = [
     { name = "pandas", specifier = ">=2.2.0" },
     { name = "pyarrow", specifier = ">=18.0.0" },
 ]
+
+[[package]]
+name = "lode-simple-native-linux-aarch64"
+version = "0.7.1"
+source = { editable = "packages/lode-simple-native-linux-aarch64" }
+
+[[package]]
+name = "lode-simple-native-linux-x86-64"
+version = "0.7.1"
+source = { editable = "packages/lode-simple-native-linux-x86_64" }
+
+[[package]]
+name = "lode-simple-native-macos-arm64"
+version = "0.7.1"
+source = { editable = "packages/lode-simple-native-macos-arm64" }
+
+[[package]]
+name = "lode-simple-native-macos-x86-64"
+version = "0.7.1"
+source = { editable = "packages/lode-simple-native-macos-x86_64" }
+
+[[package]]
+name = "lode-simple-native-win-amd64"
+version = "0.7.1"
+source = { editable = "packages/lode-simple-native-win-amd64" }
+
+[[package]]
+name = "lode-simple-native-win-arm64"
+version = "0.7.1"
+source = { editable = "packages/lode-simple-native-win-arm64" }
 
 [[package]]
 name = "lxml"
@@ -1607,6 +1678,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/21/3b/6c24bec5be5e743ffd99576daa5cc077722fc7d5bbc00bd133fa0c698dc6/tqdm-4.70.0.tar.gz", hash = "sha256:55b0b0dbd97462d06ebee91e4dac24ed4d4702be82b24f07e6c1d27e08cea220", size = 795438, upload-time = "2026-07-27T11:33:15.271Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f9/1c/01bfd571a64e7f270e6bab5e33777debe0edc56759233ce84f27dec92d14/tqdm-4.70.0-py3-none-any.whl", hash = "sha256:7f585706bfddbdebf89daac705b2dfcc16890130727d3197ca62c732b4310953", size = 80184, upload-time = "2026-07-27T11:33:13.167Z" },
+]
+
+[[package]]
+name = "trove-classifiers"
+version = "2026.6.1.19"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/c2/e3/7ca82ee24c82d344584abd5b8637b3bd056f2900226e8d82fc22f1184b92/trove_classifiers-2026.6.1.19.tar.gz", hash = "sha256:c5132b4b61a829d11cfbd2d72e97f20a45ed6edb95e45c5efdeb5e00836b2745", size = 17059, upload-time = "2026-06-01T19:41:34.649Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7c/a4/81502f486f01db95bc8320646a8a12511f5e556cb63d5e224d91816605c4/trove_classifiers-2026.6.1.19-py3-none-any.whl", hash = "sha256:ab4c4ec93cc4a4e7815fa759906e05e6bb3f2fbd92ea0f897288c6a43efd15b3", size = 14211, upload-time = "2026-06-01T19:41:33.434Z" },
 ]
 
 [[package]]

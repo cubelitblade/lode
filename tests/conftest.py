@@ -20,7 +20,6 @@ from lode.index.ranking import LinearFusion, MinmaxNorm, RetrievalPlan
 from lode.ingestion.pipeline import SyncSummary, detect_changes, sync
 from lode.ingestion.split import RecursiveSegmentSplitter
 from lode.lexical.errors import ExtensionCapability, detect_extension_capability
-from lode.lexical.simple.native import _library_path  # pyright: ignore[reportPrivateUsage]
 from tests.fakes import FailingEmbedder, FakeEmbedder, file_record, make_chunks
 
 runner = CliRunner()
@@ -35,10 +34,12 @@ def _sqlite_vec_version() -> str:
 
 
 def _simple_library_path() -> str:
-    """The bundled ``simple`` library path for this platform, or a marker."""
+    """The ``simple`` library path for this platform, or a marker."""
     try:
-        return _library_path()
-    except RuntimeError:
+        from lode_simple_native import library_path
+
+        return library_path()
+    except ModuleNotFoundError:
         return "not bundled for this platform"
 
 
