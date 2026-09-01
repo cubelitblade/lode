@@ -1,0 +1,150 @@
+name: Release lode
+
+on:
+  push:
+    tags:
+      - "lode/v*.*.*"
+      - "lode/test/v*.*.*"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build lode
+    runs-on: ubuntu-24.04
+    outputs:
+      release_type: ${{ steps.tag.outputs.release_type }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+
+      - name: Determine release type
+        id: tag
+        shell: bash
+        run: |
+          python - <<'EOF'
+          import os
+
+          tag = "${{ github.ref_name }}"
+
+          if tag.startswith("lode/test/"):
+              release_type = "test"
+          elif tag.startswith("lode/v"):
+              release_type = "stable"
+          else:
+              raise SystemExit(f"Unknown tag format: {tag}")
+
+          print(f"release_type={release_type}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"release_type={release_type}\n")
+          EOF
+
+      - name: Verify tag matches pyproject version
+        shell: bash
+        run: |
+          uv run --no-project --with packaging python - <<'EOF'
+          import re
+          from pathlib import Path
+          from packaging.version import Version
+
+          text = Path("pyproject.toml").read_text()
+          m = re.search(r'^version\s*=\s*"([^"]+)"', text, re.M)
+          if not m:
+              raise SystemExit("version not found in pyproject.toml")
+          pkg_version = Version(m.group(1))
+
+          tag = "${{ github.ref_name }}"
+          if tag.startswith("lode/test/"):
+              version = tag.removeprefix("lode/test/")
+          elif tag.startswith("lode/"):
+              version = tag.removeprefix("lode/")
+          else:
+              raise RuntimeError("invalid tag")
+          tag_version = Version(version.removeprefix("v"))
+
+          print(f"pyproject version: {pkg_version}")
+          print(f"tag version:       {tag_version}")
+          if pkg_version != tag_version:
+              raise SystemExit(f"Version mismatch: pyproject ({pkg_version}) != tag ({tag_version})")
+          EOF
+
+      - name: Build wheel
+        run: uv build --wheel
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: wheel-lode
+          path: dist/*.whl
+
+  release:
+    name: Create GitHub release
+    needs: [build]
+    if: ${{ needs.build.outputs.release_type == 'stable' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download all wheels
+        uses: actions/download-artifact@v8.0.1
+        with:
+          path: wheels
+          merge-multiple: true
+
+      - name: GitHub release
+        uses: softprops/action-gh-release@v3.0.3
+        with:
+          prerelease: ${{
+            contains(github.ref_name, '-alpha.') ||
+            contains(github.ref_name, '-beta.') ||
+            contains(github.ref_name, '-rc.') }}
+          generate_release_notes: true
+          files: wheels/*.whl
+
+  publish-testpypi:
+    name: Publish to TestPyPI
+    needs: [build]
+    if: ${{ needs.build.outputs.release_type == 'test' }}
+    runs-on: ubuntu-24.04
+    environment: testpypi
+    permissions:
+      id-token: write
+    steps:
+      - name: Download all wheels
+        uses: actions/download-artifact@v8.0.1
+        with:
+          path: wheels
+          merge-multiple: true
+
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@v1.14.2
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          packages-dir: wheels
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: [build, release]
+    if: ${{ needs.build.outputs.release_type == 'stable' }}
+    runs-on: ubuntu-24.04
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - name: Download all wheels
+        uses: actions/download-artifact@v8.0.1
+        with:
+          path: wheels
+          merge-multiple: true
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@v1.14.2
+        with:
+          packages-dir: wheels
