@@ -4,10 +4,10 @@ This document lists third-party components included in Lode's distribution, incl
 
 ## Overview
 
-| Author         | Name                     | Version | Distribution type | License |
-| -------------- | ------------------------ | ------- | ----------------- | ------- |
-| LangChain, Inc | langchain_text_splitters | 1.1.2   | vendored          | MIT     |
-| Wang Fenjin    | simple                   | 0.7.1   | bundled           | MIT     |
+| Author         | Name                     | Version | Integration                | License |
+| -------------- | ------------------------ | ------- | -------------------------- | ------- |
+| LangChain, Inc | langchain_text_splitters | 1.1.2   | Vendored source            | MIT     |
+| Wang Fenjin    | simple                   | 0.7.1   | Runtime package dependency | MIT     |
 
 ## Details
 
@@ -68,15 +68,27 @@ SOFTWARE.
 
 #### How it is used
 
-This project bundles prebuilt binaries under `src/lode/lexical/simple/native`.
+Lode depends on `lode-simple-native`, a separate distribution package
+which provides prebuilt native binaries of the simple SQLite extension.
 
-The binary is included to provide Chinese text tokenization support.
+The native extension is distributed separately to support platform-specific
+packaging while keeping the main Lode package platform independent.
+
+The binary is distributed to provide Chinese text tokenization support.
+
+#### Distribution
+
+Package:
+`lode-simple-native`
+
+PyPI:
+https://pypi.org/project/lode-simple-native/
 
 #### License
 
 The original license is available at https://github.com/wangfenjin/simple/blob/master/LICENSE.
 
-The original project is dual-licensed under MIT and GPL-3.0-or-later. This project uses the MIT license option.
+The original project is dual-licensed under MIT and GPL-3.0-or-later. This distribution uses the MIT license option.
 
 A copy of the MIT portion of the license text is included below.
 
