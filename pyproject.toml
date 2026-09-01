@@ -1,5 +1,5 @@
 [project]
-name = "lode"
+name = "lode-cli"
 version = "0.1.0a1"
 description = "Lode is a local-first knowledge mining engine that turns your workspace into a searchable knowledge lode."
 readme = "README.md"
