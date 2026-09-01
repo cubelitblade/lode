@@ -1,0 +1,163 @@
+name: Release lode simple native
+
+on:
+  push:
+    tags:
+      - "lode-simple-native/v*.*.*"
+      - "lode-simple-native/test/v*.*.*"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    outputs:
+      release_type: ${{ steps.tag.outputs.release_type }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux-x86_64
+          - runner: ubuntu-24.04-arm
+            platform: linux-aarch64
+          - runner: macos-26
+            platform: macos-arm64
+          - runner: macos-26-intel
+            platform: macos-x86_64
+          - runner: windows-2025
+            platform: windows-amd64
+          - runner: windows-11-arm
+            platform: windows-arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+
+      - name: Determine release type
+        id: tag
+        shell: bash
+        run: |
+          python - <<'EOF'
+          import os
+
+          tag = "${{ github.ref_name }}"
+
+          if tag.startswith("lode-simple-native/test/"):
+              release_type = "test"
+          elif tag.startswith("lode-simple-native/v"):
+              release_type = "stable"
+          else:
+              raise SystemExit(f"Unknown tag format: {tag}")
+
+          print(f"release_type={release_type}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"release_type={release_type}\n")
+          EOF
+
+      - name: Verify tag matches pyproject version
+        shell: bash
+        run: |
+          uv run --no-project --with packaging python - <<'EOF'
+          import re
+          from pathlib import Path
+          from packaging.version import Version
+
+          text = Path("packages/lode-simple-native/pyproject.toml").read_text()
+          m = re.search(r'^version\s*=\s*"([^"]+)"', text, re.M)
+          if not m:
+              raise SystemExit("version not found in pyproject.toml")
+          pkg_version = Version(m.group(1))
+
+          tag = "${{ github.ref_name }}"
+          if tag.startswith("lode-simple-native/test/"):
+              version = tag.removeprefix("lode-simple-native/test/")
+          elif tag.startswith("lode-simple-native/"):
+              version = tag.removeprefix("lode-simple-native/")
+          else:
+              raise RuntimeError("invalid tag")
+          tag_version = Version(version.removeprefix("v"))
+
+          print(f"pyproject version: {pkg_version}")
+          print(f"tag version:       {tag_version}")
+          if pkg_version != tag_version:
+              raise SystemExit(f"Version mismatch: pyproject ({pkg_version}) != tag ({tag_version})")
+          EOF
+
+      - name: Build wheel
+        run: uv build --package lode-simple-native --wheel
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: wheel-${{ matrix.platform }}
+          path: dist/*.whl
+
+  release:
+    name: Create GitHub release
+    needs: [build]
+    if: ${{ needs.build.outputs.release_type == 'stable' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download all wheels
+        uses: actions/download-artifact@v8.0.1
+        with:
+          path: wheels
+          merge-multiple: true
+
+      - name: GitHub release
+        uses: softprops/action-gh-release@v3.0.3
+        with:
+          generate_release_notes: true
+          files: wheels/*.whl
+
+  publish-testpypi:
+    name: Publish to TestPyPI
+    needs: [build]
+    if: ${{ needs.build.outputs.release_type == 'test' }}
+    runs-on: ubuntu-24.04
+    environment: testpypi
+    permissions:
+      id-token: write
+    steps:
+      - name: Download all wheels
+        uses: actions/download-artifact@v8.0.1
+        with:
+          path: wheels
+          merge-multiple: true
+
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@v1.14.2
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          packages-dir: wheels
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: [build, release]
+    if: ${{ needs.build.outputs.release_type == 'stable' }}
+    runs-on: ubuntu-24.04
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - name: Download all wheels
+        uses: actions/download-artifact@v8.0.1
+        with:
+          path: wheels
+          merge-multiple: true
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@v1.14.2
+        with:
+          packages-dir: wheels
