@@ -13,6 +13,7 @@ from typing import Annotated
 
 import typer
 
+from lode import __version__
 from lode.cli.render.assay import render_assay as render_assay  # re-exported for lode.cli.render_assay
 from lode.cli.render.assay import render_how as render_how  # re-exported for lode.cli.render_how
 from lode.cli.render.dig import render_dig as render_dig  # re-exported for lode.cli.render_dig
@@ -28,7 +29,7 @@ app = typer.Typer(
 )
 
 
-@app.callback()
+@app.callback(invoke_without_command=True)
 def main(
     ctx: typer.Context,
     workspace: Annotated[
@@ -42,8 +43,15 @@ def main(
             help="Workspace to operate on.",
         ),
     ] = Path("."),
+    version: Annotated[
+        bool,
+        typer.Option("--version", "-v", help="Show version and exit.", is_eager=True),
+    ] = False,
 ) -> None:
     """Application-level options shared by every command."""
+    if version:
+        typer.echo(f"Lode {__version__}")
+        raise typer.Exit()
     ctx.obj = workspace
 
 
