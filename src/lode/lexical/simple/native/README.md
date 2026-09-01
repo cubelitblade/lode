@@ -6,15 +6,14 @@ extension that indexes each Han character plus its pinyin, and provides
 
 ## Layout
 
-The shared library is platform-specific; each OS/architecture has its own
-binary under a matching subdirectory:
+The shared library is platform-specific and ships in the `lode-simple-native`
+distribution, selected by pip via wheel tags. This package only holds the jieba
+dictionary:
 
-- `linux/libsimple.so`
-- `darwin/arm64/libsimple.dylib`, `darwin/x86_64/libsimple.dylib`
-- `win32/arm64/simple.dll`, `win32/x86_64/simple.dll`
+- `dict/` — the jieba dictionary (identical across platforms) used by
+  `jieba_query()`.
 
-`dict/` is the jieba dictionary (identical across platforms) used by
-`jieba_query()`.
+The platform binary is imported from `lode_simple_native` (see `__init__.py`).
 
 ## Origin
 
@@ -27,7 +26,6 @@ All binaries and `dict/` were extracted from the v0.7.1 release assets
 
 ## Notes
 
-- `load_simple` (in `__init__.py`) picks the binary for the current platform
-  and raises a clear error when none is bundled.
-- The binaries and `dict/` are binary artifacts; they are not meant to be
-  edited.
+- `load_simple` (in `__init__.py`) loads the platform binary from
+  `lode_simple_native` and points jieba at `dict/`.
+- The `dict/` files are binary artifacts; they are not meant to be edited.

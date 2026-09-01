@@ -6,6 +6,10 @@ dist/
 wheels/
 *.egg-info
 
+# Editable-install build artifact: the build hook copies the current platform
+# binary into the source lib/ dir (see packages/lode-simple-native/hatch_build.py)
+packages/lode-simple-native/src/lode_simple_native/lib/
+
 # Virtual environments
 .venv
 

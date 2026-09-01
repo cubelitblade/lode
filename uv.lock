@@ -10,6 +10,12 @@ resolution-markers = [
     "python_full_version < '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 
+[manifest]
+members = [
+    "lode",
+    "lode-simple-native",
+]
+
 [[package]]
 name = "aiohappyeyeballs"
 version = "2.7.1"
@@ -659,6 +665,7 @@ source = { editable = "." }
 dependencies = [
     { name = "blake3" },
     { name = "httpx" },
+    { name = "lode-simple-native" },
     { name = "pathspec" },
     { name = "platformdirs" },
     { name = "pydantic" },
@@ -689,6 +696,7 @@ evals = [
 requires-dist = [
     { name = "blake3", specifier = ">=1.0.9" },
     { name = "httpx", specifier = ">=0.28.1" },
+    { name = "lode-simple-native", editable = "packages/lode-simple-native" },
     { name = "pathspec", specifier = ">=0.11.0" },
     { name = "platformdirs", specifier = ">=4.2.0" },
     { name = "pydantic", specifier = ">=2.13.4" },
@@ -714,6 +722,11 @@ evals = [
     { name = "pandas", specifier = ">=2.2.0" },
     { name = "pyarrow", specifier = ">=18.0.0" },
 ]
+
+[[package]]
+name = "lode-simple-native"
+version = "0.7.1"
+source = { editable = "packages/lode-simple-native" }
 
 [[package]]
 name = "lxml"
