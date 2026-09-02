@@ -15,3 +15,8 @@ serde = { version = "1", features = ["derive"] }
 # bundled-full ships a self-contained SQLite (zero runtime dependency) and
 # enables FTS5, matching the single-binary goal from rust-rewrite.md.
 rusqlite = { version = "0.32", features = ["bundled-full"] }
+# blake3 powers content addressing: file-level and chunk-level digests.
+blake3 = "1"
+
+[dev-dependencies]
+serde_json = "1"
