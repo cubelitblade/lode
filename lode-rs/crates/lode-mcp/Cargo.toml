@@ -1,0 +1,11 @@
+[package]
+name = "lode-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "lode MCP server (stdio transport)"
+
+[dependencies]
+lode-core = { path = "../lode-core" }

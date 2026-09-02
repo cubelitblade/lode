@@ -1,0 +1,17 @@
+[package]
+name = "lode-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "lode command-line interface"
+
+# The CLI binary is published as `lode` (not `lode-cli`).
+[[bin]]
+name = "lode"
+path = "src/main.rs"
+
+[dependencies]
+lode-core = { path = "../lode-core" }
+clap = { version = "4", features = ["derive"] }

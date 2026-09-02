@@ -1,0 +1,17 @@
+[package]
+name = "lode-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "lode core library: discovery, extraction, chunking, embeddings, indexing and retrieval"
+
+[dependencies]
+thiserror = "2"
+# serde drives config models and structured output payloads.
+serde = { version = "1", features = ["derive"] }
+# rusqlite drives the SQLite index store and the Error::Store variant.
+# bundled-full ships a self-contained SQLite (zero runtime dependency) and
+# enables FTS5, matching the single-binary goal from rust-rewrite.md.
+rusqlite = { version = "0.32", features = ["bundled-full"] }

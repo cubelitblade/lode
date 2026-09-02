@@ -1,0 +1,14 @@
+[package]
+name = "lode-simple-native"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "lode FTS5 simple tokenizer (cdylib, pinyin folding)"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+libc = "0.2"
