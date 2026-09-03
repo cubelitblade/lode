@@ -16,7 +16,7 @@ pub enum Error {
 
     /// Errors from the SQLite store.
     #[error("store error: {0}")]
-    Store(#[from] rusqlite::Error),
+    Store(String),
 
     /// Errors from embedding providers.
     #[error("embedding error: {0}")]
@@ -29,4 +29,10 @@ pub enum Error {
     /// Errors during lexical tokenization.
     #[error("lexical error: {0}")]
     Lexical(String),
+}
+
+impl From<rusqlite::Error> for Error {
+    fn from(e: rusqlite::Error) -> Self {
+        Error::Store(e.to_string())
+    }
 }

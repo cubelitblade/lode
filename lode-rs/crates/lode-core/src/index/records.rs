@@ -27,12 +27,31 @@ pub enum FileStatus {
     Stale,
 }
 
+impl FileStatus {
+    /// The string representation stored in SQLite.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Fresh => "fresh",
+            Self::Stale => "stale",
+        }
+    }
+}
+
+impl std::str::FromStr for FileStatus {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "fresh" => Ok(Self::Fresh),
+            "stale" => Ok(Self::Stale),
+            _ => Err(()),
+        }
+    }
+}
+
 impl std::fmt::Display for FileStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Fresh => write!(f, "fresh"),
-            Self::Stale => write!(f, "stale"),
-        }
+        f.write_str(self.as_str())
     }
 }
 
