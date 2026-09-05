@@ -217,10 +217,11 @@ const INDEX_DB_RELATIVE: &str = ".lode/index.db";
 
 /// Run the survey command: detect workspace changes and report stale files.
 ///
-/// Detection only — never touches the embedder or creates a database. With
-/// no index yet, it classifies the workspace against an empty snapshot
-/// (every supported file is `new`), so a user can see what `mine` would
-/// index before running it.
+/// Detection only — never touches the embedder or creates a database. It
+/// does flip changed files to stale in an existing index (a write), so the
+/// store is opened mutably. With no index yet, it classifies the workspace
+/// against an empty snapshot (every supported file is `new`), so a user can
+/// see what `mine` would index before running it.
 ///
 /// Supports all four views: `compact` (narrative), `extended` (detailed),
 /// `table` (grep-friendly), and `json` (machine-readable).
@@ -235,7 +236,7 @@ fn survey(workspace: &std::path::Path, view: View) -> u8 {
 
     let result = if has_index {
         match Store::open_existing(&db_path) {
-            Ok(store) => match detect_changes(&store, workspace, &[]) {
+            Ok(mut store) => match detect_changes(&mut store, workspace, &[]) {
                 Ok(result) => {
                     log::info!("detected {} pending changes", result.pending());
                     result
@@ -329,8 +330,8 @@ fn mine(workspace: &std::path::Path, view: View) -> u8 {
 
     let result = if has_index {
         match Store::open_existing(&db_path) {
-            Ok(store) => match detect_changes(&store, workspace, &[]) {
-                Ok(detect) => match sync(&store, workspace, &splitter, &detect, None) {
+            Ok(mut store) => match detect_changes(&mut store, workspace, &[]) {
+                Ok(detect) => match sync(&mut store, workspace, &splitter, &detect, None) {
                     Ok(summary) => summary,
                     Err(e) => {
                         return ui_msg::die(
@@ -370,7 +371,7 @@ fn mine(workspace: &std::path::Path, view: View) -> u8 {
             }
         } else {
             match Store::open(&db_path, dimension, &tokenizer) {
-                Ok(store) => match sync(&store, workspace, &splitter, &detect, None) {
+                Ok(mut store) => match sync(&mut store, workspace, &splitter, &detect, None) {
                     Ok(summary) => summary,
                     Err(e) => {
                         return ui_msg::die(

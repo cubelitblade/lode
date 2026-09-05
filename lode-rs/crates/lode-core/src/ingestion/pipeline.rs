@@ -120,10 +120,15 @@ pub struct SyncSummary {
     pub skipped: usize,
 }
 
-/// Classify the workspace against an index snapshot, with no side effects.
+/// Classify the workspace against an index snapshot.
 ///
-/// Pure disk-vs-index stat comparison over a `{path: FileRecord}` snapshot.
-/// Returns the [`DetectResult`] with change events and skipped files.
+/// Disk-vs-index stat comparison over a `{path: FileRecord}` snapshot,
+/// followed by rename pairing. Returns the [`DetectResult`] with change
+/// events and skipped files.
+///
+/// Rename pairing reads each Added file once to compute its content digest
+/// (the Removed side already carries its digest in the snapshot), so this
+/// is not a pure stat pass — but it never writes anything.
 ///
 /// - `Added` — on disk but not indexed.
 /// - `Modified` — stat differs (or residual stale marker).
@@ -215,7 +220,7 @@ pub fn classify(
 /// applies the stale side effects (flipping `files.status` to STALE). No
 /// content is embedded or replaced here — that is `sync`'s job.
 pub fn detect_changes(
-    store: &Store,
+    store: &mut Store,
     root: &Path,
     ignore_files: &[&str],
 ) -> crate::Result<DetectResult> {
@@ -257,7 +262,7 @@ pub fn detect_changes(
 // named alias would add a public type for a single call site.
 #[allow(clippy::type_complexity)]
 pub fn sync(
-    store: &Store,
+    store: &mut Store,
     root: &Path,
     splitter: &crate::ingestion::split::RecursiveSegmentSplitter,
     detect: &DetectResult,
@@ -328,20 +333,24 @@ pub fn sync(
         }
     }
 
-    // 2. Collect files to embed.
+    // 2. Collect files to embed: new files first, then rename fallbacks
+    //    (semantically additions), then modified files — matching Python's
+    //    `[*new_files, *rename_fallbacks, *changed_files]` reading order.
+    //    Rename fallbacks count as additions (Python's `added_paths` includes
+    //    them), so they join `added_set` too.
     for change in &detect.changes {
-        match change {
-            Change::Added(snap) => {
-                added_set.insert(snap.path.clone());
-                to_embed.push(snap.path.clone());
-            }
-            Change::Modified { new, .. } => {
-                to_embed.push(new.path.clone());
-            }
-            _ => {}
+        if let Change::Added(snap) = change {
+            added_set.insert(snap.path.clone());
+            to_embed.push(snap.path.clone());
         }
     }
+    added_set.extend(rename_fallbacks.iter().cloned());
     to_embed.extend(rename_fallbacks);
+    for change in &detect.changes {
+        if let Change::Modified { new, .. } = change {
+            to_embed.push(new.path.clone());
+        }
+    }
 
     let total = to_embed.len();
     for (idx, rel) in to_embed.iter().enumerate() {
@@ -462,6 +471,9 @@ pub fn sync(
 /// carries its digest in the index snapshot. An Added file whose digest
 /// matches a Removed path is a move: the content is already indexed, so
 /// `sync` can re-point it at zero embedding cost.
+///
+/// Returns early when there is nothing to pair (no Removed or no Added),
+/// so a first `mine` over an empty snapshot never reads file contents.
 fn pair_renames(result: &mut DetectResult, root: &Path) {
     // Collect Removed paths by digest for matching.
     let mut removed_by_digest: HashMap<String, Vec<WorkspacePath>> = HashMap::new();
@@ -473,16 +485,19 @@ fn pair_renames(result: &mut DetectResult, root: &Path) {
                 .push(record.path.clone());
         }
     }
+    // Nothing to pair: no removed files (e.g. a first mine over an empty
+    // snapshot) — skip reading any Added file contents.
+    if removed_by_digest.is_empty() {
+        return;
+    }
     // Sort for deterministic pairing.
     for paths in removed_by_digest.values_mut() {
         paths.sort();
     }
 
-    let mut paired_removed: Vec<WorkspacePath> = Vec::new();
-    let mut renamed_pairs: Vec<(WorkspacePath, WorkspacePath)> = Vec::new();
-
-    // Collect Added paths for iteration.
-    let added_paths: Vec<WorkspacePath> = result
+    // Collect Added paths for iteration, sorted for deterministic pairing
+    // (mirrors Python's `sorted(new_files)`).
+    let mut added_paths: Vec<WorkspacePath> = result
         .changes
         .iter()
         .filter_map(|c| match c {
@@ -490,6 +505,16 @@ fn pair_renames(result: &mut DetectResult, root: &Path) {
             _ => None,
         })
         .collect();
+    added_paths.sort();
+    if added_paths.is_empty() {
+        return;
+    }
+
+    let mut paired_added: std::collections::HashSet<WorkspacePath> =
+        std::collections::HashSet::new();
+    let mut paired_removed: std::collections::HashSet<WorkspacePath> =
+        std::collections::HashSet::new();
+    let mut renamed_pairs: Vec<(WorkspacePath, WorkspacePath)> = Vec::new();
 
     for rel in &added_paths {
         let abs = root.join(rel.as_str());
@@ -501,17 +526,19 @@ fn pair_renames(result: &mut DetectResult, root: &Path) {
         if let Some(candidates) = removed_by_digest.get_mut(&digest) {
             if let Some(old) = candidates.first().cloned() {
                 candidates.remove(0);
-                paired_removed.push(old.clone());
+                paired_added.insert(rel.clone());
+                paired_removed.insert(old.clone());
                 renamed_pairs.push((old, rel.clone()));
             }
         }
     }
 
     if !renamed_pairs.is_empty() {
-        // Remove paired entries from Added and Removed.
+        // Remove only the paired entries from Added and Removed; unpaired
+        // Added files stay in their bucket.
         result
             .changes
-            .retain(|c| !matches!(c, Change::Added(snap) if added_paths.contains(&snap.path)));
+            .retain(|c| !matches!(c, Change::Added(snap) if paired_added.contains(&snap.path)));
         result
             .changes
             .retain(|c| !matches!(c, Change::Removed(r) if paired_removed.contains(&r.path)));
@@ -694,13 +721,13 @@ mod tests {
         fs::write(root.join("hello.txt"), "hello world").unwrap();
 
         let db = root.join("index.db");
-        let store = Store::open(&db, 128, "unicode61").unwrap();
+        let mut store = Store::open(&db, 128, "unicode61").unwrap();
         let splitter = crate::ingestion::split::RecursiveSegmentSplitter::new(200, 50).unwrap();
 
-        let detect = detect_changes(&store, root, &[]).unwrap();
+        let detect = detect_changes(&mut store, root, &[]).unwrap();
         assert_eq!(detect.added_count(), 1);
 
-        let summary = sync(&store, root, &splitter, &detect, None).unwrap();
+        let summary = sync(&mut store, root, &splitter, &detect, None).unwrap();
         assert_eq!(summary.added.len(), 1);
         assert_eq!(summary.failed.len(), 0);
 
@@ -717,20 +744,20 @@ mod tests {
         fs::write(root.join("a.txt"), "aaa").unwrap();
 
         let db = root.join("index.db");
-        let store = Store::open(&db, 128, "unicode61").unwrap();
+        let mut store = Store::open(&db, 128, "unicode61").unwrap();
         let splitter = crate::ingestion::split::RecursiveSegmentSplitter::new(200, 50).unwrap();
 
         // First sync: index the file.
-        let detect = detect_changes(&store, root, &[]).unwrap();
-        sync(&store, root, &splitter, &detect, None).unwrap();
+        let detect = detect_changes(&mut store, root, &[]).unwrap();
+        sync(&mut store, root, &splitter, &detect, None).unwrap();
         assert_eq!(store.list_files().unwrap().len(), 1);
 
         // Delete the file.
         fs::remove_file(root.join("a.txt")).unwrap();
-        let detect = detect_changes(&store, root, &[]).unwrap();
+        let detect = detect_changes(&mut store, root, &[]).unwrap();
         assert_eq!(detect.removed_count(), 1);
 
-        let summary = sync(&store, root, &splitter, &detect, None).unwrap();
+        let summary = sync(&mut store, root, &splitter, &detect, None).unwrap();
         assert_eq!(summary.removed.len(), 1);
         assert!(store.list_files().unwrap().is_empty());
     }
@@ -745,14 +772,90 @@ mod tests {
         // the discovery pass.
         let db_dir = tempfile::tempdir().unwrap();
         let db = db_dir.path().join("index.db");
-        let store = Store::open(&db, 128, "unicode61").unwrap();
+        let mut store = Store::open(&db, 128, "unicode61").unwrap();
         let splitter = crate::ingestion::split::RecursiveSegmentSplitter::new(200, 50).unwrap();
 
-        let detect = detect_changes(&store, root, &[]).unwrap();
+        let detect = detect_changes(&mut store, root, &[]).unwrap();
         assert_eq!(detect.skipped.len(), 1);
 
-        let summary = sync(&store, root, &splitter, &detect, None).unwrap();
+        let summary = sync(&mut store, root, &splitter, &detect, None).unwrap();
         assert_eq!(summary.skipped, 1);
         assert!(store.list_files().unwrap().is_empty());
+    }
+
+    #[test]
+    fn classify_pairs_only_matching_renames() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        // Two new files; only one matches the removed file's digest.
+        let moved_content = "same content";
+        fs::write(root.join("moved.txt"), moved_content).unwrap();
+        fs::write(root.join("brand_new.txt"), "brand new").unwrap();
+
+        let moved_digest = file_digest(moved_content.as_bytes());
+        let mut indexed = HashMap::new();
+        indexed.insert(
+            WorkspacePath::from_posix("old.txt"),
+            record("old.txt", &moved_digest, 0.0, 50, FileStatus::Fresh),
+        );
+
+        let result = classify(&indexed, root, &[]);
+        // moved.txt pairs with old.txt → Renamed; brand_new.txt stays Added.
+        assert_eq!(result.renamed_count(), 1);
+        assert_eq!(result.added_count(), 1);
+        assert_eq!(result.removed_count(), 0);
+    }
+
+    #[test]
+    fn classify_pairs_are_one_to_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        // Two new files with identical content; only one removed file.
+        let content = "duplicate content";
+        fs::write(root.join("dup1.txt"), content).unwrap();
+        fs::write(root.join("dup2.txt"), content).unwrap();
+
+        let digest = file_digest(content.as_bytes());
+        let mut indexed = HashMap::new();
+        indexed.insert(
+            WorkspacePath::from_posix("old.txt"),
+            record("old.txt", &digest, 0.0, 50, FileStatus::Fresh),
+        );
+
+        let result = classify(&indexed, root, &[]);
+        // Only one duplicate pairs with old.txt; the other stays Added.
+        assert_eq!(result.renamed_count(), 1);
+        assert_eq!(result.added_count(), 1);
+        assert_eq!(result.removed_count(), 0);
+    }
+
+    #[test]
+    fn sync_rename_fallback_counts_as_added() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("a.txt"), "same content").unwrap();
+
+        let db = root.join("index.db");
+        let mut store = Store::open(&db, 128, "unicode61").unwrap();
+        let splitter = crate::ingestion::split::RecursiveSegmentSplitter::new(200, 50).unwrap();
+
+        // Index a.txt.
+        let detect = detect_changes(&mut store, root, &[]).unwrap();
+        sync(&mut store, root, &splitter, &detect, None).unwrap();
+
+        // Rename a.txt -> b.txt with identical content, then change b.txt's
+        // content so the rename pairing succeeds at detect time but the
+        // content-reuse check fails at sync time → rename fallback.
+        fs::rename(root.join("a.txt"), root.join("b.txt")).unwrap();
+        let detect = detect_changes(&mut store, root, &[]).unwrap();
+        assert_eq!(detect.renamed_count(), 1);
+
+        fs::write(root.join("b.txt"), "changed content").unwrap();
+        let summary = sync(&mut store, root, &splitter, &detect, None).unwrap();
+        // The fallback re-embeds b.txt and counts it as added (Python
+        // semantics: `added_paths` includes rename fallbacks).
+        assert_eq!(summary.added.len(), 1);
+        assert_eq!(summary.updated.len(), 0);
+        assert_eq!(summary.renamed.len(), 0);
     }
 }

@@ -144,7 +144,7 @@ impl Store {
     ///
     /// Unknown paths are ignored: a new file that fails before its first
     /// successful indexing leaves no row behind.
-    pub fn mark_stale(&self, path: &WorkspacePath) -> crate::Result<()> {
+    pub fn mark_stale(&mut self, path: &WorkspacePath) -> crate::Result<()> {
         self.conn.execute(
             "UPDATE files SET status = ?1 WHERE path = ?2",
             rusqlite::params![FileStatus::Stale.as_str(), path.as_str()],
@@ -187,8 +187,8 @@ impl Store {
     /// Unlike [`replace_file`], no chunks are written — the caller claims
     /// the content addressed by `record.digest` is already indexed. When it
     /// is not, nothing changes and `false` is returned.
-    pub fn reference_file(&self, record: &FileRecord) -> crate::Result<bool> {
-        let tx = self.conn.unchecked_transaction()?;
+    pub fn reference_file(&mut self, record: &FileRecord) -> crate::Result<bool> {
+        let tx = self.conn.transaction()?;
 
         let content_id: Option<i64> = tx
             .query_row(
@@ -248,8 +248,8 @@ impl Store {
     /// dropped once its last reference disappears.
     ///
     /// Returns whether the content was newly created.
-    pub fn replace_file(&self, record: &FileRecord, chunks: &[Chunk]) -> crate::Result<bool> {
-        let tx = self.conn.unchecked_transaction()?;
+    pub fn replace_file(&mut self, record: &FileRecord, chunks: &[Chunk]) -> crate::Result<bool> {
+        let tx = self.conn.transaction()?;
 
         let (content_id, created) = ensure_content(&tx, &record.digest)?;
 
@@ -294,8 +294,8 @@ impl Store {
     }
 
     /// Delete a path reference; drop its content when this was the last one.
-    pub fn remove_file(&self, path: &WorkspacePath) -> crate::Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+    pub fn remove_file(&mut self, path: &WorkspacePath) -> crate::Result<()> {
+        let tx = self.conn.transaction()?;
 
         let content_id: Option<i64> = tx
             .query_row(
@@ -628,7 +628,7 @@ mod tests {
     fn reference_file_new_content() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("index.db");
-        let store = Store::open(&db, 128, "unicode61").unwrap();
+        let mut store = Store::open(&db, 128, "unicode61").unwrap();
 
         let rec = make_record("a.txt", "blake3:aaa", 1.0, 100);
         assert!(!store.reference_file(&rec).unwrap());
@@ -640,7 +640,7 @@ mod tests {
     fn reference_file_reuses_existing_content() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("index.db");
-        let store = Store::open(&db, 128, "unicode61").unwrap();
+        let mut store = Store::open(&db, 128, "unicode61").unwrap();
 
         // Create the content first.
         let r1 = make_record("a.txt", "blake3:same", 1.0, 100);
@@ -662,7 +662,7 @@ mod tests {
     fn replace_file_creates_content_and_chunks() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("index.db");
-        let store = Store::open(&db, 128, "unicode61").unwrap();
+        let mut store = Store::open(&db, 128, "unicode61").unwrap();
 
         let rec = make_record("doc.txt", "blake3:bbb", 1.0, 50);
         let chunks = make_chunks("blake3:bbb", 3);
@@ -681,7 +681,7 @@ mod tests {
     fn replace_file_reuses_existing_content() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("index.db");
-        let store = Store::open(&db, 128, "unicode61").unwrap();
+        let mut store = Store::open(&db, 128, "unicode61").unwrap();
 
         // First file creates the content.
         let r1 = make_record("a.txt", "blake3:shared", 1.0, 100);
@@ -704,7 +704,7 @@ mod tests {
     fn remove_file_drops_path_and_orphans_content() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("index.db");
-        let store = Store::open(&db, 128, "unicode61").unwrap();
+        let mut store = Store::open(&db, 128, "unicode61").unwrap();
 
         let rec = make_record("only.txt", "blake3:ccc", 1.0, 10);
         let chunks = make_chunks("blake3:ccc", 1);
@@ -727,7 +727,7 @@ mod tests {
     fn remove_file_preserves_shared_content() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("index.db");
-        let store = Store::open(&db, 128, "unicode61").unwrap();
+        let mut store = Store::open(&db, 128, "unicode61").unwrap();
 
         let chunks = make_chunks("blake3:ddd", 1);
         store
@@ -754,7 +754,7 @@ mod tests {
     fn replace_file_updates_existing_path() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("index.db");
-        let store = Store::open(&db, 128, "unicode61").unwrap();
+        let mut store = Store::open(&db, 128, "unicode61").unwrap();
 
         let r1 = make_record("doc.txt", "blake3:v1", 1.0, 100);
         store
