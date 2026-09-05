@@ -1,0 +1,10 @@
+[licenses]
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "CDLA-Permissive-2.0", # Root certificate data distributed by webpki-root-certs.
+]
