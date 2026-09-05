@@ -1,19 +1,22 @@
 //! SQLite-backed store: lifecycle, metadata, and query primitives.
 //!
 //! 1a scope: open an existing database, read metadata, list files, mark
-//! stale. Schema creation (which requires the embedder's dimension) is
-//! deferred to Phase 1b.
+//! stale. 1b adds the creation path: `Store::open` builds the full schema
+//! (including vec0 and FTS5) on a fresh database, given the vector
+//! dimension and tokenizer.
 
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::Once;
 
 use rusqlite::Connection;
 
 use crate::index::records::{FileRecord, FileStatus};
+use crate::index::schema;
 use crate::relpath::WorkspacePath;
 
 /// Schema version; must match the database to open it.
-pub const SCHEMA_VERSION: u32 = 1;
+pub use crate::index::schema::SCHEMA_VERSION;
 
 /// Busy timeout in milliseconds (matches Python).
 const BUSY_TIMEOUT_MS: i32 = 5000;
@@ -29,8 +32,10 @@ pub struct IndexMeta {
 
 /// SQLite index store.
 ///
-/// Opens an existing database (never creates one). The schema creation path
-/// — which needs the embedder's vector dimension — is deferred to Phase 1b.
+/// [`Store::open`] creates a fresh database (full schema) when the file does
+/// not exist yet, or opens an existing one after validating its metadata.
+/// [`Store::open_existing`] is the read-only path used by `survey`.
+#[derive(Debug)]
 pub struct Store {
     #[allow(dead_code)]
     path: PathBuf,
@@ -39,6 +44,43 @@ pub struct Store {
 }
 
 impl Store {
+    /// Open an index database, creating it when it does not exist.
+    ///
+    /// Creation needs the vector dimension (sizes the vec0 table) and the
+    /// FTS5 tokenizer; both are recorded in `meta` and validated on later
+    /// opens. Fails if the database exists but is incompatible.
+    pub fn open(path: &Path, dimension: u32, tokenizer: &str) -> crate::Result<Self> {
+        if path.is_file() {
+            Self::open_existing(path)
+        } else {
+            Self::create(path, dimension, tokenizer)
+        }
+    }
+
+    /// Create a fresh index database with the full schema.
+    fn create(path: &Path, dimension: u32, tokenizer: &str) -> crate::Result<Self> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        // vec0 is a sqlite-vec virtual table; register the extension as an
+        // auto-extension so every connection (this one and later opens) can
+        // use it. Registration is process-global, so guard it with `Once`.
+        register_vec_extension();
+
+        let conn = Connection::open(path)?;
+        configure_connection(&conn)?;
+        schema::create_schema(&conn, dimension, tokenizer)?;
+        write_meta(&conn, dimension, tokenizer)?;
+        let meta = read_meta(&conn)?;
+
+        Ok(Self {
+            path: path.to_path_buf(),
+            conn,
+            meta,
+        })
+    }
+
     /// Open an existing index database.
     ///
     /// Reads the `meta` header, validates schema version and metadata, and
@@ -139,6 +181,27 @@ impl Store {
     }
 }
 
+/// Register the sqlite-vec extension as a SQLite auto-extension.
+///
+/// `sqlite3_auto_extension` is process-global and affects every connection
+/// opened afterwards, so it runs exactly once via [`Once`]. The `transmute`
+/// mirrors sqlite-vec's own test: the entry point is a plain `extern "C"`
+/// function, but rusqlite's binding types it with the extension API
+/// signature.
+fn register_vec_extension() {
+    static REGISTER_VEC: Once = Once::new();
+    REGISTER_VEC.call_once(|| {
+        // The transmute target type is fixed by rusqlite's binding, not by
+        // this call site, so clippy cannot infer it.
+        #[allow(clippy::missing_transmute_annotations)]
+        unsafe {
+            rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
+                sqlite_vec::sqlite3_vec_init as *const (),
+            )));
+        }
+    });
+}
+
 /// Configure connection pragmas (WAL, busy timeout, foreign keys).
 fn configure_connection(conn: &Connection) -> crate::Result<()> {
     // `journal_mode=WAL` and `busy_timeout` return a result row when set, so
@@ -191,5 +254,128 @@ fn meta_get(conn: &Connection, key: &str) -> crate::Result<Option<String>> {
     match rows.next() {
         Some(row) => Ok(Some(row?)),
         None => Ok(None),
+    }
+}
+
+/// Write the metadata header on a freshly created database.
+///
+/// `model_id` is empty until the embedding layer lands (1c); dimension and
+/// tokenizer are the values the schema was built with.
+fn write_meta(conn: &Connection, dimension: u32, tokenizer: &str) -> crate::Result<()> {
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES (?1, ?2)",
+        rusqlite::params!["schema_version", SCHEMA_VERSION.to_string()],
+    )?;
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES (?1, ?2)",
+        rusqlite::params!["model_id", ""],
+    )?;
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES (?1, ?2)",
+        rusqlite::params!["dimension", dimension.to_string()],
+    )?;
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES (?1, ?2)",
+        rusqlite::params!["tokenizer", tokenizer],
+    )?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// All tables (real and virtual) the schema must create.
+    const EXPECTED_TABLES: &[&str] = &[
+        "chunks",
+        "chunks_fts",
+        "chunk_vectors",
+        "contents",
+        "files",
+        "meta",
+    ];
+
+    fn table_names(conn: &Connection) -> Vec<String> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT name FROM sqlite_master
+                 WHERE type IN ('table', 'view')
+                 ORDER BY name",
+            )
+            .unwrap();
+        stmt.query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn open_creates_full_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join(".lode").join("index.db");
+
+        let store = Store::open(&db, 512, "unicode61").unwrap();
+
+        // Metadata header is recorded.
+        assert_eq!(store.meta().schema_version, SCHEMA_VERSION.to_string());
+        assert_eq!(store.meta().dimension, 512);
+        assert_eq!(store.meta().tokenizer, "unicode61");
+
+        // Every table and virtual table exists.
+        let tables = table_names(&store.conn);
+        for expected in EXPECTED_TABLES {
+            assert!(
+                tables.iter().any(|t| t == expected),
+                "missing table {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn open_reopens_existing_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("index.db");
+
+        Store::open(&db, 256, "unicode61").unwrap();
+
+        let reopened = Store::open_existing(&db).unwrap();
+        assert_eq!(reopened.meta().dimension, 256);
+        assert_eq!(reopened.meta().tokenizer, "unicode61");
+    }
+
+    #[test]
+    fn open_rejects_zero_dimension() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("index.db");
+
+        let err = Store::open(&db, 0, "simple").unwrap_err();
+        assert!(err.to_string().contains("dimension must be positive"));
+    }
+
+    #[test]
+    fn open_rejects_unknown_tokenizer() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("index.db");
+
+        let err = Store::open(&db, 512, "bogus").unwrap_err();
+        assert!(err.to_string().contains("unknown tokenizer"));
+    }
+
+    #[test]
+    fn open_rejects_native_tokenizer() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("index.db");
+
+        let err = Store::open(&db, 512, "simple").unwrap_err();
+        assert!(err.to_string().contains("native extension"));
+    }
+
+    #[test]
+    fn open_existing_missing_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("nope.db");
+
+        let err = Store::open_existing(&db).unwrap_err();
+        assert!(err.to_string().contains("does not exist"));
     }
 }

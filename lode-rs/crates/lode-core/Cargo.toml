@@ -19,6 +19,8 @@ rusqlite = { version = "0.32", features = ["bundled-full"] }
 blake3 = "1"
 # ignore provides gitignore-style pattern matching for file discovery.
 ignore = "0.4"
+# sqlite-vec powers the vec0 virtual table for dense vectors.
+sqlite-vec = "0.1"
 
 [dev-dependencies]
 serde_json = "1"

@@ -36,7 +36,14 @@ pub struct AppConfig {}
 
 /// Embedding provider configuration.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct EmbeddingConfig {}
+pub struct EmbeddingConfig {
+    /// Native output dimension; required to create an index (vec0 table).
+    /// Discovered from the endpoint when omitted — but discovery needs the
+    /// embedder, so creating an index without this set is an error until
+    /// the embedding layer lands.
+    #[serde(default)]
+    pub model_dimension: Option<u32>,
+}
 
 /// Retrieval configuration (norm, fusion).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -47,8 +54,25 @@ pub struct RetrievalConfig {}
 pub struct ChunkingConfig {}
 
 /// FTS configuration.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct FtsConfig {}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FtsConfig {
+    /// FTS5 tokenizer strategy: unicode61, trigram, simple, jieba.
+    #[serde(default = "default_tokenizer")]
+    pub strategy: String,
+}
+
+impl Default for FtsConfig {
+    fn default() -> Self {
+        Self {
+            strategy: default_tokenizer(),
+        }
+    }
+}
+
+/// Default FTS5 tokenizer (matches Python `DEFAULT_TOKENIZER`).
+fn default_tokenizer() -> String {
+    "simple".to_string()
+}
 
 /// Ignore rules.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
