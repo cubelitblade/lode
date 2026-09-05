@@ -50,8 +50,34 @@ pub struct EmbeddingConfig {
 pub struct RetrievalConfig {}
 
 /// Chunking configuration.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ChunkingConfig {}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChunkingConfig {
+    /// Target chunk size in characters.
+    #[serde(default = "default_chunk_size")]
+    pub size: usize,
+    /// Overlap between neighbouring chunks.
+    #[serde(default = "default_chunk_overlap")]
+    pub overlap: usize,
+}
+
+impl Default for ChunkingConfig {
+    fn default() -> Self {
+        Self {
+            size: default_chunk_size(),
+            overlap: default_chunk_overlap(),
+        }
+    }
+}
+
+/// Default chunk size (matches Python `DEFAULT_CHUNK_SIZE`).
+fn default_chunk_size() -> usize {
+    1024
+}
+
+/// Default chunk overlap (matches Python `DEFAULT_CHUNK_OVERLAP`).
+fn default_chunk_overlap() -> usize {
+    128
+}
 
 /// FTS configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]

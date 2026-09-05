@@ -21,6 +21,8 @@ blake3 = "1"
 ignore = "0.4"
 # sqlite-vec powers the vec0 virtual table for dense vectors.
 sqlite-vec = "0.1"
+# toml parses the layered configuration files (lode.toml etc.).
+toml = "0.8"
 
 [dev-dependencies]
 serde_json = "1"

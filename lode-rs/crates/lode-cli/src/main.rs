@@ -4,9 +4,13 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand, ValueEnum};
 use terminal_size::{Width, terminal_size};
 
+use lode_core::config::layered::load_settings_for;
 use lode_core::index::records::FileRecord;
 use lode_core::index::store::Store;
-use lode_core::ingestion::pipeline::{Change, DetectResult, classify, detect_changes};
+use lode_core::ingestion::pipeline::{
+    Change, DetectResult, SyncSummary, classify, detect_changes, sync,
+};
+use lode_core::ingestion::split::RecursiveSegmentSplitter;
 use lode_core::relpath::WorkspacePath;
 
 const HELP_TEMPLATE: &str = "\
@@ -124,7 +128,7 @@ fn dispatch(cli: Cli) -> u8 {
     init_logging(log_level);
     match cli.command {
         Command::Survey => survey(&cli.workspace, cli.view),
-        Command::Mine => todo_command("mine"),
+        Command::Mine => mine(&cli.workspace, cli.view),
         Command::Prospect => todo_command("prospect"),
         Command::Dig => todo_command("dig"),
         Command::Assay => todo_command("assay"),
@@ -266,6 +270,300 @@ fn survey(workspace: &std::path::Path, view: View) -> u8 {
         View::Json => emit_json(&result),
     }
     0
+}
+
+/// Run the mine command: index new or changed files into the store.
+///
+/// This is the only command that creates the index database. With no index
+/// yet it classifies against an empty snapshot first: if there is nothing
+/// to embed it reports "Nothing to do." without creating a database;
+/// otherwise it creates the index and syncs.
+///
+/// 1b scope: extraction + chunking only; the vec0 table stays empty until
+/// the embedder lands in 1c. The vector dimension must therefore come from
+/// configuration (`embedding.model_dimension`); without it, creating an
+/// index is an error.
+fn mine(workspace: &std::path::Path, view: View) -> u8 {
+    if let Some(code) = ui_msg::bad_workspace("mine", workspace) {
+        return code;
+    }
+
+    let settings = match load_settings_for(workspace) {
+        Ok(s) => s,
+        Err(e) => {
+            return ui_msg::die(
+                "mine",
+                &format!("Could not load configuration: {e}"),
+                Some("Check your lode.toml and environment."),
+            );
+        }
+    };
+    let dimension = match settings.embedding.model_dimension {
+        Some(d) => d,
+        None => {
+            return ui_msg::die(
+                "mine",
+                "No embedding dimension configured.",
+                Some(
+                    "Set `embedding.model_dimension` in lode.toml (embedding discovery lands in 1c).",
+                ),
+            );
+        }
+    };
+    let tokenizer = settings.fts.strategy.clone();
+    let splitter =
+        match RecursiveSegmentSplitter::new(settings.chunking.size, settings.chunking.overlap) {
+            Ok(s) => s,
+            Err(e) => {
+                return ui_msg::die(
+                    "mine",
+                    &format!("Invalid chunking configuration: {e}"),
+                    Some("Ensure chunking.overlap < chunking.size and chunking.size > 0."),
+                );
+            }
+        };
+
+    let db_path = workspace.join(INDEX_DB_RELATIVE);
+    let has_index = db_path.is_file();
+    log::debug!("index database: {}", db_path.display());
+
+    let result = if has_index {
+        match Store::open_existing(&db_path) {
+            Ok(store) => match detect_changes(&store, workspace, &[]) {
+                Ok(detect) => match sync(&store, workspace, &splitter, &detect, None) {
+                    Ok(summary) => summary,
+                    Err(e) => {
+                        return ui_msg::die(
+                            "mine",
+                            &format!("Could not finish mining: {e}"),
+                            Some("Fix the underlying error and rerun `lode mine`."),
+                        );
+                    }
+                },
+                Err(e) => {
+                    return ui_msg::die(
+                        "mine",
+                        &format!("Could not finish scanning the workspace: {e}"),
+                        Some("Fix the underlying error and rerun `lode mine`."),
+                    );
+                }
+            },
+            Err(e) => {
+                return ui_msg::die(
+                    "mine",
+                    &format!("Cannot open the lode index: {e}"),
+                    Some("Ensure `.lode/index.db` is intact, or delete it and remine."),
+                );
+            }
+        }
+    } else {
+        // No index yet: classify against an empty snapshot.
+        log::info!("no index found; classifying against an empty snapshot");
+        let indexed: HashMap<WorkspacePath, FileRecord> = HashMap::new();
+        let detect = classify(&indexed, workspace, &[]);
+        if detect.pending() == 0 {
+            // Nothing to do — do not create a database.
+            SyncSummary {
+                unchanged: detect.unchanged.len(),
+                skipped: detect.skipped.len(),
+                ..Default::default()
+            }
+        } else {
+            match Store::open(&db_path, dimension, &tokenizer) {
+                Ok(store) => match sync(&store, workspace, &splitter, &detect, None) {
+                    Ok(summary) => summary,
+                    Err(e) => {
+                        return ui_msg::die(
+                            "mine",
+                            &format!("Could not finish mining: {e}"),
+                            Some("Fix the underlying error and rerun `lode mine`."),
+                        );
+                    }
+                },
+                Err(e) => {
+                    return ui_msg::die(
+                        "mine",
+                        &format!("Cannot create the lode index: {e}"),
+                        Some("Ensure the workspace is writable and the configuration is valid."),
+                    );
+                }
+            }
+        }
+    };
+
+    match view {
+        View::Compact => render_mine(workspace, &result),
+        View::Extended => render_mine_extended(workspace, &result),
+        View::Table => render_mine_table(workspace, &result),
+        View::Json => emit_mine_json(workspace, &result),
+    }
+    0
+}
+
+/// Render a human-readable mine report.
+///
+/// Mirrors the JSON payload so the numbers never drift. When there is
+/// nothing to do, a single "Nothing to do." line is shown instead.
+fn render_mine(workspace: &std::path::Path, result: &SyncSummary) {
+    if result.added.is_empty()
+        && result.updated.is_empty()
+        && result.removed.is_empty()
+        && result.renamed.is_empty()
+        && result.failed.is_empty()
+    {
+        println!("Nothing to do.");
+        return;
+    }
+
+    println!("Mining completed ({})", workspace.display());
+    let mut counts = format!(
+        "+ added {} · ~ updated {} · - removed {} · > renamed {} · unchanged {} · skipped {}",
+        result.added.len(),
+        result.updated.len(),
+        result.removed.len(),
+        result.renamed.len(),
+        result.unchanged,
+        result.skipped,
+    );
+    if !result.failed.is_empty() {
+        counts = format!("! failed {} · {counts}", result.failed.len());
+    }
+    println!("  {counts}");
+
+    let processed =
+        result.added.len() + result.updated.len() + result.removed.len() + result.renamed.len();
+    if processed > 0 {
+        println!();
+        println!("Processed files ({processed}):");
+        for path in &result.added {
+            println!("  + {}", path.as_str());
+        }
+        for path in &result.updated {
+            println!("  ~ {}", path.as_str());
+        }
+        for (from, to) in &result.renamed {
+            println!("  > {} -> {}", from.as_str(), to.as_str());
+        }
+        for path in &result.removed {
+            println!("  - {}", path.as_str());
+        }
+    }
+
+    if !result.failed.is_empty() {
+        println!();
+        println!("Stumbled on:");
+        for failure in &result.failed {
+            println!("  ! {}", failure.path.as_str());
+            println!("    {}", failure.error);
+        }
+        println!();
+        println!("Re-run `lode mine` after fixing these to retry.");
+    }
+}
+
+/// Render the detailed (`extended`) mine report.
+///
+/// Same narrative as `compact`; the change list is already untruncated, so
+/// the two views coincide for now. Kept as a separate function so a future
+/// verbose mode can add per-file detail without touching `compact`.
+fn render_mine_extended(workspace: &std::path::Path, result: &SyncSummary) {
+    render_mine(workspace, result);
+}
+
+/// Render the mine report as an aligned table, optimised for grepping.
+///
+/// One row per processed file with `STATUS`/`PATH` columns. When there is
+/// nothing to do, a single "Nothing to do." line is shown instead.
+fn render_mine_table(workspace: &std::path::Path, result: &SyncSummary) {
+    if result.added.is_empty()
+        && result.updated.is_empty()
+        && result.removed.is_empty()
+        && result.renamed.is_empty()
+        && result.failed.is_empty()
+    {
+        println!("Nothing to do.");
+        return;
+    }
+
+    println!("Mining completed ({})", workspace.display());
+    println!();
+
+    let mut rows: Vec<(&str, String)> = Vec::new();
+    for path in &result.added {
+        rows.push(("added", path.as_str().to_string()));
+    }
+    for path in &result.updated {
+        rows.push(("updated", path.as_str().to_string()));
+    }
+    for (from, to) in &result.renamed {
+        rows.push(("renamed", format!("{} -> {}", from.as_str(), to.as_str())));
+    }
+    for path in &result.removed {
+        rows.push(("removed", path.as_str().to_string()));
+    }
+    for failure in &result.failed {
+        rows.push(("failed", failure.path.as_str().to_string()));
+    }
+
+    const STATUS_W: usize = 8;
+    let widest_path = rows
+        .iter()
+        .map(|(_, p)| p.chars().count())
+        .max()
+        .unwrap_or(28);
+    let path_w = widest_path.clamp(28, 48);
+
+    println!(
+        "{:<status_w$}  {:<path_w$}",
+        "STATUS",
+        "PATH",
+        status_w = STATUS_W,
+        path_w = path_w,
+    );
+    for (status, path) in &rows {
+        println!(
+            "{:<status_w$}  {:<path_w$}",
+            status,
+            path,
+            status_w = STATUS_W,
+            path_w = path_w,
+        );
+    }
+}
+
+/// Emit a JSON mine payload.
+///
+/// The payload is the raw result data — no envelope (`ok`/`command`/
+/// `workspace`), matching the survey JSON convention. MCP framing, if any,
+/// is assembled by the MCP layer, not the CLI.
+fn emit_mine_json(workspace: &std::path::Path, result: &SyncSummary) {
+    let payload = serde_json::json!({
+        "workspace": workspace.as_os_str().to_string_lossy(),
+        "summary": {
+            "added": result.added.len(),
+            "updated": result.updated.len(),
+            "unchanged": result.unchanged,
+            "removed": result.removed.len(),
+            "renamed": result.renamed.len(),
+            "skipped": result.skipped,
+        },
+        "paths": {
+            "added": result.added.iter().map(|p| p.as_str()).collect::<Vec<_>>(),
+            "updated": result.updated.iter().map(|p| p.as_str()).collect::<Vec<_>>(),
+            "removed": result.removed.iter().map(|p| p.as_str()).collect::<Vec<_>>(),
+            "renamed": result
+                .renamed
+                .iter()
+                .map(|(f, t)| serde_json::json!({ "from": f.as_str(), "to": t.as_str() }))
+                .collect::<Vec<_>>(),
+        },
+        "failed": result
+            .failed
+            .iter()
+            .map(|f| serde_json::json!({ "path": f.path.as_str(), "error": f.error }))
+            .collect::<Vec<_>>(),
+    });
+    println!("{}", serde_json::to_string_pretty(&payload).unwrap());
 }
 
 /// Emit a JSON survey payload.

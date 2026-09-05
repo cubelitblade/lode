@@ -101,6 +101,25 @@ impl DetectResult {
     }
 }
 
+/// Per-file failure recorded during sync.
+#[derive(Debug, Clone)]
+pub struct FailedFile {
+    pub path: WorkspacePath,
+    pub error: String,
+}
+
+/// Summary of a sync pass over the workspace.
+#[derive(Debug, Default)]
+pub struct SyncSummary {
+    pub added: Vec<WorkspacePath>,
+    pub updated: Vec<WorkspacePath>,
+    pub removed: Vec<WorkspacePath>,
+    pub renamed: Vec<(WorkspacePath, WorkspacePath)>,
+    pub failed: Vec<FailedFile>,
+    pub unchanged: usize,
+    pub skipped: usize,
+}
+
 /// Classify the workspace against an index snapshot, with no side effects.
 ///
 /// Pure disk-vs-index stat comparison over a `{path: FileRecord}` snapshot.
@@ -219,6 +238,222 @@ pub fn detect_changes(
     }
 
     Ok(result)
+}
+
+/// Update the index to match the workspace, consuming a detection result.
+///
+/// Never classifies: it only works the buckets `detect` computed —
+/// `Renamed` (re-pointed at zero embedding cost), `Added` (new files),
+/// `Modified` (stat changed, re-extract needed), and `Removed` (gone).
+///
+/// The 1b scope extracts and chunks text but does not embed vectors;
+/// the vec0 table stays empty until 1c lands the embedder.
+///
+/// Individual file failures are recorded on the summary and never abort
+/// the run. `report` (optional) is called as `report(done, total, path)`
+/// before each file is processed, letting the CLI surface progress.
+//
+// The closure signature is the CLI progress contract; factoring it into a
+// named alias would add a public type for a single call site.
+#[allow(clippy::type_complexity)]
+pub fn sync(
+    store: &Store,
+    root: &Path,
+    splitter: &crate::ingestion::split::RecursiveSegmentSplitter,
+    detect: &DetectResult,
+    report: Option<&dyn Fn(usize, usize, Option<&WorkspacePath>)>,
+) -> crate::Result<SyncSummary> {
+    use crate::ingestion::extract::extract_document;
+    use crate::ingestion::split::SegmentSplitter;
+
+    let mut summary = SyncSummary {
+        unchanged: detect.unchanged.len(),
+        skipped: detect.skipped.len(),
+        ..Default::default()
+    };
+
+    // Collect paths that need extraction + chunking (adds, modifies, rename fallbacks).
+    let mut to_embed: Vec<WorkspacePath> = Vec::new();
+    let mut added_set: std::collections::HashSet<WorkspacePath> = std::collections::HashSet::new();
+    let mut rename_fallbacks: Vec<WorkspacePath> = Vec::new();
+    let mut fallback_removals: Vec<WorkspacePath> = Vec::new();
+
+    // 1. Handle renames: reference + remove old.
+    for change in &detect.changes {
+        if let Change::Renamed { from, to } = change {
+            let abs = root.join(to.as_str());
+            let data = match std::fs::read(&abs) {
+                Ok(d) => d,
+                Err(exc) => {
+                    summary.failed.push(FailedFile {
+                        path: to.clone(),
+                        error: format!("could not read file: {exc}"),
+                    });
+                    store.remove_file(from)?;
+                    continue;
+                }
+            };
+            let stat = match std::fs::metadata(&abs) {
+                Ok(s) => s,
+                Err(exc) => {
+                    summary.failed.push(FailedFile {
+                        path: to.clone(),
+                        error: format!("could not stat file: {exc}"),
+                    });
+                    store.remove_file(from)?;
+                    continue;
+                }
+            };
+            let mtime = stat
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs_f64())
+                .unwrap_or(0.0);
+            let record = FileRecord {
+                path: to.clone(),
+                digest: file_digest(&data),
+                mtime,
+                size: stat.len(),
+                status: FileStatus::Fresh,
+            };
+            if store.reference_file(&record)? {
+                store.remove_file(from)?;
+                summary.renamed.push((from.clone(), to.clone()));
+            } else {
+                // Content changed under us — full re-embed for new path.
+                rename_fallbacks.push(to.clone());
+                fallback_removals.push(from.clone());
+            }
+        }
+    }
+
+    // 2. Collect files to embed.
+    for change in &detect.changes {
+        match change {
+            Change::Added(snap) => {
+                added_set.insert(snap.path.clone());
+                to_embed.push(snap.path.clone());
+            }
+            Change::Modified { new, .. } => {
+                to_embed.push(new.path.clone());
+            }
+            _ => {}
+        }
+    }
+    to_embed.extend(rename_fallbacks);
+
+    let total = to_embed.len();
+    for (idx, rel) in to_embed.iter().enumerate() {
+        if let Some(report) = report {
+            report(idx, total, Some(rel));
+        }
+
+        let abs = root.join(rel.as_str());
+        let data = match std::fs::read(&abs) {
+            Ok(d) => d,
+            Err(exc) => {
+                summary.failed.push(FailedFile {
+                    path: rel.clone(),
+                    error: format!("could not read file: {exc}"),
+                });
+                store.mark_stale(rel)?;
+                continue;
+            }
+        };
+        let stat = match std::fs::metadata(&abs) {
+            Ok(s) => s,
+            Err(exc) => {
+                summary.failed.push(FailedFile {
+                    path: rel.clone(),
+                    error: format!("could not stat file: {exc}"),
+                });
+                store.mark_stale(rel)?;
+                continue;
+            }
+        };
+        let mtime = stat
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0);
+        let digest = file_digest(&data);
+        let record = FileRecord {
+            path: rel.clone(),
+            digest: digest.clone(),
+            mtime,
+            size: stat.len(),
+            status: FileStatus::Fresh,
+        };
+
+        // Content-reuse check.
+        if store.reference_file(&record)? {
+            if added_set.contains(rel) {
+                summary.added.push(rel.clone());
+            } else {
+                summary.updated.push(rel.clone());
+            }
+            continue;
+        }
+
+        // Extract.
+        let suffix = rel
+            .as_str()
+            .rsplit('.')
+            .next()
+            .map(|s| format!(".{s}"))
+            .unwrap_or_default();
+        let segments = match extract_document(&data, &suffix) {
+            Some(s) => s,
+            None => {
+                summary.skipped += 1;
+                continue;
+            }
+        };
+
+        // Split + store (no embedding in 1b).
+        let chunks = splitter.split_segments(&segments);
+
+        match store.replace_file(&record, &chunks) {
+            Ok(_) => {
+                if added_set.contains(rel) {
+                    summary.added.push(rel.clone());
+                } else {
+                    summary.updated.push(rel.clone());
+                }
+            }
+            Err(exc) => {
+                summary.failed.push(FailedFile {
+                    path: rel.clone(),
+                    error: exc.to_string(),
+                });
+                store.mark_stale(rel)?;
+            }
+        }
+    }
+
+    // 3. Remove missing files and rename fallback removals.
+    for rel in detect.changes.iter().filter_map(|c| {
+        if let Change::Removed(r) = c {
+            Some(&r.path)
+        } else {
+            None
+        }
+    }) {
+        store.remove_file(rel)?;
+        summary.removed.push(rel.clone());
+    }
+    for rel in &fallback_removals {
+        store.remove_file(rel)?;
+        summary.removed.push(rel.clone());
+    }
+
+    if let Some(report) = report {
+        report(total, total, None);
+    }
+
+    Ok(summary)
 }
 
 /// Fold exact-content moves out of Added/Removed into Renamed pairs.
@@ -450,5 +685,74 @@ mod tests {
         assert_eq!(result.added_count(), 1);
         assert_eq!(result.modified_count(), 1);
         assert_eq!(result.removed_count(), 1);
+    }
+
+    #[test]
+    fn sync_basic() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("hello.txt"), "hello world").unwrap();
+
+        let db = root.join("index.db");
+        let store = Store::open(&db, 128, "unicode61").unwrap();
+        let splitter = crate::ingestion::split::RecursiveSegmentSplitter::new(200, 50).unwrap();
+
+        let detect = detect_changes(&store, root, &[]).unwrap();
+        assert_eq!(detect.added_count(), 1);
+
+        let summary = sync(&store, root, &splitter, &detect, None).unwrap();
+        assert_eq!(summary.added.len(), 1);
+        assert_eq!(summary.failed.len(), 0);
+
+        // File is now indexed.
+        let files = store.list_files().unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path.as_str(), "hello.txt");
+    }
+
+    #[test]
+    fn sync_removes_deleted_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("a.txt"), "aaa").unwrap();
+
+        let db = root.join("index.db");
+        let store = Store::open(&db, 128, "unicode61").unwrap();
+        let splitter = crate::ingestion::split::RecursiveSegmentSplitter::new(200, 50).unwrap();
+
+        // First sync: index the file.
+        let detect = detect_changes(&store, root, &[]).unwrap();
+        sync(&store, root, &splitter, &detect, None).unwrap();
+        assert_eq!(store.list_files().unwrap().len(), 1);
+
+        // Delete the file.
+        fs::remove_file(root.join("a.txt")).unwrap();
+        let detect = detect_changes(&store, root, &[]).unwrap();
+        assert_eq!(detect.removed_count(), 1);
+
+        let summary = sync(&store, root, &splitter, &detect, None).unwrap();
+        assert_eq!(summary.removed.len(), 1);
+        assert!(store.list_files().unwrap().is_empty());
+    }
+
+    #[test]
+    fn sync_skips_unsupported_extensions() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("image.png"), b"\x89PNG").unwrap();
+
+        // Keep the database outside the walked root so it does not pollute
+        // the discovery pass.
+        let db_dir = tempfile::tempdir().unwrap();
+        let db = db_dir.path().join("index.db");
+        let store = Store::open(&db, 128, "unicode61").unwrap();
+        let splitter = crate::ingestion::split::RecursiveSegmentSplitter::new(200, 50).unwrap();
+
+        let detect = detect_changes(&store, root, &[]).unwrap();
+        assert_eq!(detect.skipped.len(), 1);
+
+        let summary = sync(&store, root, &splitter, &detect, None).unwrap();
+        assert_eq!(summary.skipped, 1);
+        assert!(store.list_files().unwrap().is_empty());
     }
 }

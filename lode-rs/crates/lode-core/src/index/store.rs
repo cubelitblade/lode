@@ -10,9 +10,11 @@ use std::str::FromStr;
 use std::sync::Once;
 
 use rusqlite::Connection;
+use rusqlite::OptionalExtension;
 
 use crate::index::records::{FileRecord, FileStatus};
 use crate::index::schema;
+use crate::ingestion::types::Chunk;
 use crate::relpath::WorkspacePath;
 
 /// Schema version; must match the database to open it.
@@ -179,6 +181,223 @@ impl Store {
     pub fn close(self) {
         drop(self);
     }
+
+    /// Point `path` at already-indexed content; report whether it existed.
+    ///
+    /// Unlike [`replace_file`], no chunks are written — the caller claims
+    /// the content addressed by `record.digest` is already indexed. When it
+    /// is not, nothing changes and `false` is returned.
+    pub fn reference_file(&self, record: &FileRecord) -> crate::Result<bool> {
+        let tx = self.conn.unchecked_transaction()?;
+
+        let content_id: Option<i64> = tx
+            .query_row(
+                "SELECT id FROM contents WHERE digest = ?1",
+                rusqlite::params![record.digest],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        let Some(content_id) = content_id else {
+            // Content not indexed yet — nothing to reference.
+            tx.commit()?;
+            return Ok(false);
+        };
+
+        // Get previous content_id for GC.
+        let previous: Option<i64> = tx
+            .query_row(
+                "SELECT content_id FROM files WHERE path = ?1",
+                rusqlite::params![record.path.as_str()],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        tx.execute(
+            "INSERT INTO files (path, content_id, mtime, size, status)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(path) DO UPDATE SET
+                content_id = excluded.content_id,
+                mtime = excluded.mtime,
+                size = excluded.size,
+                status = excluded.status",
+            rusqlite::params![
+                record.path.as_str(),
+                content_id,
+                record.mtime,
+                record.size as i64,
+                record.status.as_str(),
+            ],
+        )?;
+
+        if let Some(old_id) = previous {
+            if old_id != content_id {
+                gc_content_if_orphaned(&tx, old_id)?;
+            }
+        }
+
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Atomically replace `record.path`'s content, writing chunks.
+    ///
+    /// Creates the content row when this is its first reference; reuses
+    /// existing content when another path already indexed the same digest.
+    /// When the path moves away from a previous content, that content is
+    /// dropped once its last reference disappears.
+    ///
+    /// Returns whether the content was newly created.
+    pub fn replace_file(&self, record: &FileRecord, chunks: &[Chunk]) -> crate::Result<bool> {
+        let tx = self.conn.unchecked_transaction()?;
+
+        let (content_id, created) = ensure_content(&tx, &record.digest)?;
+
+        let previous: Option<i64> = tx
+            .query_row(
+                "SELECT content_id FROM files WHERE path = ?1",
+                rusqlite::params![record.path.as_str()],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        tx.execute(
+            "INSERT INTO files (path, content_id, mtime, size, status)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(path) DO UPDATE SET
+                content_id = excluded.content_id,
+                mtime = excluded.mtime,
+                size = excluded.size,
+                status = excluded.status",
+            rusqlite::params![
+                record.path.as_str(),
+                content_id,
+                record.mtime,
+                record.size as i64,
+                record.status.as_str(),
+            ],
+        )?;
+
+        // Write chunks only when content is newly created.
+        if created {
+            insert_chunks(&tx, content_id, chunks)?;
+        }
+
+        if let Some(old_id) = previous {
+            if old_id != content_id {
+                gc_content_if_orphaned(&tx, old_id)?;
+            }
+        }
+
+        tx.commit()?;
+        Ok(created)
+    }
+
+    /// Delete a path reference; drop its content when this was the last one.
+    pub fn remove_file(&self, path: &WorkspacePath) -> crate::Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+
+        let content_id: Option<i64> = tx
+            .query_row(
+                "SELECT content_id FROM files WHERE path = ?1",
+                rusqlite::params![path.as_str()],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        if let Some(cid) = content_id {
+            tx.execute(
+                "DELETE FROM files WHERE path = ?1",
+                rusqlite::params![path.as_str()],
+            )?;
+            gc_content_if_orphaned(&tx, cid)?;
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
+}
+
+/// Return `(content_id, created)` for the content with this digest.
+fn ensure_content(conn: &Connection, digest: &str) -> crate::Result<(i64, bool)> {
+    let existing: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM contents WHERE digest = ?1",
+            rusqlite::params![digest],
+            |row| row.get(0),
+        )
+        .optional()?;
+
+    match existing {
+        Some(id) => Ok((id, false)),
+        None => {
+            conn.execute(
+                "INSERT INTO contents (digest) VALUES (?1)",
+                rusqlite::params![digest],
+            )?;
+            Ok((conn.last_insert_rowid(), true))
+        }
+    }
+}
+
+/// Drop a content row once nothing references it.
+///
+/// Orphanhood is derived by lookup rather than a stored refcount, so the
+/// invariant holds inside the surrounding write transaction.
+fn gc_content_if_orphaned(conn: &Connection, content_id: i64) -> crate::Result<()> {
+    let referenced: bool = conn
+        .query_row(
+            "SELECT 1 FROM files WHERE content_id = ?1 LIMIT 1",
+            rusqlite::params![content_id],
+            |_| Ok(true),
+        )
+        .unwrap_or(false);
+
+    if referenced {
+        return Ok(());
+    }
+
+    // Collect chunk rowids before cascade delete removes them.
+    let rowids: Vec<i64> = {
+        let mut stmt = conn.prepare("SELECT id FROM chunks WHERE content_id = ?1")?;
+        let rows = stmt.query_map(rusqlite::params![content_id], |row| row.get(0))?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+
+    for rowid in &rowids {
+        conn.execute(
+            "DELETE FROM chunk_vectors WHERE rowid = ?1",
+            rusqlite::params![rowid],
+        )?;
+    }
+
+    // Cascade: DELETE contents → chunks (triggers handle FTS5 cleanup).
+    conn.execute(
+        "DELETE FROM contents WHERE id = ?1",
+        rusqlite::params![content_id],
+    )?;
+    Ok(())
+}
+
+/// Write chunk rows (and their FTS5 sync triggers fire automatically).
+fn insert_chunks(conn: &Connection, content_id: i64, chunks: &[Chunk]) -> crate::Result<()> {
+    let mut stmt = conn.prepare(
+        "INSERT INTO chunks (digest, content_id, seq, text, heading, page)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+    )?;
+
+    for chunk in chunks {
+        stmt.execute(rusqlite::params![
+            chunk.digest,
+            content_id,
+            chunk.seq as i64,
+            chunk.text,
+            chunk.heading,
+            chunk.page.map(|p| p as i64),
+        ])?;
+    }
+
+    Ok(())
 }
 
 /// Register the sqlite-vec extension as a SQLite auto-extension.
@@ -377,5 +596,187 @@ mod tests {
 
         let err = Store::open_existing(&db).unwrap_err();
         assert!(err.to_string().contains("does not exist"));
+    }
+
+    // -- reference_file / replace_file / remove_file tests --
+
+    use crate::ingestion::types::Chunk;
+
+    fn make_record(path: &str, digest: &str, mtime: f64, size: u64) -> FileRecord {
+        FileRecord {
+            path: WorkspacePath::from_posix(path),
+            digest: digest.to_string(),
+            mtime,
+            size,
+            status: FileStatus::Fresh,
+        }
+    }
+
+    fn make_chunks(digest: &str, n: usize) -> Vec<Chunk> {
+        (0..n)
+            .map(|i| Chunk {
+                digest: digest.to_string(),
+                text: format!("chunk {i}"),
+                seq: i as u32,
+                heading: String::new(),
+                page: None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn reference_file_new_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("index.db");
+        let store = Store::open(&db, 128, "unicode61").unwrap();
+
+        let rec = make_record("a.txt", "blake3:aaa", 1.0, 100);
+        assert!(!store.reference_file(&rec).unwrap());
+        // Nothing was written — the content was not indexed yet.
+        assert!(store.list_files().unwrap().is_empty());
+    }
+
+    #[test]
+    fn reference_file_reuses_existing_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("index.db");
+        let store = Store::open(&db, 128, "unicode61").unwrap();
+
+        // Create the content first.
+        let r1 = make_record("a.txt", "blake3:same", 1.0, 100);
+        store
+            .replace_file(&r1, &make_chunks("blake3:same", 1))
+            .unwrap();
+
+        // Second path references the existing content.
+        let r2 = make_record("b.txt", "blake3:same", 2.0, 200);
+        assert!(store.reference_file(&r2).unwrap());
+
+        // Both paths point at the same content.
+        let files = store.list_files().unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].digest, files[1].digest);
+    }
+
+    #[test]
+    fn replace_file_creates_content_and_chunks() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("index.db");
+        let store = Store::open(&db, 128, "unicode61").unwrap();
+
+        let rec = make_record("doc.txt", "blake3:bbb", 1.0, 50);
+        let chunks = make_chunks("blake3:bbb", 3);
+        let created = store.replace_file(&rec, &chunks).unwrap();
+        assert!(created);
+
+        // Chunks are in the database.
+        let count: i64 = store
+            .conn
+            .query_row("SELECT COUNT(*) FROM chunks", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn replace_file_reuses_existing_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("index.db");
+        let store = Store::open(&db, 128, "unicode61").unwrap();
+
+        // First file creates the content.
+        let r1 = make_record("a.txt", "blake3:shared", 1.0, 100);
+        let chunks = make_chunks("blake3:shared", 2);
+        store.replace_file(&r1, &chunks).unwrap();
+
+        // Second file with same digest reuses content; no extra chunks.
+        let r2 = make_record("b.txt", "blake3:shared", 2.0, 100);
+        let created = store.replace_file(&r2, &chunks).unwrap();
+        assert!(!created);
+
+        let count: i64 = store
+            .conn
+            .query_row("SELECT COUNT(*) FROM chunks", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 2); // still 2, not 4
+    }
+
+    #[test]
+    fn remove_file_drops_path_and_orphans_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("index.db");
+        let store = Store::open(&db, 128, "unicode61").unwrap();
+
+        let rec = make_record("only.txt", "blake3:ccc", 1.0, 10);
+        let chunks = make_chunks("blake3:ccc", 1);
+        store.replace_file(&rec, &chunks).unwrap();
+
+        store
+            .remove_file(&WorkspacePath::from_posix("only.txt"))
+            .unwrap();
+
+        // Path gone, content orphaned and GC'd.
+        assert!(store.list_files().unwrap().is_empty());
+        let content_count: i64 = store
+            .conn
+            .query_row("SELECT COUNT(*) FROM contents", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(content_count, 0);
+    }
+
+    #[test]
+    fn remove_file_preserves_shared_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("index.db");
+        let store = Store::open(&db, 128, "unicode61").unwrap();
+
+        let chunks = make_chunks("blake3:ddd", 1);
+        store
+            .replace_file(&make_record("a.txt", "blake3:ddd", 1.0, 10), &chunks)
+            .unwrap();
+        store
+            .replace_file(&make_record("b.txt", "blake3:ddd", 2.0, 10), &chunks)
+            .unwrap();
+
+        store
+            .remove_file(&WorkspacePath::from_posix("a.txt"))
+            .unwrap();
+
+        // b.txt still references the content.
+        assert_eq!(store.list_files().unwrap().len(), 1);
+        let content_count: i64 = store
+            .conn
+            .query_row("SELECT COUNT(*) FROM contents", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(content_count, 1);
+    }
+
+    #[test]
+    fn replace_file_updates_existing_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("index.db");
+        let store = Store::open(&db, 128, "unicode61").unwrap();
+
+        let r1 = make_record("doc.txt", "blake3:v1", 1.0, 100);
+        store
+            .replace_file(&r1, &make_chunks("blake3:v1", 2))
+            .unwrap();
+
+        // Same path, different content.
+        let r2 = make_record("doc.txt", "blake3:v2", 2.0, 200);
+        store
+            .replace_file(&r2, &make_chunks("blake3:v2", 3))
+            .unwrap();
+
+        let files = store.list_files().unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].digest, "blake3:v2");
+        assert_eq!(files[0].mtime, 2.0);
+
+        // Old content orphaned and GC'd.
+        let content_count: i64 = store
+            .conn
+            .query_row("SELECT COUNT(*) FROM contents", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(content_count, 1);
     }
 }
