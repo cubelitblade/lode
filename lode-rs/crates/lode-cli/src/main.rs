@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand, ValueEnum};
 use terminal_size::{Width, terminal_size};
 
+use lode_core::config::build_embedder;
 use lode_core::config::layered::load_settings_for;
 use lode_core::index::records::FileRecord;
 use lode_core::index::store::Store;
@@ -280,10 +281,9 @@ fn survey(workspace: &std::path::Path, view: View) -> u8 {
 /// to embed it reports "Nothing to do." without creating a database;
 /// otherwise it creates the index and syncs.
 ///
-/// 1b scope: extraction + chunking only; the vec0 table stays empty until
-/// the embedder lands in 1c. The vector dimension must therefore come from
-/// configuration (`embedding.model_dimension`); without it, creating an
-/// index is an error.
+/// 1c scope: extraction + chunking + embedding. The vector dimension must
+/// come from configuration (`embedding.model_dimension`); without it,
+/// creating an index is an error.
 fn mine(workspace: &std::path::Path, view: View) -> u8 {
     if let Some(code) = ui_msg::bad_workspace("mine", workspace) {
         return code;
@@ -311,6 +311,16 @@ fn mine(workspace: &std::path::Path, view: View) -> u8 {
             );
         }
     };
+    let embedder = match build_embedder(&settings.embedding) {
+        Ok(e) => e,
+        Err(e) => {
+            return ui_msg::die(
+                "mine",
+                &format!("Could not build the embedding client: {e}"),
+                Some("Check your embedding configuration in lode.toml."),
+            );
+        }
+    };
     let tokenizer = settings.fts.strategy.clone();
     let splitter =
         match RecursiveSegmentSplitter::new(settings.chunking.size, settings.chunking.overlap) {
@@ -331,7 +341,14 @@ fn mine(workspace: &std::path::Path, view: View) -> u8 {
     let result = if has_index {
         match Store::open_existing(&db_path) {
             Ok(mut store) => match detect_changes(&mut store, workspace, &[]) {
-                Ok(detect) => match sync(&mut store, workspace, &splitter, &detect, None) {
+                Ok(detect) => match sync(
+                    &mut store,
+                    workspace,
+                    &splitter,
+                    &detect,
+                    Some(&*embedder),
+                    None,
+                ) {
                     Ok(summary) => summary,
                     Err(e) => {
                         return ui_msg::die(
@@ -371,7 +388,14 @@ fn mine(workspace: &std::path::Path, view: View) -> u8 {
             }
         } else {
             match Store::open(&db_path, dimension, &tokenizer) {
-                Ok(mut store) => match sync(&mut store, workspace, &splitter, &detect, None) {
+                Ok(mut store) => match sync(
+                    &mut store,
+                    workspace,
+                    &splitter,
+                    &detect,
+                    Some(&*embedder),
+                    None,
+                ) {
                     Ok(summary) => summary,
                     Err(e) => {
                         return ui_msg::die(
