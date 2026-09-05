@@ -61,7 +61,7 @@ jobs:
 
       - name: Run audit
         if: always()
-        run: cargo audit --locked
+        run: cargo audit
 
       - name: Generate SARIF reports
         if: always()
