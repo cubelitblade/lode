@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand, ValueEnum};
+use terminal_size::{Width, terminal_size};
 
 use lode_core::index::records::FileRecord;
 use lode_core::index::store::Store;
@@ -21,14 +22,17 @@ Lode {version}
 /// Output view for command results (stdout).
 ///
 /// A global abstraction: every command declares which views it supports.
-/// `compact` is the default narrative; `extended` adds detail; `json` is
-/// the machine-readable form. Views are orthogonal to `--log-level` (stderr).
+/// `compact` is the default narrative; `extended` adds detail; `table` is
+/// the grep-friendly form; `json` is the machine-readable form. Views are
+/// orthogonal to `--log-level` (stderr).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 enum View {
     /// Compact narrative (default).
     Compact,
     /// Detailed narrative with stats and full lists.
     Extended,
+    /// Aligned table, optimised for grepping.
+    Table,
     /// Machine-readable JSON.
     Json,
 }
@@ -258,6 +262,7 @@ fn survey(workspace: &std::path::Path, view: View) -> u8 {
     match view {
         View::Compact => render_survey(&result, has_index),
         View::Extended => render_survey_extended(&result, has_index),
+        View::Table => render_survey_table(&result, has_index),
         View::Json => emit_json(&result),
     }
     0
@@ -293,6 +298,142 @@ fn emit_json(result: &DetectResult) {
             .collect::<Vec<_>>(),
     });
     println!("{}", serde_json::to_string_pretty(&payload).unwrap());
+}
+
+/// Render the survey as an aligned table, optimised for grepping.
+///
+/// One row per pending change with `STATUS`/`PATH`/`DETAIL` columns. The
+/// table adapts to the terminal width: `STATUS` is fixed, `PATH` grows with
+/// the longest path (within generous bounds, middles elided), and `DETAIL`
+/// gets whatever remains (floored so it never collapses). Empty `DETAIL`
+/// renders as `-`.
+fn render_survey_table(result: &DetectResult, has_index: bool) {
+    let pending = result.pending();
+    if pending == 0 {
+        if has_index {
+            println!("No new findings in this lode.");
+        } else {
+            println!("The lode is empty — nothing to mine.");
+        }
+        return;
+    }
+
+    // Collect rows: (status, path, detail).
+    let mut rows: Vec<(&str, String, String)> = Vec::new();
+    for change in &result.changes {
+        match change {
+            Change::Added(snap) => {
+                rows.push(("new", snap.path.as_str().to_string(), String::new()));
+            }
+            Change::Modified { old, new } => rows.push((
+                "modified",
+                old.path.as_str().to_string(),
+                format!(
+                    "{} -> {} bytes, {} -> {}",
+                    old.size,
+                    new.size,
+                    format_unix_ts(old.mtime),
+                    format_unix_ts(new.mtime),
+                ),
+            )),
+            Change::Removed(record) => {
+                rows.push(("missing", record.path.as_str().to_string(), String::new()));
+            }
+            Change::Renamed { from, to } => rows.push((
+                "renamed",
+                format!("{} -> {}", from.as_str(), to.as_str()),
+                String::new(),
+            )),
+        }
+    }
+
+    // Column-width budget. STATUS is fixed; PATH scales with the longest
+    // path but respects floor/ceiling so neither extreme dominates; DETAIL
+    // targets a comfortable width but shrinks on narrow terminals so the
+    // table never overflows the available columns.
+    const STATUS_W: usize = 8; // "modified" is the longest status.
+    const COL_GAPS: usize = 4; // two-column gutters.
+    const MIN_PATH_W: usize = 28;
+    const MAX_PATH_W: usize = 48;
+    const MIN_DETAIL_W: usize = 22;
+    let term_w = terminal_size()
+        .map(|(Width(w), _)| w as usize)
+        .unwrap_or(80);
+
+    let widest_path = rows
+        .iter()
+        .map(|(_, p, _)| p.chars().count())
+        .max()
+        .unwrap_or(MIN_PATH_W);
+    let room_left_over = term_w.saturating_sub(STATUS_W + COL_GAPS + MIN_DETAIL_W);
+    let path_w = widest_path
+        .clamp(MIN_PATH_W, MAX_PATH_W)
+        .min(room_left_over.max(MIN_PATH_W));
+    let detail_w = term_w
+        .saturating_sub(STATUS_W + COL_GAPS + path_w)
+        .min(MIN_DETAIL_W);
+
+    println!(
+        "{:<status_w$}  {:<path_w$}  DETAIL",
+        "STATUS",
+        "PATH",
+        status_w = STATUS_W,
+        path_w = path_w,
+    );
+    for (status, path, detail) in &rows {
+        let path = truncate_middle(path, path_w);
+        let detail = if detail.is_empty() {
+            "-".to_string()
+        } else {
+            truncate_tail(detail, detail_w)
+        };
+        println!(
+            "{:<status_w$}  {:<path_w$}  {}",
+            status,
+            path,
+            detail,
+            status_w = STATUS_W,
+            path_w = path_w,
+        );
+    }
+}
+
+/// Elide the middle of a string beyond `max` characters, keeping both the
+/// head and the tail: `abc...xyz`.
+///
+/// Used for the `PATH` column: dropping the interior leaves the leading
+/// directories and the trailing filename recognisable, unlike a pure-tail
+/// crop which discards the interesting parts wholesale.
+///
+/// `max` counts Unicode scalar values, not display columns — CJK wide
+/// characters count as one. Paths are typically ASCII, so this is a
+/// reasonable approximation.
+fn truncate_middle(s: &str, max: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= max {
+        return s.to_string();
+    }
+    let avail = max.saturating_sub(3); // reserve space for "..."
+    let half = avail / 2;
+    let head_end = half;
+    let tail_start = chars.len() - (avail - half);
+    let head: String = chars[..head_end].iter().collect();
+    let tail: String = chars[tail_start..].iter().collect();
+    format!("{head}...{tail}")
+}
+
+/// Truncate a string to `max` characters, keeping the head.
+///
+/// Used for the `DETAIL` column: it is auxiliary, so cutting the tail is
+/// fine. `max` counts Unicode scalar values, not display columns.
+fn truncate_tail(s: &str, max: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= max {
+        return s.to_string();
+    }
+    let keep = max.saturating_sub(3);
+    let head: String = chars[..keep].iter().collect();
+    format!("{head}...")
 }
 
 /// Render a human-readable survey report.
