@@ -97,21 +97,21 @@ fn build_ignore_spec(root: &Path, ignore_files: &[&str]) -> Gitignore {
     }
 
     let lodeignore = root.join(LODEIGNORE);
-    if lodeignore.is_file() {
-        if let Ok(text) = fs::read_to_string(&lodeignore) {
-            for line in text.lines() {
-                let _ = builder.add_line(Some(lodeignore.clone()), line);
-            }
+    if lodeignore.is_file()
+        && let Ok(text) = fs::read_to_string(&lodeignore)
+    {
+        for line in text.lines() {
+            let _ = builder.add_line(Some(lodeignore.clone()), line);
         }
     }
 
     for name in ignore_files {
         let path = root.join(name);
-        if path.is_file() {
-            if let Ok(text) = fs::read_to_string(&path) {
-                for line in text.lines() {
-                    let _ = builder.add_line(Some(path.clone()), line);
-                }
+        if path.is_file()
+            && let Ok(text) = fs::read_to_string(&path)
+        {
+            for line in text.lines() {
+                let _ = builder.add_line(Some(path.clone()), line);
             }
         }
     }

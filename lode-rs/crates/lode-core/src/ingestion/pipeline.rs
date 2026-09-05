@@ -550,13 +550,13 @@ fn pair_renames(result: &mut DetectResult, root: &Path) {
             Err(_) => continue,
         };
         let digest = file_digest(&data);
-        if let Some(candidates) = removed_by_digest.get_mut(&digest) {
-            if let Some(old) = candidates.first().cloned() {
-                candidates.remove(0);
-                paired_added.insert(rel.clone());
-                paired_removed.insert(old.clone());
-                renamed_pairs.push((old, rel.clone()));
-            }
+        if let Some(candidates) = removed_by_digest.get_mut(&digest)
+            && let Some(old) = candidates.first().cloned()
+        {
+            candidates.remove(0);
+            paired_added.insert(rel.clone());
+            paired_removed.insert(old.clone());
+            renamed_pairs.push((old, rel.clone()));
         }
     }
 

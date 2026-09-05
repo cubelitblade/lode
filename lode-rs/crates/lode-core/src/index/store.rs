@@ -230,10 +230,10 @@ impl Store {
             ],
         )?;
 
-        if let Some(old_id) = previous {
-            if old_id != content_id {
-                gc_content_if_orphaned(&tx, old_id)?;
-            }
+        if let Some(old_id) = previous
+            && old_id != content_id
+        {
+            gc_content_if_orphaned(&tx, old_id)?;
         }
 
         tx.commit()?;
@@ -259,14 +259,14 @@ impl Store {
         chunks: &[Chunk],
         vectors: Option<&[Vec<f32>]>,
     ) -> crate::Result<bool> {
-        if let Some(vectors) = vectors {
-            if chunks.len() != vectors.len() {
-                return Err(crate::Error::Store(format!(
-                    "got {} chunks but {} vectors",
-                    chunks.len(),
-                    vectors.len()
-                )));
-            }
+        if let Some(vectors) = vectors
+            && chunks.len() != vectors.len()
+        {
+            return Err(crate::Error::Store(format!(
+                "got {} chunks but {} vectors",
+                chunks.len(),
+                vectors.len()
+            )));
         }
 
         let tx = self.conn.transaction()?;
@@ -303,10 +303,10 @@ impl Store {
             insert_chunks(&tx, content_id, chunks, vectors, self.meta.dimension)?;
         }
 
-        if let Some(old_id) = previous {
-            if old_id != content_id {
-                gc_content_if_orphaned(&tx, old_id)?;
-            }
+        if let Some(old_id) = previous
+            && old_id != content_id
+        {
+            gc_content_if_orphaned(&tx, old_id)?;
         }
 
         tx.commit()?;
@@ -944,8 +944,10 @@ mod tests {
             assert_eq!(*rowid, (i + 1) as i64);
             assert_eq!(embedding.len(), 128 * 4);
             let floats: Vec<f32> = embedding
-                .chunks_exact(4)
-                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| f32::from_le_bytes(*c))
                 .collect();
             assert_eq!(floats, vectors[i]);
         }

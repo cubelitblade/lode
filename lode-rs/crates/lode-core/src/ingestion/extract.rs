@@ -79,12 +79,14 @@ fn decode_utf16(data: &[u8]) -> Option<String> {
         return None;
     }
     let units: Vec<u16> = body
-        .chunks_exact(2)
-        .map(|b| {
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&b| {
             if little_endian {
-                u16::from_le_bytes([b[0], b[1]])
+                u16::from_le_bytes(b)
             } else {
-                u16::from_be_bytes([b[0], b[1]])
+                u16::from_be_bytes(b)
             }
         })
         .collect();
