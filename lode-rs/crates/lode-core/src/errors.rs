@@ -18,6 +18,13 @@ pub enum Error {
     #[error("store error: {0}")]
     Store(String),
 
+    /// A chunk vector's dimension differs from the index's vec0 schema.
+    ///
+    /// Mirrors Python's `DimensionMismatchError`: carries both widths so the
+    /// CLI can present a friendly recovery message.
+    #[error("dimension mismatch: stored {stored}, got {current}")]
+    DimensionMismatch { stored: u32, current: u32 },
+
     /// Errors from embedding providers.
     #[error("embedding error: {0}")]
     Embedding(String),

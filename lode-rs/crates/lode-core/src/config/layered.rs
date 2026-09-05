@@ -102,6 +102,7 @@ pub fn load_settings() -> Result<Settings, crate::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::EmbeddingProvider;
 
     #[test]
     fn defaults_when_no_config_exists() {
@@ -161,5 +162,62 @@ mod tests {
         std::fs::write(dir.path().join("lode.toml"), "[[[\n").unwrap();
         let err = load_settings_from(dir.path(), dir.path()).unwrap_err();
         assert!(err.to_string().contains("invalid TOML"));
+    }
+
+    #[test]
+    fn embedding_defaults_match_python() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = load_settings_from(dir.path(), dir.path()).unwrap();
+        let e = &settings.embedding;
+        assert_eq!(e.provider, EmbeddingProvider::OpenAICompatible);
+        assert_eq!(e.model, None);
+        assert_eq!(e.model_dimension, None);
+        assert_eq!(e.output_dimension, None);
+        assert_eq!(e.batch_size, 32);
+        assert_eq!(
+            e.openai_compatible.http.endpoint,
+            "https://api.openai.com/v1"
+        );
+        assert_eq!(e.tei_native.http.endpoint, "http://localhost:8080");
+        assert!(!e.tei_native.truncate);
+        assert_eq!(e.tei_native.truncation_direction, "right");
+        assert_eq!(e.ollama.http.endpoint, "http://localhost:11434");
+        assert!(e.ollama.truncate);
+    }
+
+    #[test]
+    fn reads_full_embedding_config_from_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("lode.toml"),
+            r#"
+[embedding]
+provider = "ollama"
+model = "nomic-embed-text"
+model_dimension = 768
+output_dimension = 512
+batch_size = 16
+
+[embedding.ollama]
+endpoint = "http://localhost:11435"
+key = "secret"
+max_retries = 5
+timeout = 30.0
+truncate = false
+"#,
+        )
+        .unwrap();
+        let settings = load_settings_from(dir.path(), dir.path()).unwrap();
+        let e = &settings.embedding;
+        assert_eq!(e.provider, EmbeddingProvider::Ollama);
+        assert_eq!(e.model.as_deref(), Some("nomic-embed-text"));
+        assert_eq!(e.model_dimension, Some(768));
+        assert_eq!(e.output_dimension, Some(512));
+        assert_eq!(e.batch_size, 16);
+        assert_eq!(e.ollama.http.endpoint, "http://localhost:11435");
+        assert_eq!(e.ollama.http.key.as_deref(), Some("secret"));
+        assert_eq!(e.ollama.http.max_retries, 5);
+        assert_eq!(e.ollama.http.timeout, 30.0);
+        assert!(!e.ollama.truncate);
     }
 }

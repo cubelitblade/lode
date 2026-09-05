@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
+use crate::embeddings::base::Embedder;
 use crate::index::records::{FileRecord, FileStatus};
 use crate::index::store::Store;
 use crate::ingestion::digest::file_digest;
@@ -251,8 +252,8 @@ pub fn detect_changes(
 /// `Renamed` (re-pointed at zero embedding cost), `Added` (new files),
 /// `Modified` (stat changed, re-extract needed), and `Removed` (gone).
 ///
-/// The 1b scope extracts and chunks text but does not embed vectors;
-/// the vec0 table stays empty until 1c lands the embedder.
+/// When `embedder` is present, chunk texts are embedded and written to the
+/// vec0 table; without one the index is text-only (FTS5 still works).
 ///
 /// Individual file failures are recorded on the summary and never abort
 /// the run. `report` (optional) is called as `report(done, total, path)`
@@ -266,6 +267,7 @@ pub fn sync(
     root: &Path,
     splitter: &crate::ingestion::split::RecursiveSegmentSplitter,
     detect: &DetectResult,
+    embedder: Option<&dyn Embedder>,
     report: Option<&dyn Fn(usize, usize, Option<&WorkspacePath>)>,
 ) -> crate::Result<SyncSummary> {
     use crate::ingestion::extract::extract_document;
@@ -421,11 +423,23 @@ pub fn sync(
             }
         };
 
-        // Split + store (no embedding in 1b).
+        // Split + embed + store.
         let chunks = splitter.split_segments(&segments);
 
-        match store.replace_file(&record, &chunks) {
-            Ok(_) => {
+        let outcome = (|| -> crate::Result<()> {
+            let vectors = match embedder {
+                Some(embedder) => {
+                    let texts: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
+                    Some(embedder.embed_documents(&texts)?)
+                }
+                None => None,
+            };
+            store.replace_file(&record, &chunks, vectors.as_deref())?;
+            Ok(())
+        })();
+
+        match outcome {
+            Ok(()) => {
                 if added_set.contains(rel) {
                     summary.added.push(rel.clone());
                 } else {
@@ -433,6 +447,19 @@ pub fn sync(
                 }
             }
             Err(exc) => {
+                // Only *domain* errors are downgraded to a per-file failure
+                // (mirroring Python's `except (EmbedderUnavailableError,
+                // StoreError)`); a programming error must propagate instead
+                // of being silently swallowed.
+                let is_domain = matches!(
+                    &exc,
+                    crate::Error::Embedding(_)
+                        | crate::Error::Store(_)
+                        | crate::Error::DimensionMismatch { .. }
+                );
+                if !is_domain {
+                    return Err(exc);
+                }
                 summary.failed.push(FailedFile {
                     path: rel.clone(),
                     error: exc.to_string(),
@@ -727,7 +754,7 @@ mod tests {
         let detect = detect_changes(&mut store, root, &[]).unwrap();
         assert_eq!(detect.added_count(), 1);
 
-        let summary = sync(&mut store, root, &splitter, &detect, None).unwrap();
+        let summary = sync(&mut store, root, &splitter, &detect, None, None).unwrap();
         assert_eq!(summary.added.len(), 1);
         assert_eq!(summary.failed.len(), 0);
 
@@ -749,7 +776,7 @@ mod tests {
 
         // First sync: index the file.
         let detect = detect_changes(&mut store, root, &[]).unwrap();
-        sync(&mut store, root, &splitter, &detect, None).unwrap();
+        sync(&mut store, root, &splitter, &detect, None, None).unwrap();
         assert_eq!(store.list_files().unwrap().len(), 1);
 
         // Delete the file.
@@ -757,7 +784,7 @@ mod tests {
         let detect = detect_changes(&mut store, root, &[]).unwrap();
         assert_eq!(detect.removed_count(), 1);
 
-        let summary = sync(&mut store, root, &splitter, &detect, None).unwrap();
+        let summary = sync(&mut store, root, &splitter, &detect, None, None).unwrap();
         assert_eq!(summary.removed.len(), 1);
         assert!(store.list_files().unwrap().is_empty());
     }
@@ -778,7 +805,7 @@ mod tests {
         let detect = detect_changes(&mut store, root, &[]).unwrap();
         assert_eq!(detect.skipped.len(), 1);
 
-        let summary = sync(&mut store, root, &splitter, &detect, None).unwrap();
+        let summary = sync(&mut store, root, &splitter, &detect, None, None).unwrap();
         assert_eq!(summary.skipped, 1);
         assert!(store.list_files().unwrap().is_empty());
     }
@@ -841,7 +868,7 @@ mod tests {
 
         // Index a.txt.
         let detect = detect_changes(&mut store, root, &[]).unwrap();
-        sync(&mut store, root, &splitter, &detect, None).unwrap();
+        sync(&mut store, root, &splitter, &detect, None, None).unwrap();
 
         // Rename a.txt -> b.txt with identical content, then change b.txt's
         // content so the rename pairing succeeds at detect time but the
@@ -851,11 +878,113 @@ mod tests {
         assert_eq!(detect.renamed_count(), 1);
 
         fs::write(root.join("b.txt"), "changed content").unwrap();
-        let summary = sync(&mut store, root, &splitter, &detect, None).unwrap();
+        let summary = sync(&mut store, root, &splitter, &detect, None, None).unwrap();
         // The fallback re-embeds b.txt and counts it as added (Python
         // semantics: `added_paths` includes rename fallbacks).
         assert_eq!(summary.added.len(), 1);
         assert_eq!(summary.updated.len(), 0);
         assert_eq!(summary.renamed.len(), 0);
+    }
+
+    /// Deterministic fake embedder: every text maps to a fixed vector and
+    /// records the texts it was asked to embed.
+    struct RecordingEmbedder {
+        dim: usize,
+        calls: std::rc::Rc<std::cell::RefCell<Vec<Vec<String>>>>,
+    }
+
+    impl Embedder for RecordingEmbedder {
+        fn model_id(&self) -> crate::Result<String> {
+            Ok("fake".to_string())
+        }
+
+        fn dimension(&self) -> crate::Result<usize> {
+            Ok(self.dim)
+        }
+
+        fn embed_documents(&self, texts: &[String]) -> crate::Result<Vec<Vec<f32>>> {
+            self.calls.borrow_mut().push(texts.to_vec());
+            Ok(texts
+                .iter()
+                .map(|t| vec![t.len() as f32; self.dim])
+                .collect())
+        }
+
+        fn embed_query(&self, text: &str) -> crate::Result<Vec<f32>> {
+            Ok(vec![text.len() as f32; self.dim])
+        }
+    }
+
+    #[test]
+    fn sync_with_embedder_embeds_chunk_texts() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("hello.txt"), "hello world").unwrap();
+
+        let db = root.join("index.db");
+        let mut store = Store::open(&db, 128, "unicode61").unwrap();
+        let splitter = crate::ingestion::split::RecursiveSegmentSplitter::new(200, 50).unwrap();
+        let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let embedder = RecordingEmbedder {
+            dim: 128,
+            calls: calls.clone(),
+        };
+
+        let detect = detect_changes(&mut store, root, &[]).unwrap();
+        let summary = sync(&mut store, root, &splitter, &detect, Some(&embedder), None).unwrap();
+        assert_eq!(summary.added.len(), 1);
+        assert_eq!(summary.failed.len(), 0);
+
+        // The embedder was asked to embed the file's chunk texts.
+        let recorded = calls.borrow();
+        assert_eq!(recorded.len(), 1);
+        assert!(!recorded[0].is_empty());
+        assert_eq!(recorded[0][0], "hello world");
+    }
+
+    #[test]
+    fn sync_embedder_failure_marks_file_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("hello.txt"), "hello world").unwrap();
+
+        let db = root.join("index.db");
+        let mut store = Store::open(&db, 128, "unicode61").unwrap();
+        let splitter = crate::ingestion::split::RecursiveSegmentSplitter::new(200, 50).unwrap();
+
+        // An embedder that always fails.
+        struct FailingEmbedder;
+        impl Embedder for FailingEmbedder {
+            fn model_id(&self) -> crate::Result<String> {
+                Err(crate::Error::Embedding("boom".into()))
+            }
+            fn dimension(&self) -> crate::Result<usize> {
+                Err(crate::Error::Embedding("boom".into()))
+            }
+            fn embed_documents(&self, _texts: &[String]) -> crate::Result<Vec<Vec<f32>>> {
+                Err(crate::Error::Embedding("boom".into()))
+            }
+            fn embed_query(&self, _text: &str) -> crate::Result<Vec<f32>> {
+                Err(crate::Error::Embedding("boom".into()))
+            }
+        }
+
+        let detect = detect_changes(&mut store, root, &[]).unwrap();
+        let summary = sync(
+            &mut store,
+            root,
+            &splitter,
+            &detect,
+            Some(&FailingEmbedder),
+            None,
+        )
+        .unwrap();
+        assert_eq!(summary.added.len(), 0);
+        assert_eq!(summary.failed.len(), 1);
+        assert!(summary.failed[0].error.contains("boom"));
+
+        // The file was never indexed (embedding failed before replace_file);
+        // a later run detects it as new and retries.
+        assert!(store.list_files().unwrap().is_empty());
     }
 }

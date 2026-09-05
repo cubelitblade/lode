@@ -240,15 +240,35 @@ impl Store {
         Ok(true)
     }
 
-    /// Atomically replace `record.path`'s content, writing chunks.
+    /// Atomically replace `record.path`'s content, writing chunks and vectors.
     ///
     /// Creates the content row when this is its first reference; reuses
     /// existing content when another path already indexed the same digest.
     /// When the path moves away from a previous content, that content is
     /// dropped once its last reference disappears.
     ///
+    /// `vectors` is `None` for text-only writes (no embedding layer wired
+    /// yet); when present it must be one per chunk and match the index
+    /// dimension (checked only when the content is actually written,
+    /// mirroring Python).
+    ///
     /// Returns whether the content was newly created.
-    pub fn replace_file(&mut self, record: &FileRecord, chunks: &[Chunk]) -> crate::Result<bool> {
+    pub fn replace_file(
+        &mut self,
+        record: &FileRecord,
+        chunks: &[Chunk],
+        vectors: Option<&[Vec<f32>]>,
+    ) -> crate::Result<bool> {
+        if let Some(vectors) = vectors {
+            if chunks.len() != vectors.len() {
+                return Err(crate::Error::Store(format!(
+                    "got {} chunks but {} vectors",
+                    chunks.len(),
+                    vectors.len()
+                )));
+            }
+        }
+
         let tx = self.conn.transaction()?;
 
         let (content_id, created) = ensure_content(&tx, &record.digest)?;
@@ -278,9 +298,9 @@ impl Store {
             ],
         )?;
 
-        // Write chunks only when content is newly created.
+        // Write chunks and vectors only when content is newly created.
         if created {
-            insert_chunks(&tx, content_id, chunks)?;
+            insert_chunks(&tx, content_id, chunks, vectors, self.meta.dimension)?;
         }
 
         if let Some(old_id) = previous {
@@ -379,14 +399,28 @@ fn gc_content_if_orphaned(conn: &Connection, content_id: i64) -> crate::Result<(
     Ok(())
 }
 
-/// Write chunk rows (and their FTS5 sync triggers fire automatically).
-fn insert_chunks(conn: &Connection, content_id: i64, chunks: &[Chunk]) -> crate::Result<()> {
+/// Write chunk rows (FTS5 sync triggers fire automatically) and, when
+/// vectors are present, their embeddings into the vec0 table.
+///
+/// Vectors are serialized as JSON arrays (what sqlite-vec expects) and keyed
+/// by the chunk's rowid. A vector whose width differs from the index
+/// dimension is refused with [`crate::Error::DimensionMismatch`], mirroring
+/// Python's `DimensionMismatchError`.
+fn insert_chunks(
+    conn: &Connection,
+    content_id: i64,
+    chunks: &[Chunk],
+    vectors: Option<&[Vec<f32>]>,
+    dimension: u32,
+) -> crate::Result<()> {
     let mut stmt = conn.prepare(
         "INSERT INTO chunks (digest, content_id, seq, text, heading, page)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
     )?;
+    let mut vec_stmt =
+        conn.prepare("INSERT INTO chunk_vectors (rowid, embedding) VALUES (?1, ?2)")?;
 
-    for chunk in chunks {
+    for (i, chunk) in chunks.iter().enumerate() {
         stmt.execute(rusqlite::params![
             chunk.digest,
             content_id,
@@ -395,6 +429,19 @@ fn insert_chunks(conn: &Connection, content_id: i64, chunks: &[Chunk]) -> crate:
             chunk.heading,
             chunk.page.map(|p| p as i64),
         ])?;
+        if let Some(vectors) = vectors {
+            let vector = &vectors[i];
+            if vector.len() != dimension as usize {
+                return Err(crate::Error::DimensionMismatch {
+                    stored: dimension,
+                    current: vector.len() as u32,
+                });
+            }
+            let rowid = conn.last_insert_rowid();
+            let embedding = serde_json::to_string(vector)
+                .map_err(|e| crate::Error::Store(format!("could not serialize embedding: {e}")))?;
+            vec_stmt.execute(rusqlite::params![rowid, embedding])?;
+        }
     }
 
     Ok(())
@@ -624,6 +671,11 @@ mod tests {
             .collect()
     }
 
+    /// `n` vectors of `dimension` width, each entry equal to its index.
+    fn make_vectors(n: usize, dimension: usize) -> Vec<Vec<f32>> {
+        (0..n).map(|i| vec![i as f32; dimension]).collect()
+    }
+
     #[test]
     fn reference_file_new_content() {
         let dir = tempfile::tempdir().unwrap();
@@ -645,7 +697,11 @@ mod tests {
         // Create the content first.
         let r1 = make_record("a.txt", "blake3:same", 1.0, 100);
         store
-            .replace_file(&r1, &make_chunks("blake3:same", 1))
+            .replace_file(
+                &r1,
+                &make_chunks("blake3:same", 1),
+                Some(&make_vectors(1, 128)),
+            )
             .unwrap();
 
         // Second path references the existing content.
@@ -666,7 +722,9 @@ mod tests {
 
         let rec = make_record("doc.txt", "blake3:bbb", 1.0, 50);
         let chunks = make_chunks("blake3:bbb", 3);
-        let created = store.replace_file(&rec, &chunks).unwrap();
+        let created = store
+            .replace_file(&rec, &chunks, Some(&make_vectors(3, 128)))
+            .unwrap();
         assert!(created);
 
         // Chunks are in the database.
@@ -675,6 +733,13 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM chunks", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 3);
+
+        // Vectors are in the vec0 table, one per chunk.
+        let vec_count: i64 = store
+            .conn
+            .query_row("SELECT COUNT(*) FROM chunk_vectors", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(vec_count, 3);
     }
 
     #[test]
@@ -686,11 +751,15 @@ mod tests {
         // First file creates the content.
         let r1 = make_record("a.txt", "blake3:shared", 1.0, 100);
         let chunks = make_chunks("blake3:shared", 2);
-        store.replace_file(&r1, &chunks).unwrap();
+        store
+            .replace_file(&r1, &chunks, Some(&make_vectors(2, 128)))
+            .unwrap();
 
         // Second file with same digest reuses content; no extra chunks.
         let r2 = make_record("b.txt", "blake3:shared", 2.0, 100);
-        let created = store.replace_file(&r2, &chunks).unwrap();
+        let created = store
+            .replace_file(&r2, &chunks, Some(&make_vectors(2, 128)))
+            .unwrap();
         assert!(!created);
 
         let count: i64 = store
@@ -698,6 +767,12 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM chunks", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 2); // still 2, not 4
+
+        let vec_count: i64 = store
+            .conn
+            .query_row("SELECT COUNT(*) FROM chunk_vectors", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(vec_count, 2); // still 2, not 4
     }
 
     #[test]
@@ -708,7 +783,9 @@ mod tests {
 
         let rec = make_record("only.txt", "blake3:ccc", 1.0, 10);
         let chunks = make_chunks("blake3:ccc", 1);
-        store.replace_file(&rec, &chunks).unwrap();
+        store
+            .replace_file(&rec, &chunks, Some(&make_vectors(1, 128)))
+            .unwrap();
 
         store
             .remove_file(&WorkspacePath::from_posix("only.txt"))
@@ -721,6 +798,11 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM contents", [], |row| row.get(0))
             .unwrap();
         assert_eq!(content_count, 0);
+        let vec_count: i64 = store
+            .conn
+            .query_row("SELECT COUNT(*) FROM chunk_vectors", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(vec_count, 0);
     }
 
     #[test]
@@ -731,10 +813,18 @@ mod tests {
 
         let chunks = make_chunks("blake3:ddd", 1);
         store
-            .replace_file(&make_record("a.txt", "blake3:ddd", 1.0, 10), &chunks)
+            .replace_file(
+                &make_record("a.txt", "blake3:ddd", 1.0, 10),
+                &chunks,
+                Some(&make_vectors(1, 128)),
+            )
             .unwrap();
         store
-            .replace_file(&make_record("b.txt", "blake3:ddd", 2.0, 10), &chunks)
+            .replace_file(
+                &make_record("b.txt", "blake3:ddd", 2.0, 10),
+                &chunks,
+                Some(&make_vectors(1, 128)),
+            )
             .unwrap();
 
         store
@@ -758,13 +848,21 @@ mod tests {
 
         let r1 = make_record("doc.txt", "blake3:v1", 1.0, 100);
         store
-            .replace_file(&r1, &make_chunks("blake3:v1", 2))
+            .replace_file(
+                &r1,
+                &make_chunks("blake3:v1", 2),
+                Some(&make_vectors(2, 128)),
+            )
             .unwrap();
 
         // Same path, different content.
         let r2 = make_record("doc.txt", "blake3:v2", 2.0, 200);
         store
-            .replace_file(&r2, &make_chunks("blake3:v2", 3))
+            .replace_file(
+                &r2,
+                &make_chunks("blake3:v2", 3),
+                Some(&make_vectors(3, 128)),
+            )
             .unwrap();
 
         let files = store.list_files().unwrap();
@@ -778,5 +876,78 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM contents", [], |row| row.get(0))
             .unwrap();
         assert_eq!(content_count, 1);
+    }
+
+    #[test]
+    fn replace_file_rejects_chunk_vector_count_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("index.db");
+        let mut store = Store::open(&db, 128, "unicode61").unwrap();
+
+        let rec = make_record("doc.txt", "blake3:mmm", 1.0, 50);
+        let chunks = make_chunks("blake3:mmm", 3);
+        let err = store
+            .replace_file(&rec, &chunks, Some(&make_vectors(2, 128)))
+            .unwrap_err();
+        assert!(err.to_string().contains("3 chunks but 2 vectors"));
+    }
+
+    #[test]
+    fn replace_file_rejects_dimension_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("index.db");
+        let mut store = Store::open(&db, 128, "unicode61").unwrap();
+
+        let rec = make_record("doc.txt", "blake3:mmm", 1.0, 50);
+        let chunks = make_chunks("blake3:mmm", 1);
+        let err = store
+            .replace_file(&rec, &chunks, Some(&make_vectors(1, 64)))
+            .unwrap_err();
+        assert!(err.to_string().contains("dimension mismatch"));
+        assert!(err.to_string().contains("stored 128"));
+        assert!(err.to_string().contains("got 64"));
+
+        // Nothing was written.
+        let count: i64 = store
+            .conn
+            .query_row("SELECT COUNT(*) FROM chunks", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn replace_file_writes_vectors_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("index.db");
+        let mut store = Store::open(&db, 128, "unicode61").unwrap();
+
+        let rec = make_record("doc.txt", "blake3:vvv", 1.0, 50);
+        let chunks = make_chunks("blake3:vvv", 2);
+        let vectors = make_vectors(2, 128);
+        store.replace_file(&rec, &chunks, Some(&vectors)).unwrap();
+
+        // Each chunk rowid has a matching vector row with the same width.
+        // sqlite-vec stores the embedding as a BLOB of raw little-endian
+        // float32 values (128 * 4 = 512 bytes).
+        let rows: Vec<(i64, Vec<u8>)> = {
+            let mut stmt = store
+                .conn
+                .prepare("SELECT rowid, embedding FROM chunk_vectors ORDER BY rowid")
+                .unwrap();
+            let rows = stmt
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap();
+            rows.collect::<Result<Vec<_>, _>>().unwrap()
+        };
+        assert_eq!(rows.len(), 2);
+        for (i, (rowid, embedding)) in rows.iter().enumerate() {
+            assert_eq!(*rowid, (i + 1) as i64);
+            assert_eq!(embedding.len(), 128 * 4);
+            let floats: Vec<f32> = embedding
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                .collect();
+            assert_eq!(floats, vectors[i]);
+        }
     }
 }
