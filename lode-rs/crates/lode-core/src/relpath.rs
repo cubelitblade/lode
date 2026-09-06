@@ -194,8 +194,10 @@ mod tests {
     #[test]
     fn to_native_and_display() {
         let p = WorkspacePath::from_posix("docs/readme.md");
-        assert_eq!(p.to_native(), PathBuf::from("docs").join("readme.md"));
-        assert_eq!(p.to_native_display(), "docs/readme.md");
+        let native = PathBuf::from("docs").join("readme.md");
+        assert_eq!(p.to_native(), native);
+        // Display form is OS-native, not posix.
+        assert_eq!(p.to_native_display(), native.to_string_lossy());
         assert_eq!(p.to_string(), "docs/readme.md");
     }
 
@@ -255,8 +257,12 @@ mod tests {
 
     #[test]
     fn free_function_to_native() {
+        let native = PathBuf::from("a").join("b").join("c");
         let p = to_native("a/b/c");
-        assert_eq!(p, PathBuf::from("a").join("b").join("c"));
-        assert_eq!(to_native_display("docs/readme.md"), "docs/readme.md");
+        assert_eq!(p, native);
+        assert_eq!(
+            to_native_display("docs/readme.md"),
+            PathBuf::from("docs").join("readme.md").to_string_lossy()
+        );
     }
 }
