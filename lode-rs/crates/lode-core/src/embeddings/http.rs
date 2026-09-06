@@ -245,6 +245,13 @@ impl HttpEmbedder {
                         return Ok(resp);
                     }
                     attempt += 1;
+                    log::warn!(
+                        "{} embedding endpoint stumbled with status {}; retrying attempt {}/{}",
+                        self.backend.backend_label(),
+                        resp.status,
+                        attempt,
+                        self.retries,
+                    );
                     (self.backoff)(attempt);
                 }
                 Err(exc) => {
@@ -255,6 +262,13 @@ impl HttpEmbedder {
                         )));
                     }
                     attempt += 1;
+                    log::warn!(
+                        "{} embedding request stumbled ({}); retrying attempt {}/{}",
+                        self.backend.backend_label(),
+                        exc,
+                        attempt,
+                        self.retries,
+                    );
                     (self.backoff)(attempt);
                 }
             }
@@ -276,7 +290,9 @@ impl Embedder for HttpEmbedder {
         // Lazy: fetch once, then cache.
         let mut fetched = self.fetched_model.borrow_mut();
         if fetched.is_none() {
-            *fetched = Some(self.backend.fetch_model_id(self)?);
+            let model = self.backend.fetch_model_id(self)?;
+            log::info!("Struck a lode: model={model}");
+            *fetched = Some(model);
         }
         Ok(fetched.clone().expect("just set"))
     }
@@ -295,6 +311,13 @@ impl Embedder for HttpEmbedder {
                 })?
                 .len();
             *fetched = Some(dim);
+            // Mirror Python's `dimension` property, which logs the discovered
+            // model alongside the dimension. Discovery failure here is not
+            // fatal: the caller resolves `model_id` separately when it needs it.
+            match self.model_id() {
+                Ok(model) => log::info!("Struck a lode: model={model}, dimension={dim}"),
+                Err(e) => log::debug!("dimension probed ({dim}); model discovery deferred: {e}"),
+            }
         }
         Ok(fetched.expect("just set"))
     }
@@ -444,13 +467,19 @@ mod tests {
 
     #[test]
     fn dimension_is_lazy_and_probes() {
-        let client = shared_mock(vec![vec_response(1, 4)]);
+        // The probe (POST /embed) is followed by model discovery (GET /info),
+        // mirroring Python's `dimension` property which logs the discovered
+        // model alongside the dimension.
+        let client = shared_mock(vec![
+            vec_response(1, 4),
+            MockResponse::json(200, r#"{"model_id":"test-model"}"#),
+        ]);
         let emb = embedder(client.clone(), 2);
         assert_eq!(emb.dimension().unwrap(), 4);
         assert_eq!(emb.dimension().unwrap(), 4);
         assert_eq!(
             client.borrow().request_count(),
-            1,
+            2,
             "second access must not re-probe"
         );
     }

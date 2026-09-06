@@ -1084,6 +1084,7 @@ version = "0.1.0-alpha.3+snapshot.1"
 dependencies = [
  "blake3",
  "ignore",
+ "log",
  "reqwest",
  "rusqlite",
  "serde",

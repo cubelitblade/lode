@@ -25,6 +25,9 @@ sqlite-vec = "0.1"
 toml = "0.8"
 reqwest = { version = "0.13.4", features = ["blocking", "json"] }
 serde_json = "1"
+# log is the facade; the CLI installs env_logger as the sink. Diagnostics
+# (retry backoff, lazy metadata discovery) mirror Python's `logging` calls.
+log = "0.4"
 
 [dev-dependencies]
 serde_json = "1"
