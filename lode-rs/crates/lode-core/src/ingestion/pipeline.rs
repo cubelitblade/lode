@@ -748,7 +748,7 @@ mod tests {
         fs::write(root.join("hello.txt"), "hello world").unwrap();
 
         let db = root.join("index.db");
-        let mut store = Store::open(&db, 128, "unicode61").unwrap();
+        let mut store = Store::open(&db, "test-model", 128, "unicode61").unwrap();
         let splitter = crate::ingestion::split::RecursiveSegmentSplitter::new(200, 50).unwrap();
 
         let detect = detect_changes(&mut store, root, &[]).unwrap();
@@ -771,7 +771,7 @@ mod tests {
         fs::write(root.join("a.txt"), "aaa").unwrap();
 
         let db = root.join("index.db");
-        let mut store = Store::open(&db, 128, "unicode61").unwrap();
+        let mut store = Store::open(&db, "test-model", 128, "unicode61").unwrap();
         let splitter = crate::ingestion::split::RecursiveSegmentSplitter::new(200, 50).unwrap();
 
         // First sync: index the file.
@@ -799,7 +799,7 @@ mod tests {
         // the discovery pass.
         let db_dir = tempfile::tempdir().unwrap();
         let db = db_dir.path().join("index.db");
-        let mut store = Store::open(&db, 128, "unicode61").unwrap();
+        let mut store = Store::open(&db, "test-model", 128, "unicode61").unwrap();
         let splitter = crate::ingestion::split::RecursiveSegmentSplitter::new(200, 50).unwrap();
 
         let detect = detect_changes(&mut store, root, &[]).unwrap();
@@ -863,7 +863,7 @@ mod tests {
         fs::write(root.join("a.txt"), "same content").unwrap();
 
         let db = root.join("index.db");
-        let mut store = Store::open(&db, 128, "unicode61").unwrap();
+        let mut store = Store::open(&db, "test-model", 128, "unicode61").unwrap();
         let splitter = crate::ingestion::split::RecursiveSegmentSplitter::new(200, 50).unwrap();
 
         // Index a.txt.
@@ -922,7 +922,7 @@ mod tests {
         fs::write(root.join("hello.txt"), "hello world").unwrap();
 
         let db = root.join("index.db");
-        let mut store = Store::open(&db, 128, "unicode61").unwrap();
+        let mut store = Store::open(&db, "test-model", 128, "unicode61").unwrap();
         let splitter = crate::ingestion::split::RecursiveSegmentSplitter::new(200, 50).unwrap();
         let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let embedder = RecordingEmbedder {
@@ -949,7 +949,7 @@ mod tests {
         fs::write(root.join("hello.txt"), "hello world").unwrap();
 
         let db = root.join("index.db");
-        let mut store = Store::open(&db, 128, "unicode61").unwrap();
+        let mut store = Store::open(&db, "test-model", 128, "unicode61").unwrap();
         let splitter = crate::ingestion::split::RecursiveSegmentSplitter::new(200, 50).unwrap();
 
         // An embedder that always fails.

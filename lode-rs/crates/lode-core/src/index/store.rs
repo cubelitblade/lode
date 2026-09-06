@@ -48,19 +48,25 @@ pub struct Store {
 impl Store {
     /// Open an index database, creating it when it does not exist.
     ///
-    /// Creation needs the vector dimension (sizes the vec0 table) and the
-    /// FTS5 tokenizer; both are recorded in `meta` and validated on later
-    /// opens. Fails if the database exists but is incompatible.
-    pub fn open(path: &Path, dimension: u32, tokenizer: &str) -> crate::Result<Self> {
+    /// Creation needs the embedder's model id and vector dimension (the
+    /// dimension sizes the vec0 table) plus the FTS5 tokenizer; all three
+    /// are recorded in `meta` and validated on later opens. Fails if the
+    /// database exists but is incompatible.
+    pub fn open(
+        path: &Path,
+        model_id: &str,
+        dimension: u32,
+        tokenizer: &str,
+    ) -> crate::Result<Self> {
         if path.is_file() {
             Self::open_existing(path)
         } else {
-            Self::create(path, dimension, tokenizer)
+            Self::create(path, model_id, dimension, tokenizer)
         }
     }
 
     /// Create a fresh index database with the full schema.
-    fn create(path: &Path, dimension: u32, tokenizer: &str) -> crate::Result<Self> {
+    fn create(path: &Path, model_id: &str, dimension: u32, tokenizer: &str) -> crate::Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -73,7 +79,7 @@ impl Store {
         let conn = Connection::open(path)?;
         configure_connection(&conn)?;
         schema::create_schema(&conn, dimension, tokenizer)?;
-        write_meta(&conn, dimension, tokenizer)?;
+        write_meta(&conn, model_id, dimension, tokenizer)?;
         let meta = read_meta(&conn)?;
 
         Ok(Self {
@@ -107,6 +113,38 @@ impl Store {
             conn,
             meta,
         })
+    }
+
+    /// Archive an existing index database out of the way so a fresh one can
+    /// be built in its place.
+    ///
+    /// Moves the database and its WAL companion files (`-wal`, `-shm`) to
+    /// sibling `.bak` paths, tolerating companions that are absent. Because
+    /// the CLI is the only writer, archiving by rename is sound: the caller
+    /// drops any open connections first, then reopening via [`Store::open`]
+    /// lands on the create path and rebuilds a pristine index.
+    ///
+    /// Returns whether the primary database existed (i.e. anything was
+    /// archived). Deliberately does not validate the embedder — the caller
+    /// owns that — mirroring Python, where compatibility checks precede
+    /// destruction so a mis-configured run leaves the old index intact.
+    pub fn reset(path: &Path) -> crate::Result<bool> {
+        let existed = path.is_file();
+        for (tail, bak_tail) in [("", ".bak"), ("-wal", "-wal.bak"), ("-shm", "-shm.bak")] {
+            let src = Self::appended(path, tail);
+            let dst = Self::appended(path, bak_tail);
+            if matches!(src.try_exists(), Ok(true)) {
+                std::fs::rename(src, dst)?;
+            }
+        }
+        Ok(existed)
+    }
+
+    /// Append `suffix` to a path's file-name portion (keeping any extension).
+    fn appended(path: &Path, suffix: &str) -> PathBuf {
+        let mut os = path.as_os_str().to_owned();
+        os.push(suffix);
+        PathBuf::from(os)
     }
 
     /// The stored index metadata.
@@ -525,16 +563,22 @@ fn meta_get(conn: &Connection, key: &str) -> crate::Result<Option<String>> {
 
 /// Write the metadata header on a freshly created database.
 ///
-/// `model_id` is empty until the embedding layer lands (1c); dimension and
-/// tokenizer are the values the schema was built with.
-fn write_meta(conn: &Connection, dimension: u32, tokenizer: &str) -> crate::Result<()> {
+/// `model_id`, `dimension`, and `tokenizer` are the values the schema was
+/// built with; `model_id` comes from the embedder (mirroring Python's
+/// `_initialize`, which writes `embedder.model_id`).
+fn write_meta(
+    conn: &Connection,
+    model_id: &str,
+    dimension: u32,
+    tokenizer: &str,
+) -> crate::Result<()> {
     conn.execute(
         "INSERT INTO meta (key, value) VALUES (?1, ?2)",
         rusqlite::params!["schema_version", SCHEMA_VERSION.to_string()],
     )?;
     conn.execute(
         "INSERT INTO meta (key, value) VALUES (?1, ?2)",
-        rusqlite::params!["model_id", ""],
+        rusqlite::params!["model_id", model_id],
     )?;
     conn.execute(
         "INSERT INTO meta (key, value) VALUES (?1, ?2)",
@@ -580,10 +624,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join(".lode").join("index.db");
 
-        let store = Store::open(&db, 512, "unicode61").unwrap();
+        let store = Store::open(&db, "test-model", 512, "unicode61").unwrap();
 
         // Metadata header is recorded.
         assert_eq!(store.meta().schema_version, SCHEMA_VERSION.to_string());
+        assert_eq!(store.meta().model_id, "test-model");
         assert_eq!(store.meta().dimension, 512);
         assert_eq!(store.meta().tokenizer, "unicode61");
 
@@ -602,11 +647,53 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("index.db");
 
-        Store::open(&db, 256, "unicode61").unwrap();
+        Store::open(&db, "test-model", 256, "unicode61").unwrap();
 
         let reopened = Store::open_existing(&db).unwrap();
         assert_eq!(reopened.meta().dimension, 256);
         assert_eq!(reopened.meta().tokenizer, "unicode61");
+        assert_eq!(reopened.meta().model_id, "test-model");
+    }
+
+    #[test]
+    fn reset_archives_the_db_out_of_the_way() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join(".lode").join("index.db");
+
+        // Populate a database so the archive provably carried data away.
+        {
+            let mut store = Store::open(&db, "test-model", 768, "unicode61").unwrap();
+            let rec = FileRecord {
+                path: WorkspacePath::from_posix("doc.md"),
+                digest: "abc".into(),
+                mtime: 1710000000.0,
+                size: 777,
+                status: FileStatus::Fresh,
+            };
+            store.reference_file(&rec).unwrap();
+        }
+
+        // Archiving happened and cleared the primary path.
+        assert!(Store::reset(&db).unwrap());
+        assert!(!db.exists());
+
+        let bak = dir.path().join(".lode").join("index.db.bak");
+        assert!(bak.is_file(), "archive file should exist");
+
+        // Opening again rebuilds a pristine index carrying the new metadata.
+        let rebuilt = Store::open(&db, "second-model", 896, "unicode61").unwrap();
+        assert_eq!(rebuilt.meta().model_id, "second-model");
+        assert_eq!(rebuilt.meta().dimension, 896);
+        assert_eq!(rebuilt.list_files().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn reset_is_a_no_op_when_no_db_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("absent.db");
+
+        assert!(!Store::reset(&db).unwrap());
+        assert!(!db.exists());
     }
 
     #[test]
@@ -614,7 +701,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("index.db");
 
-        let err = Store::open(&db, 0, "simple").unwrap_err();
+        let err = Store::open(&db, "test-model", 0, "simple").unwrap_err();
         assert!(err.to_string().contains("dimension must be positive"));
     }
 
@@ -623,7 +710,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("index.db");
 
-        let err = Store::open(&db, 512, "bogus").unwrap_err();
+        let err = Store::open(&db, "test-model", 512, "bogus").unwrap_err();
         assert!(err.to_string().contains("unknown tokenizer"));
     }
 
@@ -632,7 +719,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("index.db");
 
-        let err = Store::open(&db, 512, "simple").unwrap_err();
+        let err = Store::open(&db, "test-model", 512, "simple").unwrap_err();
         assert!(err.to_string().contains("native extension"));
     }
 
@@ -680,7 +767,7 @@ mod tests {
     fn reference_file_new_content() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("index.db");
-        let mut store = Store::open(&db, 128, "unicode61").unwrap();
+        let mut store = Store::open(&db, "test-model", 128, "unicode61").unwrap();
 
         let rec = make_record("a.txt", "blake3:aaa", 1.0, 100);
         assert!(!store.reference_file(&rec).unwrap());
@@ -692,7 +779,7 @@ mod tests {
     fn reference_file_reuses_existing_content() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("index.db");
-        let mut store = Store::open(&db, 128, "unicode61").unwrap();
+        let mut store = Store::open(&db, "test-model", 128, "unicode61").unwrap();
 
         // Create the content first.
         let r1 = make_record("a.txt", "blake3:same", 1.0, 100);
@@ -718,7 +805,7 @@ mod tests {
     fn replace_file_creates_content_and_chunks() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("index.db");
-        let mut store = Store::open(&db, 128, "unicode61").unwrap();
+        let mut store = Store::open(&db, "test-model", 128, "unicode61").unwrap();
 
         let rec = make_record("doc.txt", "blake3:bbb", 1.0, 50);
         let chunks = make_chunks("blake3:bbb", 3);
@@ -746,7 +833,7 @@ mod tests {
     fn replace_file_reuses_existing_content() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("index.db");
-        let mut store = Store::open(&db, 128, "unicode61").unwrap();
+        let mut store = Store::open(&db, "test-model", 128, "unicode61").unwrap();
 
         // First file creates the content.
         let r1 = make_record("a.txt", "blake3:shared", 1.0, 100);
@@ -779,7 +866,7 @@ mod tests {
     fn remove_file_drops_path_and_orphans_content() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("index.db");
-        let mut store = Store::open(&db, 128, "unicode61").unwrap();
+        let mut store = Store::open(&db, "test-model", 128, "unicode61").unwrap();
 
         let rec = make_record("only.txt", "blake3:ccc", 1.0, 10);
         let chunks = make_chunks("blake3:ccc", 1);
@@ -809,7 +896,7 @@ mod tests {
     fn remove_file_preserves_shared_content() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("index.db");
-        let mut store = Store::open(&db, 128, "unicode61").unwrap();
+        let mut store = Store::open(&db, "test-model", 128, "unicode61").unwrap();
 
         let chunks = make_chunks("blake3:ddd", 1);
         store
@@ -844,7 +931,7 @@ mod tests {
     fn replace_file_updates_existing_path() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("index.db");
-        let mut store = Store::open(&db, 128, "unicode61").unwrap();
+        let mut store = Store::open(&db, "test-model", 128, "unicode61").unwrap();
 
         let r1 = make_record("doc.txt", "blake3:v1", 1.0, 100);
         store
@@ -882,7 +969,7 @@ mod tests {
     fn replace_file_rejects_chunk_vector_count_mismatch() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("index.db");
-        let mut store = Store::open(&db, 128, "unicode61").unwrap();
+        let mut store = Store::open(&db, "test-model", 128, "unicode61").unwrap();
 
         let rec = make_record("doc.txt", "blake3:mmm", 1.0, 50);
         let chunks = make_chunks("blake3:mmm", 3);
@@ -896,7 +983,7 @@ mod tests {
     fn replace_file_rejects_dimension_mismatch() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("index.db");
-        let mut store = Store::open(&db, 128, "unicode61").unwrap();
+        let mut store = Store::open(&db, "test-model", 128, "unicode61").unwrap();
 
         let rec = make_record("doc.txt", "blake3:mmm", 1.0, 50);
         let chunks = make_chunks("blake3:mmm", 1);
@@ -919,7 +1006,7 @@ mod tests {
     fn replace_file_writes_vectors_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("index.db");
-        let mut store = Store::open(&db, 128, "unicode61").unwrap();
+        let mut store = Store::open(&db, "test-model", 128, "unicode61").unwrap();
 
         let rec = make_record("doc.txt", "blake3:vvv", 1.0, 50);
         let chunks = make_chunks("blake3:vvv", 2);

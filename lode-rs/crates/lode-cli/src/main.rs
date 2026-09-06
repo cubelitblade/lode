@@ -107,7 +107,11 @@ enum Command {
     #[command(alias = "status")]
     Survey,
     /// Mine / index documents into the store (alias: index).
-    Mine,
+    Mine {
+        /// Discard the existing index (archiving it to `.bak`) and rebuild.
+        #[arg(long)]
+        from_scratch: bool,
+    },
     /// Search the store (alias: search).
     Prospect,
     /// Fetch a stored record (alias: get).
@@ -129,7 +133,7 @@ fn dispatch(cli: Cli) -> u8 {
     init_logging(log_level);
     match cli.command {
         Command::Survey => survey(&cli.workspace, cli.view),
-        Command::Mine => mine(&cli.workspace, cli.view),
+        Command::Mine { from_scratch } => mine(&cli.workspace, cli.view, from_scratch),
         Command::Prospect => todo_command("prospect"),
         Command::Dig => todo_command("dig"),
         Command::Assay => todo_command("assay"),
@@ -281,10 +285,16 @@ fn survey(workspace: &std::path::Path, view: View) -> u8 {
 /// to embed it reports "Nothing to do." without creating a database;
 /// otherwise it creates the index and syncs.
 ///
-/// 1c scope: extraction + chunking + embedding. The vector dimension must
-/// come from configuration (`embedding.model_dimension`); without it,
-/// creating an index is an error.
-fn mine(workspace: &std::path::Path, view: View) -> u8 {
+/// `--from-scratch` archives the existing index to `.bak` and rebuilds it
+/// under the current configuration, mirroring Python's `reset_index`. The
+/// embedder is validated first so a broken endpoint leaves the old index
+/// intact.
+///
+/// 1c scope: extraction + chunking + embedding. The vector dimension comes
+/// from the embedder: `embedding.model_dimension` wins when configured,
+/// otherwise the embedder probes the endpoint (a single "ping" embed) to
+/// infer it — mirroring Python's lazy `dimension` property.
+fn mine(workspace: &std::path::Path, view: View, from_scratch: bool) -> u8 {
     if let Some(code) = ui_msg::bad_workspace("mine", workspace) {
         return code;
     }
@@ -296,18 +306,6 @@ fn mine(workspace: &std::path::Path, view: View) -> u8 {
                 "mine",
                 &format!("Could not load configuration: {e}"),
                 Some("Check your lode.toml and environment."),
-            );
-        }
-    };
-    let dimension = match settings.embedding.model_dimension {
-        Some(d) => d,
-        None => {
-            return ui_msg::die(
-                "mine",
-                "No embedding dimension configured.",
-                Some(
-                    "Set `embedding.model_dimension` in lode.toml (embedding discovery lands in 1c).",
-                ),
             );
         }
     };
@@ -335,8 +333,45 @@ fn mine(workspace: &std::path::Path, view: View) -> u8 {
         };
 
     let db_path = workspace.join(INDEX_DB_RELATIVE);
-    let has_index = db_path.is_file();
+    let mut has_index = db_path.is_file();
     log::debug!("index database: {}", db_path.display());
+
+    // `--from-scratch`: archive the existing index and rebuild it under the
+    // current configuration. The embedder is validated first (mirroring
+    // Python's `reset_index`, which probes `dimension` then `model_id`) so a
+    // broken endpoint leaves the old index intact.
+    if from_scratch && has_index {
+        if let Err(e) = embedder.dimension() {
+            return ui_msg::die(
+                "mine",
+                &format!("Could not determine the embedding dimension: {e}"),
+                Some(
+                    "Check your embedding endpoint, or set `embedding.model_dimension` in lode.toml.",
+                ),
+            );
+        }
+        if let Err(e) = embedder.model_id() {
+            return ui_msg::die(
+                "mine",
+                &format!("Could not determine the embedding model: {e}"),
+                Some("Check your embedding endpoint, or set `embedding.model` in lode.toml."),
+            );
+        }
+        match Store::reset(&db_path) {
+            Ok(_) => {
+                log::info!("archived the previous index to {}.bak", db_path.display());
+                // The archive is gone; the create path below rebuilds it.
+                has_index = false;
+            }
+            Err(e) => {
+                return ui_msg::die(
+                    "mine",
+                    &format!("Could not reset the lode index: {e}"),
+                    Some("Ensure the workspace is writable."),
+                );
+            }
+        }
+    }
 
     let result = if has_index {
         match Store::open_existing(&db_path) {
@@ -387,7 +422,36 @@ fn mine(workspace: &std::path::Path, view: View) -> u8 {
                 ..Default::default()
             }
         } else {
-            match Store::open(&db_path, dimension, &tokenizer) {
+            // Creating the index needs the embedder's model id and dimension,
+            // mirroring Python's `_initialize` (which probes `embedder.dimension`
+            // then `embedder.model_id`). Both are only required on the create
+            // path — an existing index serves from its stored metadata without
+            // touching the endpoint.
+            let dimension = match embedder.dimension() {
+                Ok(d) => d as u32,
+                Err(e) => {
+                    return ui_msg::die(
+                        "mine",
+                        &format!("Could not determine the embedding dimension: {e}"),
+                        Some(
+                            "Check your embedding endpoint, or set `embedding.model_dimension` in lode.toml.",
+                        ),
+                    );
+                }
+            };
+            let model_id = match embedder.model_id() {
+                Ok(m) => m,
+                Err(e) => {
+                    return ui_msg::die(
+                        "mine",
+                        &format!("Could not determine the embedding model: {e}"),
+                        Some(
+                            "Check your embedding endpoint, or set `embedding.model` in lode.toml.",
+                        ),
+                    );
+                }
+            };
+            match Store::open(&db_path, &model_id, dimension, &tokenizer) {
                 Ok(mut store) => match sync(
                     &mut store,
                     workspace,
