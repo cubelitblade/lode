@@ -73,14 +73,20 @@ pub struct AppConfig {}
 
 /// Embedding backend provider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
 pub enum EmbeddingProvider {
     /// Any OpenAI-compatible embeddings endpoint (TEI, Ollama, vLLM, hosted).
+    ///
+    /// Explicit rename: `rename_all = "snake_case"` would split
+    /// `OpenAICompatible` into `open_a_i_compatible`, which no user config
+    /// writes.
+    #[serde(rename = "openai_compatible")]
     #[default]
     OpenAICompatible,
     /// Hugging Face Text Embeddings Inference native API.
+    #[serde(rename = "tei_native")]
     TeiNative,
     /// Ollama native API.
+    #[serde(rename = "ollama")]
     Ollama,
 }
 

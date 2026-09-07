@@ -108,6 +108,13 @@ impl Store {
             )));
         }
 
+        // vec0 is a sqlite-vec virtual table; register the extension as an
+        // auto-extension so every connection (this one and later opens) can
+        // use it. Registration is process-global, so guard it with `Once`,
+        // and it must happen *before* the connection is opened: the module
+        // lookup happens per connection at open time.
+        register_vec_extension();
+
         let conn = Connection::open(path)?;
         configure_connection(&conn)?;
         let meta = read_meta(&conn)?;
@@ -495,6 +502,38 @@ mod tests {
         assert_eq!(reopened.meta().dimension, 256);
         assert_eq!(reopened.meta().tokenizer, "unicode61");
         assert_eq!(reopened.meta().model_id, "test-model");
+    }
+
+    #[test]
+    fn open_existing_registers_vec_module() {
+        // Regression: `no such module: vec0` when reopening an existing
+        // index and writing vectors — the auto-extension must be registered
+        // before `open_existing` opens its connection, not only on the
+        // create path.
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("index.db");
+
+        let mut store = Store::open(&db, "test-model", 128, "unicode61").unwrap();
+        let rec = make_record("a.txt", "blake3:seed", 1.0, 10);
+        store
+            .replace_file(
+                &rec,
+                &make_chunks("blake3:seed", 1),
+                Some(&make_vectors(1, 128)),
+            )
+            .unwrap();
+        drop(store);
+
+        let mut reopened = Store::open_existing(&db).unwrap();
+        let rec = make_record("b.txt", "blake3:other", 1.0, 10);
+        let wrote = reopened
+            .replace_file(
+                &rec,
+                &make_chunks("blake3:other", 1),
+                Some(&make_vectors(1, 128)),
+            )
+            .unwrap();
+        assert!(wrote);
     }
 
     #[test]

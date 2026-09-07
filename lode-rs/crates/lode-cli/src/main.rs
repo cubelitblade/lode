@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::Instant;
 
 use clap::{Parser, Subcommand, ValueEnum};
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use terminal_size::{Width, terminal_size};
 
 use lode_core::config::build_embedder;
@@ -376,23 +378,32 @@ fn mine(workspace: &std::path::Path, view: View, from_scratch: bool) -> u8 {
     let result = if has_index {
         match Store::open_existing(&db_path) {
             Ok(mut store) => match detect_changes(&mut store, workspace, &[]) {
-                Ok(detect) => match sync(
-                    &mut store,
-                    workspace,
-                    &splitter,
-                    &detect,
-                    Some(&*embedder),
-                    None,
-                ) {
-                    Ok(summary) => summary,
-                    Err(e) => {
-                        return ui_msg::die(
-                            "mine",
-                            &format!("Could not finish mining: {e}"),
-                            Some("Fix the underlying error and rerun `lode mine`."),
-                        );
+                Ok(detect) => {
+                    let bar = mine_progress_bar(view);
+                    let report = mine_report(bar.as_ref());
+                    let started = Instant::now();
+                    let summary = match sync(
+                        &mut store,
+                        workspace,
+                        &splitter,
+                        &detect,
+                        Some(&*embedder),
+                        report.as_deref(),
+                    ) {
+                        Ok(summary) => summary,
+                        Err(e) => {
+                            return ui_msg::die(
+                                "mine",
+                                &format!("Could not finish mining: {e}"),
+                                Some("Fix the underlying error and rerun `lode mine`."),
+                            );
+                        }
+                    };
+                    if let Some(bar) = &bar {
+                        bar.finish_and_clear();
                     }
-                },
+                    mine_timed(summary, started)
+                }
                 Err(e) => {
                     return ui_msg::die(
                         "mine",
@@ -452,23 +463,32 @@ fn mine(workspace: &std::path::Path, view: View, from_scratch: bool) -> u8 {
                 }
             };
             match Store::open(&db_path, &model_id, dimension, &tokenizer) {
-                Ok(mut store) => match sync(
-                    &mut store,
-                    workspace,
-                    &splitter,
-                    &detect,
-                    Some(&*embedder),
-                    None,
-                ) {
-                    Ok(summary) => summary,
-                    Err(e) => {
-                        return ui_msg::die(
-                            "mine",
-                            &format!("Could not finish mining: {e}"),
-                            Some("Fix the underlying error and rerun `lode mine`."),
-                        );
+                Ok(mut store) => {
+                    let bar = mine_progress_bar(view);
+                    let report = mine_report(bar.as_ref());
+                    let started = Instant::now();
+                    let summary = match sync(
+                        &mut store,
+                        workspace,
+                        &splitter,
+                        &detect,
+                        Some(&*embedder),
+                        report.as_deref(),
+                    ) {
+                        Ok(summary) => summary,
+                        Err(e) => {
+                            return ui_msg::die(
+                                "mine",
+                                &format!("Could not finish mining: {e}"),
+                                Some("Fix the underlying error and rerun `lode mine`."),
+                            );
+                        }
+                    };
+                    if let Some(bar) = &bar {
+                        bar.finish_and_clear();
                     }
-                },
+                    mine_timed(summary, started)
+                }
                 Err(e) => {
                     return ui_msg::die(
                         "mine",
@@ -484,100 +504,80 @@ fn mine(workspace: &std::path::Path, view: View, from_scratch: bool) -> u8 {
         View::Compact => render_mine(workspace, &result),
         View::Extended => render_mine_extended(workspace, &result),
         View::Table => render_mine_table(workspace, &result),
-        View::Json => emit_mine_json(workspace, &result),
+        View::Json => emit_mine_json(&result),
     }
     0
 }
 
-/// Render a human-readable mine report.
+/// Build the mine progress bar: an indicatif spinner bar on stderr.
 ///
-/// Mirrors the JSON payload so the numbers never drift. When there is
-/// nothing to do, a single "Nothing to do." line is shown instead.
-fn render_mine(workspace: &std::path::Path, result: &SyncSummary) {
-    if result.added.is_empty()
+/// Suppressed for `--view json` (JSON consumers want a clean stream) and
+/// hidden automatically when stderr is not a terminal (indicatif detects
+/// this), so `lode mine > log` stays unpolluted.
+fn mine_progress_bar(view: View) -> Option<ProgressBar> {
+    if view == View::Json {
+        return None;
+    }
+    let style = ProgressStyle::with_template("{spinner:.green} mining {pos}/{len} {msg}")
+        .expect("template is static and valid")
+        .progress_chars("##-");
+    let bar = ProgressBar::new_spinner().with_style(style);
+    bar.set_draw_target(ProgressDrawTarget::stderr());
+    Some(bar)
+}
+
+/// Build the sync progress reporter that drives the bar.
+///
+/// The bar's length is unknown until sync's first `report` call announces
+/// the real total, so the first callback invocation sets it. The message
+/// shows the file being processed (OS-native, like every human path).
+/// The sync progress callback contract (mirrors `pipeline.rs`'s anonymous
+/// signature; factoring it here keeps the helper signatures readable).
+///
+/// `+ 'a` because the closure borrows the progress bar for as long as the
+/// sync pass runs.
+type SyncReport<'a> = dyn for<'b> Fn(usize, usize, Option<&'b WorkspacePath>) + 'a;
+
+fn mine_report(bar: Option<&ProgressBar>) -> Option<Box<SyncReport<'_>>> {
+    bar.map(|bar| {
+        Box::new(
+            move |done: usize, total: usize, path: Option<&WorkspacePath>| {
+                if bar.length().is_none() && total > 0 {
+                    bar.set_length(total as u64);
+                }
+                bar.set_position(done as u64);
+                if let Some(path) = path {
+                    bar.set_message(path.to_native().to_string_lossy().into_owned());
+                }
+            },
+        ) as Box<SyncReport<'_>>
+    })
+}
+
+/// Stamp the wall-clock duration onto the summary.
+fn mine_timed(mut summary: SyncSummary, started: Instant) -> SyncSummary {
+    summary.duration_seconds = Some(started.elapsed().as_secs_f64());
+    summary
+}
+
+/// Whether the pass did nothing at all: no processed files and no failures.
+fn nothing_done(result: &SyncSummary) -> bool {
+    result.added.is_empty()
         && result.updated.is_empty()
         && result.removed.is_empty()
         && result.renamed.is_empty()
         && result.failed.is_empty()
-    {
-        println!("Nothing to do.");
-        return;
-    }
-
-    println!("Mining completed ({})", workspace.display());
-    let mut counts = format!(
-        "+ added {} · ~ updated {} · - removed {} · > renamed {} · unchanged {} · skipped {}",
-        result.added.len(),
-        result.updated.len(),
-        result.removed.len(),
-        result.renamed.len(),
-        result.unchanged,
-        result.skipped,
-    );
-    if !result.failed.is_empty() {
-        counts = format!("! failed {} · {counts}", result.failed.len());
-    }
-    println!("  {counts}");
-
-    let processed =
-        result.added.len() + result.updated.len() + result.removed.len() + result.renamed.len();
-    if processed > 0 {
-        println!();
-        println!("Processed files ({processed}):");
-        for path in &result.added {
-            println!("  + {}", path.as_str());
-        }
-        for path in &result.updated {
-            println!("  ~ {}", path.as_str());
-        }
-        for (from, to) in &result.renamed {
-            println!("  > {} -> {}", from.as_str(), to.as_str());
-        }
-        for path in &result.removed {
-            println!("  - {}", path.as_str());
-        }
-    }
-
-    if !result.failed.is_empty() {
-        println!();
-        println!("Stumbled on:");
-        for failure in &result.failed {
-            println!("  ! {}", failure.path.as_str());
-            println!("    {}", failure.error);
-        }
-        println!();
-        println!("Re-run `lode mine` after fixing these to retry.");
-    }
 }
 
-/// Render the detailed (`extended`) mine report.
-///
-/// Same narrative as `compact`; the change list is already untruncated, so
-/// the two views coincide for now. Kept as a separate function so a future
-/// verbose mode can add per-file detail without touching `compact`.
-fn render_mine_extended(workspace: &std::path::Path, result: &SyncSummary) {
-    render_mine(workspace, result);
+/// Number of files that succeeded this run: adds, updates, renames, and
+/// removals (i.e. every processed file that did not fail).
+fn succeeded_count(result: &SyncSummary) -> usize {
+    result.added.len() + result.updated.len() + result.renamed.len() + result.removed.len()
 }
 
-/// Render the mine report as an aligned table, optimised for grepping.
-///
-/// One row per processed file with `STATUS`/`PATH` columns. When there is
-/// nothing to do, a single "Nothing to do." line is shown instead.
-fn render_mine_table(workspace: &std::path::Path, result: &SyncSummary) {
-    if result.added.is_empty()
-        && result.updated.is_empty()
-        && result.removed.is_empty()
-        && result.renamed.is_empty()
-        && result.failed.is_empty()
-    {
-        println!("Nothing to do.");
-        return;
-    }
-
-    println!("Mining completed ({})", workspace.display());
-    println!();
-
-    let mut rows: Vec<(&str, String)> = Vec::new();
+/// Processed entries in display order: adds, updates, renames, removals.
+fn processed_entries(result: &SyncSummary) -> Vec<(&'static str, String)> {
+    let mut rows = Vec::new();
     for path in &result.added {
         rows.push(("added", path.as_str().to_string()));
     }
@@ -593,27 +593,258 @@ fn render_mine_table(workspace: &std::path::Path, result: &SyncSummary) {
     for failure in &result.failed {
         rows.push(("failed", failure.path.as_str().to_string()));
     }
+    rows
+}
 
-    const STATUS_W: usize = 8;
+/// Table rows for the mine table: `(STATUS, PATH, DETAIL)`.
+/// Table rows for the mine table: `(STATUS, PATH, DETAIL)`.
+///
+/// A failed row's `DETAIL` is the reason (truncated by the column budget);
+/// every other row has nothing more to say than the status itself.
+fn mine_table_rows(result: &SyncSummary) -> Vec<(&'static str, String, String)> {
+    let mut rows: Vec<(&'static str, String, String)> = Vec::new();
+    for path in &result.added {
+        rows.push(("added", path.as_str().to_string(), String::new()));
+    }
+    for path in &result.updated {
+        rows.push(("updated", path.as_str().to_string(), String::new()));
+    }
+    for (from, to) in &result.renamed {
+        rows.push((
+            "renamed",
+            format!("{} -> {}", from.as_str(), to.as_str()),
+            String::new(),
+        ));
+    }
+    for path in &result.removed {
+        rows.push(("removed", path.as_str().to_string(), String::new()));
+    }
+    for failure in &result.failed {
+        rows.push((
+            "failed",
+            failure.path.as_str().to_string(),
+            failure.error.clone(),
+        ));
+    }
+    rows
+}
+
+/// Print the processed list, truncated to `limit` entries with an ellipsis.
+fn print_mine_entries(result: &SyncSummary, limit: usize) {
+    let entries = processed_entries(result);
+    let total = entries.len();
+    let shown = total.min(limit);
+    for (status, path) in entries.iter().take(shown) {
+        let marker = match *status {
+            "added" => "+",
+            "updated" => "~",
+            "renamed" => ">",
+            "removed" => "-",
+            "failed" => "×",
+            _ => " ",
+        };
+        println!("  {marker} {path}");
+    }
+    if total > shown {
+        println!("  ...");
+        println!("  and {} more.", total - shown);
+    }
+}
+
+/// Print the change list grouped by status, each group with a subtotal.
+///
+/// Extended view only: the list is untruncated because the user asked for
+/// the full picture. Failures are not grouped here — the `Failures` block
+/// owns that content.
+fn print_grouped(result: &SyncSummary) {
+    if !result.added.is_empty() {
+        println!("  Added ({}):", result.added.len());
+        for path in &result.added {
+            println!("    + {}", path.as_str());
+        }
+    }
+    if !result.updated.is_empty() {
+        println!("  Updated ({}):", result.updated.len());
+        for path in &result.updated {
+            println!("    ~ {}", path.as_str());
+        }
+    }
+    if !result.renamed.is_empty() {
+        println!("  Renamed ({}):", result.renamed.len());
+        for (from, to) in &result.renamed {
+            println!("    > {} -> {}", from.as_str(), to.as_str());
+        }
+    }
+    if !result.removed.is_empty() {
+        println!("  Removed ({}):", result.removed.len());
+        for path in &result.removed {
+            println!("    - {}", path.as_str());
+        }
+    }
+}
+
+/// Render a human-readable mine report.
+///
+/// Mirrors the JSON payload so the numbers never drift. When there is
+/// nothing to do, a single "Nothing to do." line is shown instead.
+fn render_mine(_workspace: &std::path::Path, result: &SyncSummary) {
+    if nothing_done(result) {
+        println!("Nothing to do.");
+        return;
+    }
+    let failed = !result.failed.is_empty();
+    println!("{}", mine_header(result));
+    println!();
+    print_mine_entries(result, MAX_LISTED);
+    println!();
+    let seconds = result.duration_seconds.unwrap_or_default();
+    if failed {
+        println!(
+            "{} succeeded, {} failed.",
+            succeeded_count(result),
+            result.failed.len()
+        );
+        println!("Completed in {seconds:.1}s.");
+        println!();
+        println!("Failures:");
+        print_failures(result);
+        println!();
+        println!("Run `lode mine` again after fixing these issues.");
+    } else {
+        println!("{} succeeded.", succeeded_count(result));
+        println!();
+        println!("Completed in {seconds:.1}s.");
+        println!();
+        println!("The lode is ready for prospecting.");
+    }
+}
+
+/// The scenario-dependent headline: failures present or not.
+fn mine_header(result: &SyncSummary) -> &'static str {
+    if result.failed.is_empty() {
+        "Mining complete."
+    } else {
+        "Mining completed with failures."
+    }
+}
+
+/// Render the detailed (`extended`) mine report.
+///
+/// Same scenario-dependent headline as `compact`, in the survey extended
+/// style: an aligned `Summary` stats block (no-op counts shown only when
+/// non-zero), a `Duration` line, and the applied changes grouped by status
+/// with inline subtotals, untruncated.
+fn render_mine_extended(_workspace: &std::path::Path, result: &SyncSummary) {
+    if nothing_done(result) {
+        println!("Nothing to do.");
+        return;
+    }
+    let failed = !result.failed.is_empty();
+    println!("{}", mine_header(result));
+    println!();
+    println!("Summary:");
+    println!("  {:<8}  {}", "Added:", result.added.len());
+    println!("  {:<8}  {}", "Updated:", result.updated.len());
+    println!("  {:<8}  {}", "Renamed:", result.renamed.len());
+    println!("  {:<8}  {}", "Removed:", result.removed.len());
+    if result.unchanged > 0 {
+        println!("  {:<8}  {}", "Unchanged:", result.unchanged);
+    }
+    if failed {
+        println!("  {:<8}  {}", "Failed:", result.failed.len());
+    }
+    println!();
+    println!(
+        "Duration: {:.1}s",
+        result.duration_seconds.unwrap_or_default()
+    );
+
+    if succeeded_count(result) > 0 {
+        println!();
+        println!("Applied changes:");
+        println!();
+        print_grouped(result);
+    }
+
+    if failed {
+        println!();
+        println!("Failures:");
+        print_failures(result);
+        println!();
+        println!("Run `lode mine` again after fixing these issues.");
+    } else {
+        println!();
+        println!("The lode is ready for prospecting.");
+    }
+}
+
+/// Print the failure detail block (path + error), shared by compact and
+/// extended.
+fn print_failures(result: &SyncSummary) {
+    for failure in &result.failed {
+        println!("  × {}", failure.path.as_str());
+        println!("    {}", failure.error);
+    }
+}
+
+/// Render the mine report as an aligned table, optimised for grepping.
+///
+/// One row per processed file with `STATUS`/`PATH`/`DETAIL` columns. The
+/// table adapts to the terminal width (same budget as the survey table) and
+/// empty `DETAIL` renders as `-`.
+fn render_mine_table(_workspace: &std::path::Path, result: &SyncSummary) {
+    if nothing_done(result) {
+        println!("Nothing to do.");
+        return;
+    }
+
+    println!("{}", mine_header(result));
+    println!();
+
+    let rows = mine_table_rows(result);
+
+    // Same column-width budget as the survey table.
+    const STATUS_W: usize = 8; // "renamed" is the longest status.
+    const COL_GAPS: usize = 4; // two-column gutters.
+    const MIN_PATH_W: usize = 28;
+    const MAX_PATH_W: usize = 48;
+    const MIN_DETAIL_W: usize = 22;
+    let term_w = terminal_size()
+        .map(|(Width(w), _)| w as usize)
+        .unwrap_or(80);
+
     let widest_path = rows
         .iter()
-        .map(|(_, p)| p.chars().count())
+        .map(|(_, p, _)| p.chars().count())
         .max()
-        .unwrap_or(28);
-    let path_w = widest_path.clamp(28, 48);
+        .unwrap_or(MIN_PATH_W);
+    let room_left_over = term_w.saturating_sub(STATUS_W + COL_GAPS + MIN_DETAIL_W);
+    let path_w = widest_path
+        .clamp(MIN_PATH_W, MAX_PATH_W)
+        .min(room_left_over.max(MIN_PATH_W));
+    let detail_w = term_w
+        .saturating_sub(STATUS_W + COL_GAPS + path_w)
+        .min(MIN_DETAIL_W);
 
     println!(
-        "{:<status_w$}  {:<path_w$}",
+        "{:<status_w$}  {:<path_w$}  DETAIL",
         "STATUS",
         "PATH",
         status_w = STATUS_W,
         path_w = path_w,
     );
-    for (status, path) in &rows {
+    for (status, path, detail) in &rows {
+        let path = truncate_middle(path, path_w);
+        let detail = if detail.is_empty() {
+            "-".to_string()
+        } else {
+            truncate_tail(detail, detail_w)
+        };
         println!(
-            "{:<status_w$}  {:<path_w$}",
+            "{:<status_w$}  {:<path_w$}  {}",
             status,
             path,
+            detail,
             status_w = STATUS_W,
             path_w = path_w,
         );
@@ -622,30 +853,22 @@ fn render_mine_table(workspace: &std::path::Path, result: &SyncSummary) {
 
 /// Emit a JSON mine payload.
 ///
-/// The payload is the raw result data — no envelope (`ok`/`command`/
-/// `workspace`), matching the survey JSON convention. MCP framing, if any,
-/// is assembled by the MCP layer, not the CLI.
-fn emit_mine_json(workspace: &std::path::Path, result: &SyncSummary) {
+/// Flat and envelope-free, matching the survey JSON convention: just the
+/// outcome data, no `ok`/`command`/`workspace` wrapper and no derived counts
+/// (a consumer can count the arrays itself). Process metrics
+/// (`embedded_chunks`/`duration_seconds`) are presentation data, not
+/// outcome data — they stay out of the payload. MCP framing, if any, is
+/// assembled by the MCP layer, not the CLI.
+fn emit_mine_json(result: &SyncSummary) {
     let payload = serde_json::json!({
-        "workspace": workspace.as_os_str().to_string_lossy(),
-        "summary": {
-            "added": result.added.len(),
-            "updated": result.updated.len(),
-            "unchanged": result.unchanged,
-            "removed": result.removed.len(),
-            "renamed": result.renamed.len(),
-            "skipped": result.skipped,
-        },
-        "paths": {
-            "added": result.added.iter().map(|p| p.as_str()).collect::<Vec<_>>(),
-            "updated": result.updated.iter().map(|p| p.as_str()).collect::<Vec<_>>(),
-            "removed": result.removed.iter().map(|p| p.as_str()).collect::<Vec<_>>(),
-            "renamed": result
-                .renamed
-                .iter()
-                .map(|(f, t)| serde_json::json!({ "from": f.as_str(), "to": t.as_str() }))
-                .collect::<Vec<_>>(),
-        },
+        "added": result.added.iter().map(|p| p.as_str()).collect::<Vec<_>>(),
+        "updated": result.updated.iter().map(|p| p.as_str()).collect::<Vec<_>>(),
+        "removed": result.removed.iter().map(|p| p.as_str()).collect::<Vec<_>>(),
+        "renamed": result
+            .renamed
+            .iter()
+            .map(|(f, t)| serde_json::json!({ "from": f.as_str(), "to": t.as_str() }))
+            .collect::<Vec<_>>(),
         "failed": result
             .failed
             .iter()

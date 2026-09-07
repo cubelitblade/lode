@@ -119,6 +119,12 @@ pub struct SyncSummary {
     pub failed: Vec<FailedFile>,
     pub unchanged: usize,
     pub skipped: usize,
+    /// Chunks embedded this run: vectors actually written to the index
+    /// (renames and unchanged files contribute zero — content is reused).
+    pub embedded_chunks: usize,
+    /// Wall-clock duration of the sync pass, set by the caller that timed
+    /// it; `None` when untimed (tests, library use).
+    pub duration_seconds: Option<f64>,
 }
 
 /// Classify the workspace against an index snapshot.
@@ -435,6 +441,9 @@ pub fn sync(
                 None => None,
             };
             store.replace_file(&record, &chunks, vectors.as_deref())?;
+            if let Some(vectors) = vectors.as_deref() {
+                summary.embedded_chunks += vectors.len();
+            }
             Ok(())
         })();
 
