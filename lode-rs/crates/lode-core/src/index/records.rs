@@ -81,6 +81,48 @@ pub struct PathRef {
     pub status: FileStatus,
 }
 
+/// A retrieval source in the hybrid pipeline.
+///
+/// Python keys source tables by the string name ("semantic"/"lexical");
+/// this is the closed-set equivalent so match sites are exhaustive and JSON
+/// keys stay identical.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Source {
+    /// Dense vectors via the vec0 table; cosine similarity scores.
+    Semantic,
+    /// FTS5 via the chunks_fts table; BM25 scores.
+    Lexical,
+}
+
+impl Source {
+    /// The source name used in Python tables and JSON payloads.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Semantic => "semantic",
+            Self::Lexical => "lexical",
+        }
+    }
+}
+
+impl std::fmt::Display for Source {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for Source {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "semantic" => Ok(Self::Semantic),
+            "lexical" => Ok(Self::Lexical),
+            _ => Err(()),
+        }
+    }
+}
+
 /// One kNN hit: chunk rowid with its L2 distance, ordered nearest first.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DenseMatch {

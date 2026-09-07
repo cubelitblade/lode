@@ -8,9 +8,9 @@ pub mod errors;
 pub mod relpath;
 
 pub mod embeddings;
+pub mod fts;
 pub mod index;
 pub mod ingestion;
-pub mod lexical;
 pub mod messages;
 
 pub use errors::{Error, Result};
