@@ -1,15 +1,15 @@
 #![warn(clippy::pedantic)]
 
-//! SQLite-backed store: lifecycle, metadata, and query primitives.
+//! SQLite-backed store: the [`Store`] type, its lifecycle, and the file-record
+//! write path.
 //!
-//! 1a scope: open an existing database, read metadata, list files, mark
-//! stale. 1b adds the creation path: `Store::open` builds the full schema
-//! (including vec0 and FTS5) on a fresh database, given the vector
-//! dimension and tokenizer.
+//! Split by concern: `meta` owns the `meta` table header and connection
+//! pragmas; `chunks` owns content-addressed row helpers and vector writes.
+//! Query primitives (dense/sparse search, chunk reads) live in sibling
+//! modules as they land.
 
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::Once;
 
 use rusqlite::Connection;
 use rusqlite::OptionalExtension;
@@ -19,20 +19,15 @@ use crate::index::schema;
 use crate::ingestion::types::Chunk;
 use crate::relpath::WorkspacePath;
 
+mod chunks;
+mod meta;
+mod query;
+
+use self::chunks::{ensure_content, gc_content_if_orphaned, insert_chunks, size_to_i64};
+use self::meta::{IndexMeta, configure_connection, read_meta, write_meta};
+
 /// Schema version; must match the database to open it.
 pub use crate::index::schema::SCHEMA_VERSION;
-
-/// Busy timeout in milliseconds (matches Python).
-const BUSY_TIMEOUT_MS: i32 = 5000;
-
-/// The index metadata header, read from the `meta` table.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IndexMeta {
-    pub schema_version: String,
-    pub model_id: String,
-    pub dimension: u32,
-    pub tokenizer: String,
-}
 
 /// SQLite index store.
 ///
@@ -414,237 +409,28 @@ impl Store {
     }
 }
 
-/// Convert file sizes for SQLite storage.
-///
-/// `size` is `u64` in the domain record but `INTEGER` (i64) in SQLite;
-/// real files never approach `i64::MAX`, so the cast cannot wrap. Centralized
-/// so the invariant has one home.
-#[expect(
-    clippy::cast_possible_wrap,
-    reason = "file sizes never approach i64::MAX; SQLite stores size as INTEGER"
-)]
-fn size_to_i64(size: u64) -> i64 {
-    size as i64
-}
-
-/// Return `(content_id, created)` for the content with this digest.
-fn ensure_content(conn: &Connection, digest: &str) -> crate::Result<(i64, bool)> {
-    let existing: Option<i64> = conn
-        .query_row(
-            "SELECT id FROM contents WHERE digest = ?1",
-            rusqlite::params![digest],
-            |row| row.get(0),
-        )
-        .optional()?;
-
-    if let Some(id) = existing {
-        return Ok((id, false));
-    }
-    conn.execute(
-        "INSERT INTO contents (digest) VALUES (?1)",
-        rusqlite::params![digest],
-    )?;
-    Ok((conn.last_insert_rowid(), true))
-}
-
-/// Drop a content row once nothing references it.
-///
-/// Orphanhood is derived by lookup rather than a stored refcount, so the
-/// invariant holds inside the surrounding write transaction.
-fn gc_content_if_orphaned(conn: &Connection, content_id: i64) -> crate::Result<()> {
-    let referenced: bool = conn
-        .query_row(
-            "SELECT 1 FROM files WHERE content_id = ?1 LIMIT 1",
-            rusqlite::params![content_id],
-            |_| Ok(true),
-        )
-        .unwrap_or(false);
-
-    if referenced {
-        return Ok(());
-    }
-
-    // Collect chunk rowids before cascade delete removes them.
-    let rowids: Vec<i64> = {
-        let mut stmt = conn.prepare("SELECT id FROM chunks WHERE content_id = ?1")?;
-        let rows = stmt.query_map(rusqlite::params![content_id], |row| row.get(0))?;
-        rows.collect::<Result<Vec<_>, _>>()?
-    };
-
-    for rowid in &rowids {
-        conn.execute(
-            "DELETE FROM chunk_vectors WHERE rowid = ?1",
-            rusqlite::params![rowid],
-        )?;
-    }
-
-    // Cascade: DELETE contents → chunks (triggers handle FTS5 cleanup).
-    conn.execute(
-        "DELETE FROM contents WHERE id = ?1",
-        rusqlite::params![content_id],
-    )?;
-    Ok(())
-}
-
-/// Write chunk rows (FTS5 sync triggers fire automatically) and, when
-/// vectors are present, their embeddings into the vec0 table.
-///
-/// Vectors are serialized as JSON arrays (what sqlite-vec expects) and keyed
-/// by the chunk's rowid. A vector whose width differs from the index
-/// dimension is refused with [`crate::Error::DimensionMismatch`], mirroring
-/// Python's `DimensionMismatchError`.
-fn insert_chunks(
-    conn: &Connection,
-    content_id: i64,
-    chunks: &[Chunk],
-    vectors: Option<&[Vec<f32>]>,
-    dimension: u32,
-) -> crate::Result<()> {
-    let mut stmt = conn.prepare(
-        "INSERT INTO chunks (digest, content_id, seq, text, heading, page)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-    )?;
-    let mut vec_stmt =
-        conn.prepare("INSERT INTO chunk_vectors (rowid, embedding) VALUES (?1, ?2)")?;
-
-    for (i, chunk) in chunks.iter().enumerate() {
-        let seq = i64::from(chunk.seq);
-        let page = chunk.page.map(i64::from);
-        stmt.execute(rusqlite::params![
-            chunk.digest,
-            content_id,
-            seq,
-            chunk.text,
-            chunk.heading,
-            page,
-        ])?;
-        if let Some(vectors) = vectors {
-            let vector = &vectors[i];
-            if vector.len() != usize::try_from(dimension).unwrap_or(usize::MAX) {
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "vector length is bounded by dimension (u32), which fits u32"
-                )]
-                let current = vector.len() as u32;
-                return Err(crate::Error::DimensionMismatch {
-                    stored: dimension,
-                    current,
-                });
-            }
-            let rowid = conn.last_insert_rowid();
-            let embedding = serde_json::to_string(vector)
-                .map_err(|e| crate::Error::Store(format!("could not serialize embedding: {e}")))?;
-            vec_stmt.execute(rusqlite::params![rowid, embedding])?;
-        }
-    }
-
-    Ok(())
-}
-
 /// Register the sqlite-vec extension as a SQLite auto-extension.
 ///
 /// `sqlite3_auto_extension` is process-global and affects every connection
-/// opened afterwards, so it runs exactly once via [`Once`]. The `transmute`
+/// opened afterwards, so it runs exactly once via `Once`. The `transmute`
 /// mirrors sqlite-vec's own test: the entry point is a plain `extern "C"`
 /// function, but rusqlite's binding types it with the extension API
 /// signature.
 fn register_vec_extension() {
-    static REGISTER_VEC: Once = Once::new();
+    static REGISTER_VEC: std::sync::Once = std::sync::Once::new();
     REGISTER_VEC.call_once(|| {
         // The transmute target type is fixed by rusqlite's binding, not by
         // this call site, so clippy cannot infer it.
-        #[allow(clippy::missing_transmute_annotations)]
+        #[expect(
+            clippy::missing_transmute_annotations,
+            reason = "target type is fixed by rusqlite's binding, not this call site"
+        )]
         unsafe {
             rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
                 sqlite_vec::sqlite3_vec_init as *const (),
             )));
         }
     });
-}
-
-/// Configure connection pragmas (WAL, busy timeout, foreign keys).
-fn configure_connection(conn: &Connection) -> crate::Result<()> {
-    // `journal_mode=WAL` and `busy_timeout` return a result row when set, so
-    // they cannot go through `execute_batch` (which rejects statements that
-    // return results). `foreign_keys=ON` and `case_sensitive_like=ON` return
-    // no rows, so they must not go through `query_row`.
-    conn.query_row("PRAGMA journal_mode=WAL", [], |_| Ok(()))?;
-    conn.query_row(
-        &format!("PRAGMA busy_timeout={BUSY_TIMEOUT_MS}"),
-        [],
-        |_| Ok(()),
-    )?;
-    conn.execute_batch("PRAGMA foreign_keys=ON;")?;
-    conn.execute_batch("PRAGMA case_sensitive_like=ON;")?;
-    Ok(())
-}
-
-/// Read and validate the `meta` table.
-fn read_meta(conn: &Connection) -> crate::Result<IndexMeta> {
-    let version = meta_get(conn, "schema_version")?.unwrap_or_default();
-    if version != SCHEMA_VERSION.to_string() {
-        return Err(crate::Error::Store(format!(
-            "database schema version {version:?} is incompatible with \
-             supported version {SCHEMA_VERSION}; run an explicit rebuild"
-        )));
-    }
-
-    let model_id = meta_get(conn, "model_id")?.unwrap_or_default();
-    let dimension_str = meta_get(conn, "dimension")?.unwrap_or_default();
-    let tokenizer = meta_get(conn, "tokenizer")?.unwrap_or_else(|| "unicode61".to_string());
-
-    let dimension: u32 = dimension_str.parse().map_err(|_| {
-        crate::Error::Store(format!(
-            "invalid dimension metadata: {dimension_str:?}; run an explicit rebuild"
-        ))
-    })?;
-
-    Ok(IndexMeta {
-        schema_version: version,
-        model_id,
-        dimension,
-        tokenizer,
-    })
-}
-
-/// Read a single key from the `meta` table.
-fn meta_get(conn: &Connection, key: &str) -> crate::Result<Option<String>> {
-    let mut stmt = conn.prepare("SELECT value FROM meta WHERE key = ?1")?;
-    let mut rows = stmt.query_map(rusqlite::params![key], |row| row.get::<_, String>(0))?;
-    match rows.next() {
-        Some(row) => Ok(Some(row?)),
-        None => Ok(None),
-    }
-}
-
-/// Write the metadata header on a freshly created database.
-///
-/// `model_id`, `dimension`, and `tokenizer` are the values the schema was
-/// built with; `model_id` comes from the embedder (mirroring Python's
-/// `_initialize`, which writes `embedder.model_id`).
-fn write_meta(
-    conn: &Connection,
-    model_id: &str,
-    dimension: u32,
-    tokenizer: &str,
-) -> crate::Result<()> {
-    conn.execute(
-        "INSERT INTO meta (key, value) VALUES (?1, ?2)",
-        rusqlite::params!["schema_version", SCHEMA_VERSION.to_string()],
-    )?;
-    conn.execute(
-        "INSERT INTO meta (key, value) VALUES (?1, ?2)",
-        rusqlite::params!["model_id", model_id],
-    )?;
-    conn.execute(
-        "INSERT INTO meta (key, value) VALUES (?1, ?2)",
-        rusqlite::params!["dimension", dimension.to_string()],
-    )?;
-    conn.execute(
-        "INSERT INTO meta (key, value) VALUES (?1, ?2)",
-        rusqlite::params!["tokenizer", tokenizer],
-    )?;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -1110,5 +896,183 @@ mod tests {
                 .collect();
             assert_eq!(floats, vectors[i]);
         }
+    }
+
+    // -- get_chunks / find_chunks_by_digest / dense_search / sparse_search --
+
+    use crate::fts::MatchExpr;
+
+    /// Seed one file with `n` chunks and vectors; returns the store.
+    fn seeded_store(digest: &str, texts: &[&str]) -> (tempfile::TempDir, Store) {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("index.db");
+        let mut store = Store::open(&db, "test-model", 4, "unicode61").unwrap();
+        let chunks: Vec<Chunk> = texts
+            .iter()
+            .enumerate()
+            .map(|(i, text)| Chunk {
+                digest: digest.to_string(),
+                text: text.to_string(),
+                #[expect(clippy::cast_possible_truncation, reason = "tiny chunk count")]
+                seq: i as u32,
+                heading: String::new(),
+                page: None,
+            })
+            .collect();
+        let vectors: Vec<Vec<f32>> = texts
+            .iter()
+            .enumerate()
+            .map(|(i, _)| {
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "tiny test indices; exact float value is irrelevant"
+                )]
+                let value = i as f32;
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "tiny test chunk counts; exact float value is irrelevant"
+                )]
+                let len = texts.len() as f32;
+                vec![value / len; 4]
+            })
+            .collect();
+        let rec = make_record("doc.txt", digest, 1.0, 10);
+        store.replace_file(&rec, &chunks, Some(&vectors)).unwrap();
+        (dir, store)
+    }
+
+    #[test]
+    fn get_chunks_joins_refs_and_keys_by_rowid() {
+        let (_dir, store) = seeded_store("blake3:seed", &["alpha", "beta", "gamma"]);
+
+        // rowids are 1..=3 for a single replace_file.
+        let chunks = store.get_chunks(&[1, 3]).unwrap();
+        assert_eq!(chunks.len(), 2);
+        assert!(chunks.contains_key(&1) && chunks.contains_key(&3));
+        let chunk = &chunks[&1];
+        assert_eq!(chunk.text, "alpha");
+        assert_eq!(chunk.digest, "blake3:seed");
+        assert_eq!(chunk.refs.len(), 1);
+        assert_eq!(chunk.refs[0].path.as_str(), "doc.txt");
+        assert_eq!(chunk.refs[0].status, FileStatus::Fresh);
+        assert_eq!(chunk.seq, Some(0));
+    }
+
+    #[test]
+    fn get_chunks_empty_rowids_is_empty_map() {
+        let (_dir, store) = seeded_store("blake3:kkk", &["x"]);
+        assert!(store.get_chunks(&[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn get_chunks_carries_every_referencing_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("index.db");
+        let mut store = Store::open(&db, "test-model", 4, "unicode61").unwrap();
+
+        // First file creates the content; second path shares it.
+        let rec1 = make_record("a.txt", "blake3:shared", 1.0, 10);
+        store
+            .replace_file(&rec1, &make_chunks("blake3:shared", 1), None)
+            .unwrap();
+        let rec2 = make_record("b.txt", "blake3:shared", 2.0, 10);
+        store.reference_file(&rec2).unwrap();
+
+        let chunks = store.get_chunks(&[1]).unwrap();
+        let chunk = &chunks[&1];
+        let mut paths: Vec<&str> = chunk.refs.iter().map(|r| r.path.as_str()).collect();
+        paths.sort_unstable();
+        assert_eq!(paths, ["a.txt", "b.txt"]);
+    }
+
+    #[test]
+    fn find_chunks_by_digest_resolves_prefix_and_sorts() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("index.db");
+        let mut store = Store::open(&db, "test-model", 4, "unicode61").unwrap();
+
+        // Two contents whose digests share a prefix, each on its own path.
+        let rec1 = make_record("z.txt", "blake3:dead0001", 1.0, 10);
+        let rec2 = make_record("a.txt", "blake3:dead0002", 1.0, 10);
+        store
+            .replace_file(&rec1, &make_chunks("blake3:dead0001", 2), None)
+            .unwrap();
+        store
+            .replace_file(&rec2, &make_chunks("blake3:dead0002", 2), None)
+            .unwrap();
+
+        let chunks = store.find_chunks_by_digest("dead").unwrap();
+        assert_eq!(chunks.len(), 4);
+        // Sorted by primary path then seq: a.txt chunks first, in seq order.
+        assert_eq!(chunks[0].text, "chunk 0");
+        assert_eq!(chunks[0].refs[0].path.as_str(), "a.txt");
+        assert_eq!(chunks[2].refs[0].path.as_str(), "z.txt");
+
+        // Full-digest lookup works too.
+        let one = store.find_chunks_by_digest("dead0002").unwrap();
+        assert_eq!(one.len(), 2);
+        assert_eq!(one[0].digest, "blake3:dead0002");
+
+        // Unknown prefix yields nothing.
+        assert!(store.find_chunks_by_digest("beef").unwrap().is_empty());
+    }
+
+    #[test]
+    fn dense_search_returns_nearest_first() {
+        let (_dir, store) = seeded_store("blake3:vec", &["zero", "one", "two"]);
+
+        // Unit vectors: chunk i has value i/3; query matches chunk 1 best.
+        let query = vec![0.25_f32, 0.25, 0.25, 0.25];
+        let hits = store.dense_search(&query, 3).unwrap();
+        assert_eq!(hits.len(), 3);
+        assert!(hits[0].rowid == 2 || hits[0].rowid == 1 || hits[0].rowid == 3);
+        // Distances are ascending.
+        assert!(hits[0].distance <= hits[1].distance);
+        assert!(hits[1].distance <= hits[2].distance);
+    }
+
+    #[test]
+    fn dense_search_maps_dimension_mismatch() {
+        let (_dir, store) = seeded_store("blake3:vec", &["x"]);
+
+        let wrong = vec![0.0_f32; 8];
+        let err = store.dense_search(&wrong, 1).unwrap_err();
+        match err {
+            crate::Error::DimensionMismatch { stored, current } => {
+                assert_eq!(stored, 4);
+                assert_eq!(current, 8);
+            }
+            other => panic!("expected DimensionMismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sparse_search_matches_prebuilt_expression() {
+        let (_dir, store) = seeded_store(
+            "blake3:fts",
+            &["ore vein mining", "surface mining", "unrelated"],
+        );
+
+        let expr = MatchExpr::Prebuilt("\"ore\" OR \"vein\"".to_string());
+        let hits = store.sparse_search(&expr, 5).unwrap();
+        assert!(!hits.is_empty());
+        // Best-first: descending score (BM25 is negative).
+        assert!(hits[0].score >= hits[hits.len() - 1].score);
+        // The matching chunk is rowid 1 (first chunk of the content).
+        assert_eq!(hits[0].rowid, 1);
+
+        // Non-matching query yields nothing.
+        let misses = store
+            .sparse_search(&MatchExpr::Prebuilt("\"quartz\"".to_string()), 5)
+            .unwrap();
+        assert!(misses.is_empty());
+    }
+
+    #[test]
+    fn sparse_search_zero_k_is_empty() {
+        let (_dir, store) = seeded_store("blake3:z", &["x"]);
+        let expr = MatchExpr::Prebuilt("\"x\"".to_string());
+        assert!(store.sparse_search(&expr, 0).unwrap().is_empty());
+        assert!(store.dense_search(&[0.0; 4], 0).unwrap().is_empty());
     }
 }

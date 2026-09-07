@@ -123,6 +123,49 @@ impl std::str::FromStr for Source {
     }
 }
 
+/// One indexed chunk joined with every path referencing its content.
+///
+/// Mirrors Python's `ChunkWithPath`: content is shared by identical files, so
+/// a chunk carries every `files` row pointing at its content. Used by search
+/// result assembly and by `dig`'s digest lookup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChunkWithRefs {
+    /// Content digest: `blake3:<hex>`.
+    pub digest: String,
+    /// Chunk body text.
+    pub text: String,
+    /// Heading chain the chunk belongs to (empty when top-level).
+    pub heading: String,
+    /// Chunk sequence within its content (0-based), `None` only for rows the
+    /// caller did not select `seq`.
+    pub seq: Option<u32>,
+    /// 1-based page number for PDF chunks, `None` for other formats.
+    pub page: Option<u32>,
+    /// Every workspace path referencing this content, with freshness.
+    pub refs: Vec<PathRef>,
+}
+
+impl ChunkWithRefs {
+    /// Representative reference: smallest fresh path, else smallest overall.
+    #[must_use]
+    pub fn primary(&self) -> PathRef {
+        let mut fresh: Vec<&PathRef> = self
+            .refs
+            .iter()
+            .filter(|r| r.status == FileStatus::Fresh)
+            .collect();
+        if fresh.is_empty() {
+            fresh = self.refs.iter().collect();
+        }
+        // `expect` is safe: a join-derived chunk always has ≥1 reference.
+        fresh
+            .into_iter()
+            .min_by(|a, b| a.path.as_str().cmp(b.path.as_str()))
+            .expect("refs is never empty for a join-derived chunk")
+            .clone()
+    }
+}
+
 /// One kNN hit: chunk rowid with its L2 distance, ordered nearest first.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DenseMatch {

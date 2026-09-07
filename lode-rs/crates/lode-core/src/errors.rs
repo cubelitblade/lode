@@ -35,9 +35,9 @@ pub enum Error {
     #[error("ingestion error: {0}")]
     Ingestion(String),
 
-    /// Errors during lexical tokenization.
-    #[error("lexical error: {0}")]
-    Lexical(String),
+    /// Errors from FTS5 tokenizer/query helpers.
+    #[error("fts error: {0}")]
+    Fts(String),
 }
 
 impl From<rusqlite::Error> for Error {
