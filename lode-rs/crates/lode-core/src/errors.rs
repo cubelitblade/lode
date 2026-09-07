@@ -1,3 +1,5 @@
+#![warn(clippy::pedantic)]
+
 //! Unified error type for lode-core.
 
 /// Result alias for lode-core operations.

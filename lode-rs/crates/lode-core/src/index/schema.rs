@@ -1,3 +1,5 @@
+#![warn(clippy::pedantic)]
+
 //! Schema definition for the index database.
 //!
 //! Owns the DDL: tables, the vec0 virtual table, the FTS5 external-content
@@ -32,6 +34,12 @@ const NATIVE_TOKENIZERS: &[&str] = &["simple", "jieba"];
 /// `dimension` sizes the vec0 `embedding` column; `tokenize_clause` selects
 /// the FTS5 tokenizer. Both are recorded in `meta` by the caller and
 /// validated on later opens.
+///
+/// # Errors
+///
+/// Fails when `dimension` is zero, the tokenizer is not on the whitelist,
+/// or a native tokenizer is requested before Phase 3; also propagates DDL
+/// errors from SQLite.
 pub fn create_schema(
     conn: &Connection,
     dimension: u32,

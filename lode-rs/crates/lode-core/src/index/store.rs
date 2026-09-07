@@ -1,3 +1,5 @@
+#![warn(clippy::pedantic)]
+
 //! SQLite-backed store: lifecycle, metadata, and query primitives.
 //!
 //! 1a scope: open an existing database, read metadata, list files, mark
@@ -52,6 +54,11 @@ impl Store {
     /// dimension sizes the vec0 table) plus the FTS5 tokenizer; all three
     /// are recorded in `meta` and validated on later opens. Fails if the
     /// database exists but is incompatible.
+    ///
+    /// # Errors
+    ///
+    /// Fails when creation or validation fails; see [`Store::create`] and
+    /// [`Store::open_existing`].
     pub fn open(
         path: &Path,
         model_id: &str,
@@ -92,10 +99,12 @@ impl Store {
     /// Open an existing index database.
     ///
     /// Reads the `meta` header, validates schema version and metadata, and
-    /// returns a ready-to-use store. Fails if:
-    /// - the database does not exist
-    /// - the schema version is incompatible
-    /// - required metadata keys are missing
+    /// returns a ready-to-use store.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the database does not exist, the schema version is
+    /// incompatible, or required metadata keys are missing.
     pub fn open_existing(path: &Path) -> crate::Result<Self> {
         if !path.is_file() {
             return Err(crate::Error::Store(format!(
@@ -128,6 +137,10 @@ impl Store {
     /// archived). Deliberately does not validate the embedder — the caller
     /// owns that — mirroring Python, where compatibility checks precede
     /// destruction so a mis-configured run leaves the old index intact.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the archive rename fails.
     pub fn reset(path: &Path) -> crate::Result<bool> {
         let existed = path.is_file();
         for (tail, bak_tail) in [("", ".bak"), ("-wal", "-wal.bak"), ("-shm", "-shm.bak")] {
@@ -153,6 +166,10 @@ impl Store {
     }
 
     /// All indexed paths with their content metadata, sorted by path.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the row query fails.
     pub fn list_files(&self) -> crate::Result<Vec<FileRecord>> {
         let mut stmt = self.conn.prepare(
             "SELECT f.path, c.digest, f.mtime, f.size, f.status
@@ -182,6 +199,10 @@ impl Store {
     ///
     /// Unknown paths are ignored: a new file that fails before its first
     /// successful indexing leaves no row behind.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the update statement fails.
     pub fn mark_stale(&mut self, path: &WorkspacePath) -> crate::Result<()> {
         self.conn.execute(
             "UPDATE files SET status = ?1 WHERE path = ?2",
@@ -191,6 +212,10 @@ impl Store {
     }
 
     /// Metadata for one indexed path, or `None` when it is not indexed.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the row query fails.
     pub fn get_file(&self, path: &WorkspacePath) -> crate::Result<Option<FileRecord>> {
         let mut stmt = self.conn.prepare(
             "SELECT f.path, c.digest, f.mtime, f.size, f.status
@@ -225,6 +250,10 @@ impl Store {
     /// Unlike [`replace_file`], no chunks are written — the caller claims
     /// the content addressed by `record.digest` is already indexed. When it
     /// is not, nothing changes and `false` is returned.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the lookup, upsert, or GC statements fail.
     pub fn reference_file(&mut self, record: &FileRecord) -> crate::Result<bool> {
         let tx = self.conn.transaction()?;
 
@@ -263,7 +292,7 @@ impl Store {
                 record.path.as_str(),
                 content_id,
                 record.mtime,
-                record.size as i64,
+                size_to_i64(record.size),
                 record.status.as_str(),
             ],
         )?;
@@ -291,6 +320,11 @@ impl Store {
     /// mirroring Python).
     ///
     /// Returns whether the content was newly created.
+    ///
+    /// # Errors
+    ///
+    /// Fails when chunk and vector counts differ, a vector width differs
+    /// from the index dimension, or any statement fails.
     pub fn replace_file(
         &mut self,
         record: &FileRecord,
@@ -331,7 +365,7 @@ impl Store {
                 record.path.as_str(),
                 content_id,
                 record.mtime,
-                record.size as i64,
+                size_to_i64(record.size),
                 record.status.as_str(),
             ],
         )?;
@@ -352,6 +386,10 @@ impl Store {
     }
 
     /// Delete a path reference; drop its content when this was the last one.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the lookup, delete, or GC statements fail.
     pub fn remove_file(&mut self, path: &WorkspacePath) -> crate::Result<()> {
         let tx = self.conn.transaction()?;
 
@@ -376,6 +414,19 @@ impl Store {
     }
 }
 
+/// Convert file sizes for SQLite storage.
+///
+/// `size` is `u64` in the domain record but `INTEGER` (i64) in SQLite;
+/// real files never approach `i64::MAX`, so the cast cannot wrap. Centralized
+/// so the invariant has one home.
+#[expect(
+    clippy::cast_possible_wrap,
+    reason = "file sizes never approach i64::MAX; SQLite stores size as INTEGER"
+)]
+fn size_to_i64(size: u64) -> i64 {
+    size as i64
+}
+
 /// Return `(content_id, created)` for the content with this digest.
 fn ensure_content(conn: &Connection, digest: &str) -> crate::Result<(i64, bool)> {
     let existing: Option<i64> = conn
@@ -386,16 +437,14 @@ fn ensure_content(conn: &Connection, digest: &str) -> crate::Result<(i64, bool)>
         )
         .optional()?;
 
-    match existing {
-        Some(id) => Ok((id, false)),
-        None => {
-            conn.execute(
-                "INSERT INTO contents (digest) VALUES (?1)",
-                rusqlite::params![digest],
-            )?;
-            Ok((conn.last_insert_rowid(), true))
-        }
+    if let Some(id) = existing {
+        return Ok((id, false));
     }
+    conn.execute(
+        "INSERT INTO contents (digest) VALUES (?1)",
+        rusqlite::params![digest],
+    )?;
+    Ok((conn.last_insert_rowid(), true))
 }
 
 /// Drop a content row once nothing references it.
@@ -459,20 +508,27 @@ fn insert_chunks(
         conn.prepare("INSERT INTO chunk_vectors (rowid, embedding) VALUES (?1, ?2)")?;
 
     for (i, chunk) in chunks.iter().enumerate() {
+        let seq = i64::from(chunk.seq);
+        let page = chunk.page.map(i64::from);
         stmt.execute(rusqlite::params![
             chunk.digest,
             content_id,
-            chunk.seq as i64,
+            seq,
             chunk.text,
             chunk.heading,
-            chunk.page.map(|p| p as i64),
+            page,
         ])?;
         if let Some(vectors) = vectors {
             let vector = &vectors[i];
-            if vector.len() != dimension as usize {
+            if vector.len() != usize::try_from(dimension).unwrap_or(usize::MAX) {
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "vector length is bounded by dimension (u32), which fits u32"
+                )]
+                let current = vector.len() as u32;
                 return Err(crate::Error::DimensionMismatch {
                     stored: dimension,
-                    current: vector.len() as u32,
+                    current,
                 });
             }
             let rowid = conn.last_insert_rowid();
@@ -666,7 +722,7 @@ mod tests {
             let rec = FileRecord {
                 path: WorkspacePath::from_posix("doc.md"),
                 digest: "abc".into(),
-                mtime: 1710000000.0,
+                mtime: 1_710_000_000.0,
                 size: 777,
                 status: FileStatus::Fresh,
             };
@@ -748,19 +804,35 @@ mod tests {
 
     fn make_chunks(digest: &str, n: usize) -> Vec<Chunk> {
         (0..n)
-            .map(|i| Chunk {
-                digest: digest.to_string(),
-                text: format!("chunk {i}"),
-                seq: i as u32,
-                heading: String::new(),
-                page: None,
+            .map(|i| {
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "test chunk counts are tiny"
+                )]
+                let seq = i as u32;
+                Chunk {
+                    digest: digest.to_string(),
+                    text: format!("chunk {i}"),
+                    seq,
+                    heading: String::new(),
+                    page: None,
+                }
             })
             .collect()
     }
 
     /// `n` vectors of `dimension` width, each entry equal to its index.
     fn make_vectors(n: usize, dimension: usize) -> Vec<Vec<f32>> {
-        (0..n).map(|i| vec![i as f32; dimension]).collect()
+        (0..n)
+            .map(|i| {
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "test indices are tiny; exact value is irrelevant"
+                )]
+                let value = i as f32;
+                vec![value; dimension]
+            })
+            .collect()
     }
 
     #[test]
@@ -955,7 +1027,7 @@ mod tests {
         let files = store.list_files().unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].digest, "blake3:v2");
-        assert_eq!(files[0].mtime, 2.0);
+        assert!((files[0].mtime - 2.0).abs() < f64::EPSILON);
 
         // Old content orphaned and GC'd.
         let content_count: i64 = store
@@ -1028,7 +1100,7 @@ mod tests {
         };
         assert_eq!(rows.len(), 2);
         for (i, (rowid, embedding)) in rows.iter().enumerate() {
-            assert_eq!(*rowid, (i + 1) as i64);
+            assert_eq!(*rowid, i64::try_from(i + 1).unwrap_or_default());
             assert_eq!(embedding.len(), 128 * 4);
             let floats: Vec<f32> = embedding
                 .as_chunks::<4>()
