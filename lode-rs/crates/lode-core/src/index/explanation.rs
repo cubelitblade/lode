@@ -13,7 +13,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::records::Source;
+use super::ranking::RetrievalPlan;
+use super::records::{ChunkWithRefs, Source};
 
 /// One retrieval source's participation in a query.
 ///
@@ -152,6 +153,35 @@ pub struct FusionExplanation {
     pub evidence: BTreeMap<Source, EvidenceBlock>,
     /// The fusion formula with actual numbers substituted.
     pub formula: FormulaComponents,
+}
+
+/// Why one chunk scored as it did for a query.
+///
+/// `sources` carries the per-source facts (status, pool, scores) keyed by
+/// source; `combined` is the fusion output and `rank` the chunk's true rank
+/// across all scored rows (not truncated to `top_k`), with `in_results`
+/// reporting whether it made the returned top-`top_k`. `plan` is the
+/// retrieval path that produced the scores (the flow context `assay` reads
+/// to explain them).
+///
+/// Not serializable as a whole: `plan` needs a custom shape and the chunk
+/// text may be large — the render layer picks what to expose.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScoreExplanation {
+    /// The explained chunk, with every referencing path.
+    pub chunk: ChunkWithRefs,
+    /// Per-source facts for the chunk in this query.
+    pub sources: BTreeMap<Source, SourceExplanation>,
+    /// The combined score after fusion (0.0 when the chunk matched nothing).
+    pub combined: f64,
+    /// 1-based rank across all scored rows, `None` when it scored zero.
+    pub rank: Option<usize>,
+    /// Whether the chunk made the returned top-`top_k`.
+    pub in_results: bool,
+    /// The retrieval path that produced the scores.
+    pub plan: RetrievalPlan,
+    /// The requested result cap.
+    pub top_k: u32,
 }
 
 #[cfg(test)]

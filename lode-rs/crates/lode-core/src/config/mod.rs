@@ -5,6 +5,8 @@
 
 pub mod layered;
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::embeddings::base::Embedder;
@@ -12,10 +14,20 @@ use crate::embeddings::http::{HttpClient, ReqwestHttpClient};
 use crate::embeddings::ollama::OllamaBuilder;
 use crate::embeddings::openai_compatible::OpenAiCompatibleBuilder;
 use crate::embeddings::tei_native::TeiNativeBuilder;
+use crate::index::records::Source;
+
+/// Current config schema version; config files may declare `version`, and a
+/// mismatch is refused at load time. Multi-format configs (future YAML) key
+/// off this anchor.
+pub const CONFIG_VERSION: u32 = 1;
 
 /// Top-level application settings model.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
+    /// Config schema version declared by the file; defaults to the current
+    /// version so legacy files without `version` keep loading.
+    #[serde(default = "default_version")]
+    pub version: u32,
     /// Output / ignore switch configuration.
     #[serde(default)]
     pub app: AppConfig,
@@ -34,6 +46,25 @@ pub struct Settings {
     /// Ignore rules.
     #[serde(default)]
     pub ignore: IgnoreConfig,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            version: CONFIG_VERSION,
+            app: AppConfig::default(),
+            embedding: EmbeddingConfig::default(),
+            retrieval: RetrievalConfig::default(),
+            chunking: ChunkingConfig::default(),
+            fts: FtsConfig::default(),
+            ignore: IgnoreConfig::default(),
+        }
+    }
+}
+
+/// Default version for files that omit it (matches Python: current version).
+fn default_version() -> u32 {
+    CONFIG_VERSION
 }
 
 /// App-level configuration (output, ignore).
@@ -224,9 +255,193 @@ fn default_batch_size() -> usize {
     32
 }
 
-/// Retrieval configuration (norm, fusion).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct RetrievalConfig {}
+/// Ranking selector plus all parameter tables.
+///
+/// Mirrors Python's `RetrievalConfig`: `type` picks which parameter table is
+/// read at assembly time; the other tables are always present but ignored
+/// ("only loaded when type = ..."), so one config file documents every
+/// selectable operator. TOML keys match `lode.toml.example` exactly.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetrievalConfig {
+    /// Max results returned by `lode prospect`.
+    #[serde(default = "default_top_k")]
+    pub top_k: u32,
+    /// Per-source score normalization before fusion.
+    #[serde(default)]
+    pub norm: NormConfig,
+    /// How per-source scores combine.
+    #[serde(default)]
+    pub fusion: FusionConfig,
+}
+
+impl Default for RetrievalConfig {
+    fn default() -> Self {
+        Self {
+            top_k: default_top_k(),
+            norm: NormConfig::default(),
+            fusion: FusionConfig::default(),
+        }
+    }
+}
+
+/// Default result cap (matches Python `DEFAULT_TOP_K`).
+fn default_top_k() -> u32 {
+    10
+}
+
+/// Which normalization operator runs before fusion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NormKind {
+    /// Min-max normalize to [0, 1].
+    MinMax,
+    /// Softmax scaled by temperature.
+    #[default]
+    Softmax,
+}
+
+/// Norm selector plus its parameter tables.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct NormConfig {
+    /// Which parameter table is read at assembly time.
+    #[serde(rename = "type", default)]
+    pub kind: NormKind,
+    /// Softmax parameters; read when `type = "softmax"`.
+    #[serde(default)]
+    pub softmax: SoftmaxNormConfig,
+}
+
+/// Softmax normalization parameters.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SoftmaxNormConfig {
+    /// Flattens toward uniform as it grows.
+    #[serde(default = "default_softmax_temperature")]
+    pub temperature: f64,
+}
+
+impl Default for SoftmaxNormConfig {
+    fn default() -> Self {
+        Self {
+            temperature: default_softmax_temperature(),
+        }
+    }
+}
+
+/// Default softmax temperature (matches Python `DEFAULT_SOFTMAX_TEMPERATURE`).
+fn default_softmax_temperature() -> f64 {
+    1.0
+}
+
+/// Fusion selector plus its parameter tables.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct FusionConfig {
+    /// Which parameter table is read at assembly time.
+    #[serde(rename = "type", default)]
+    pub kind: FusionKind,
+    /// Linear weighted-sum parameters; read when `type = "linear"`.
+    #[serde(default)]
+    pub linear: LinearFusionConfig,
+    /// RRF parameters; read when `type = "rrf"`.
+    #[serde(default)]
+    pub rrf: RrfFusionConfig,
+}
+
+/// Which fusion operator merges the per-source scores.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FusionKind {
+    /// Weighted sum of per-source scores.
+    #[default]
+    Linear,
+    /// Reciprocal rank fusion.
+    Rrf,
+}
+
+/// Linear weighted-sum fusion parameters.
+///
+/// "Factor" rather than "weight": factors may be negative or zero, which
+/// weight semantics would not suggest. At most one may be zero.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct LinearFusionConfig {
+    /// Multiplier on the semantic (dense) score.
+    #[serde(default = "default_semantic_factor")]
+    pub semantic_factor: f64,
+    /// Multiplier on the lexical (BM25) score.
+    #[serde(default = "default_lexical_factor")]
+    pub lexical_factor: f64,
+}
+
+impl Default for LinearFusionConfig {
+    fn default() -> Self {
+        Self {
+            semantic_factor: default_semantic_factor(),
+            lexical_factor: default_lexical_factor(),
+        }
+    }
+}
+
+/// Default semantic factor (matches Python `DEFAULT_SEMANTIC_FACTOR`).
+fn default_semantic_factor() -> f64 {
+    0.7
+}
+
+/// Default lexical factor (matches Python `DEFAULT_LEXICAL_FACTOR`).
+fn default_lexical_factor() -> f64 {
+    0.3
+}
+
+/// RRF fusion parameters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RrfFusionConfig {
+    /// Rank offset; larger k flattens the reciprocal curve.
+    #[serde(default = "default_rrf_k")]
+    pub k: u64,
+}
+
+impl Default for RrfFusionConfig {
+    fn default() -> Self {
+        Self { k: default_rrf_k() }
+    }
+}
+
+/// Default RRF k (matches Python `DEFAULT_RRF_K`).
+fn default_rrf_k() -> u64 {
+    60
+}
+
+/// Assemble the retrieval plan selected by config.
+///
+/// Mirrors Python's `build_plan`: RRF ranks by position, so normalization is
+/// skipped entirely (`norm = None`); min-max and softmax are monotonic, so
+/// the rank is identical whether computed on raw or normalized scores. For
+/// linear fusion the selected norm is applied per source.
+#[must_use]
+pub fn build_plan(cfg: &RetrievalConfig) -> crate::index::ranking::RetrievalPlan {
+    use crate::index::ranking::{Fusion, Norm, RetrievalPlan};
+
+    if cfg.fusion.kind == FusionKind::Rrf {
+        return RetrievalPlan {
+            norm: None,
+            fusion: Fusion::Rrf {
+                k: cfg.fusion.rrf.k,
+            },
+        };
+    }
+    let weights = BTreeMap::from([
+        (Source::Semantic, cfg.fusion.linear.semantic_factor),
+        (Source::Lexical, cfg.fusion.linear.lexical_factor),
+    ]);
+    let norm = match cfg.norm.kind {
+        NormKind::MinMax => Some(Norm::MinMax),
+        NormKind::Softmax => Some(Norm::Softmax {
+            temperature: cfg.norm.softmax.temperature,
+        }),
+    };
+    RetrievalPlan {
+        norm,
+        fusion: Fusion::Linear { weights },
+    }
+}
 
 /// Chunking configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
