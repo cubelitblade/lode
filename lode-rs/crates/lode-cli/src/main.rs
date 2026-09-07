@@ -115,7 +115,15 @@ enum Command {
         from_scratch: bool,
     },
     /// Search the store (alias: search).
-    Prospect,
+    #[command(alias = "search")]
+    Prospect {
+        /// The query to search for.
+        #[arg(value_name = "QUERY")]
+        query: String,
+        /// Max results to return; defaults to retrieval.top_k from config.
+        #[arg(long)]
+        top_k: Option<u32>,
+    },
     /// Fetch a stored record (alias: get).
     Dig,
     /// Analyze the store: why | how.
@@ -136,7 +144,7 @@ fn dispatch(cli: Cli) -> u8 {
     match cli.command {
         Command::Survey => survey(&cli.workspace, cli.view),
         Command::Mine { from_scratch } => mine(&cli.workspace, cli.view, from_scratch),
-        Command::Prospect => todo_command("prospect"),
+        Command::Prospect { query, top_k } => prospect(&cli.workspace, query, top_k, cli.view),
         Command::Dig => todo_command("dig"),
         Command::Assay => todo_command("assay"),
         Command::Config => todo_command("config"),
@@ -221,6 +229,161 @@ mod ui_msg {
 
 /// The relative path of the index database within the workspace.
 const INDEX_DB_RELATIVE: &str = ".lode/index.db";
+
+/// Run the prospect command: search the index with a hybrid query.
+///
+/// Runs a silent detection first so the stale bits are fresh before search
+/// reads them — this command writes `files.status` (it is not read-only).
+/// It needs an existing index: with none, it short-circuits with the
+/// `no_index` message.
+fn prospect(workspace: &std::path::Path, query: String, top_k: Option<u32>, view: View) -> u8 {
+    if let Some(code) = ui_msg::bad_workspace("prospect", workspace) {
+        return code;
+    }
+    if query.trim().is_empty() {
+        let text = lode_core::messages::require("invalid_query");
+        return ui_msg::die("prospect", text.error, text.hint);
+    }
+
+    let settings = match load_settings_for(workspace) {
+        Ok(s) => s,
+        Err(e) => {
+            return ui_msg::die(
+                "prospect",
+                &format!("Could not load configuration: {e}"),
+                Some("Check your lode.toml and environment."),
+            );
+        }
+    };
+    let embedder = match build_embedder(&settings.embedding) {
+        Ok(e) => e,
+        Err(e) => {
+            return ui_msg::die(
+                "prospect",
+                &format!("Could not build the embedding client: {e}"),
+                Some("Check your embedding configuration in lode.toml."),
+            );
+        }
+    };
+
+    let db_path = workspace.join(INDEX_DB_RELATIVE);
+    if !db_path.is_file() {
+        let text = lode_core::messages::require("no_index");
+        let index_path = db_path.display().to_string();
+        let error = lode_core::messages::format(text.error, &[("index_path", index_path)]);
+        return ui_msg::die("prospect", &error, text.hint);
+    }
+    let mut store = match Store::open_existing(&db_path) {
+        Ok(s) => s,
+        Err(e) => {
+            return ui_msg::die(
+                "prospect",
+                &format!("Cannot open the lode index: {e}"),
+                Some("Ensure `.lode/index.db` is intact, or delete it and remine."),
+            );
+        }
+    };
+
+    // Refresh the stale bits before searching so per-chunk annotation and
+    // the library-wide dirty signal reflect the current workspace.
+    if let Err(e) = detect_changes(&mut store, workspace, &[]) {
+        return ui_msg::die(
+            "prospect",
+            &format!("Could not finish scanning the workspace: {e}"),
+            Some("Fix the underlying error and rerun `lode prospect`."),
+        );
+    }
+
+    let top_k = top_k.unwrap_or(settings.retrieval.top_k);
+    if top_k == 0 {
+        return ui_msg::die(
+            "prospect",
+            "--top-k must be at least 1.",
+            Some("Set a positive result cap, or drop the flag to use retrieval.top_k."),
+        );
+    }
+    let plan = lode_core::config::build_plan(&settings.retrieval);
+    let hits = match lode_core::index::search::search(&store, &*embedder, &query, &plan, top_k) {
+        Ok(h) => h,
+        Err(e) => {
+            let hint = if e.to_string().contains("dimension mismatch") {
+                Some("Run `lode mine --from-scratch` to rebuild the index with the current model.")
+            } else {
+                Some("Fix the underlying error and rerun `lode prospect`.")
+            };
+            return ui_msg::die(
+                "prospect",
+                &format!("Could not finish prospecting: {e}"),
+                hint,
+            );
+        }
+    };
+
+    match view {
+        View::Compact => render_prospect(&hits),
+        View::Extended => render_prospect_extended(&hits),
+        View::Table => render_prospect_table(&hits),
+        View::Json => emit_prospect_json(&query, top_k, &hits),
+    }
+    0
+}
+
+/// One-line preview of a chunk text: whitespace runs collapsed, 160 chars
+/// max. Shared by the human views and the JSON payload so the two never
+/// drift.
+const PREVIEW_MAX_CHARS: usize = 160;
+
+fn preview(text: &str) -> String {
+    let mut snippet = String::new();
+    let mut last_ws = false;
+    for ch in text.chars() {
+        if ch.is_whitespace() {
+            last_ws = true;
+            continue;
+        }
+        if last_ws && !snippet.is_empty() {
+            snippet.push(' ');
+        }
+        last_ws = false;
+        snippet.push(ch);
+        if snippet.chars().count() >= PREVIEW_MAX_CHARS - 3 {
+            break;
+        }
+    }
+    if text.chars().count() > snippet.chars().count() {
+        snippet.push_str("...");
+    }
+    snippet
+}
+
+/// The 12-hex short id `prospect` prints and `dig` accepts.
+fn short_id(digest: &str) -> &str {
+    digest
+        .strip_prefix("blake3:")
+        .unwrap_or(digest)
+        .get(..12)
+        .unwrap_or(digest)
+}
+
+/// Source line for one hit: primary path, heading chain, page, stale tag,
+/// and the extra-reference count.
+fn hit_source_line(hit: &lode_core::index::search::SearchHit) -> String {
+    let primary = hit.primary();
+    let mut line = primary.path.to_native().to_string_lossy().into_owned();
+    if hit.refs.len() > 1 {
+        line += &format!(" (+{})", hit.refs.len() - 1);
+    }
+    if !hit.heading.is_empty() {
+        line += &format!(" > {}", hit.heading);
+    }
+    if let Some(page) = hit.page {
+        line += &format!(" (p.{page})");
+    }
+    if primary.status == lode_core::index::records::FileStatus::Stale {
+        line += " [stale]";
+    }
+    line
+}
 
 /// Run the survey command: detect workspace changes and report stale files.
 ///
@@ -876,6 +1039,153 @@ fn emit_mine_json(result: &SyncSummary) {
             .collect::<Vec<_>>(),
     });
     println!("{}", serde_json::to_string_pretty(&payload).unwrap());
+}
+
+/// Render prospect hits as a flat card stack (compact).
+///
+/// No header or count line: the hits are visible at a glance and the count
+/// is shaped by top_k anyway. Each hit is three lines — rank + source,
+/// preview, score · short digest — separated by blank lines. An empty
+/// result is a single `Dry hole` line. When the library is dirty, a
+/// trailing hint warns where the risk sits.
+fn render_prospect(hits: &[lode_core::index::search::SearchHit]) {
+    if hits.is_empty() {
+        println!("Dry hole: nothing matched.");
+        return;
+    }
+    let preview_w = terminal_preview_width();
+    for (index, hit) in hits.iter().enumerate() {
+        let rank = index + 1;
+        let width = hits.len().to_string().len();
+        println!();
+        println!("{rank:>width$}  {}", hit_source_line(hit), width = width);
+        println!("     {}", truncate_tail(&preview(&hit.text), preview_w));
+        println!("     {:.3} · {}", hit.score, short_id(&hit.digest));
+    }
+    print_prospect_epilogue(hits);
+}
+
+/// Usable preview width for the current terminal: the terminal width minus
+/// the card indent and a right-side breathing gap, clamped to the 160-char
+/// content budget and floored so it never collapses.
+fn terminal_preview_width() -> usize {
+    const INDENT: usize = 5; // five spaces before the preview line
+    const RIGHT_GAP: usize = 2; // breathing room on the right edge
+    const MIN_W: usize = 40;
+    let term_w = terminal_size()
+        .map(|(Width(w), _)| w as usize)
+        .unwrap_or(80);
+    term_w
+        .saturating_sub(INDENT + RIGHT_GAP)
+        .clamp(MIN_W, PREVIEW_MAX_CHARS)
+}
+
+/// Render prospect hits with full text and every referencing path
+/// (extended).
+fn render_prospect_extended(hits: &[lode_core::index::search::SearchHit]) {
+    if hits.is_empty() {
+        println!("Dry hole: nothing matched.");
+        return;
+    }
+    for (index, hit) in hits.iter().enumerate() {
+        let rank = index + 1;
+        println!("{rank:>3}  {}", hit_source_line(hit));
+        if hit.refs.len() > 1 {
+            for r in &hit.refs {
+                let primary = hit.primary();
+                if r.path == primary.path {
+                    continue;
+                }
+                println!("     - {} ({})", r.path.to_native().display(), r.status);
+            }
+        }
+        println!("     {}", hit.text);
+        println!("     {:.3} · {}", hit.score, short_id(&hit.digest));
+        println!();
+    }
+    print_prospect_epilogue(hits);
+}
+
+/// Render prospect hits as a table (table): RANK/SCORE/DIGEST/PATH.
+///
+/// heading/page/state stay out: numbers and paths are the grep anchors.
+fn render_prospect_table(hits: &[lode_core::index::search::SearchHit]) {
+    if hits.is_empty() {
+        println!("Dry hole: nothing matched.");
+        return;
+    }
+    const RANK_W: usize = 4;
+    const SCORE_W: usize = 6;
+    let widest_digest = hits
+        .iter()
+        .map(|h| short_id(&h.digest).chars().count())
+        .max()
+        .unwrap_or(12);
+    let digest_w = widest_digest.max(6);
+
+    println!(
+        "{:<rank_w$}  {:<score_w$}  {:<digest_w$}  PATH",
+        "RANK",
+        "SCORE",
+        "DIGEST",
+        rank_w = RANK_W,
+        score_w = SCORE_W,
+        digest_w = digest_w,
+    );
+    for (index, hit) in hits.iter().enumerate() {
+        let rank = index + 1;
+        println!(
+            "{:<rank_w$}  {:<score_w$}  {:<digest_w$}  {}",
+            rank,
+            format!("{:.3}", hit.score),
+            short_id(&hit.digest),
+            hit_source_line(hit),
+            rank_w = RANK_W,
+            score_w = SCORE_W,
+            digest_w = digest_w,
+        );
+    }
+    print_prospect_epilogue(hits);
+}
+
+/// Emit a flat prospect JSON payload (query context + hits + dirty signal).
+///
+/// Flat and envelope-free like survey/mine; `preview` shares the truncation
+/// budget with the human views.
+fn emit_prospect_json(query: &str, top_k: u32, hits: &[lode_core::index::search::SearchHit]) {
+    let has_stale = hits.iter().any(|h| h.stale());
+    let payload = serde_json::json!({
+        "query": query,
+        "top_k": top_k,
+        "has_stale": has_stale,
+        "hits": hits.iter().enumerate().map(|(index, hit)| {
+            serde_json::json!({
+                "rank": index + 1,
+                "score": hit.score,
+                "paths": hit.refs.iter().map(|r| serde_json::json!({
+                    "path": r.path.as_str(),
+                    "state": r.status.to_string(),
+                })).collect::<Vec<_>>(),
+                "heading": hit.heading,
+                "page": hit.page,
+                "digest": hit.digest,
+                "preview": preview(&hit.text),
+            })
+        }).collect::<Vec<_>>(),
+    });
+    println!("{}", serde_json::to_string_pretty(&payload).unwrap());
+}
+
+/// Close the prospect narrative: two honest variants depending on where the
+/// stale risk sits (a stale hit in this result set, or pending changes
+/// elsewhere).
+fn print_prospect_epilogue(hits: &[lode_core::index::search::SearchHit]) {
+    if !hits.is_empty() && hits.iter().any(|h| h.stale()) {
+        println!();
+        println!(
+            "Warning: results include stale files; verify them before relying on them. Run `lode mine` to update."
+        );
+    }
 }
 
 /// Emit a JSON survey payload.
