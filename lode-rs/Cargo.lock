@@ -1107,6 +1107,7 @@ dependencies = [
  "lode-core",
  "log",
  "serde_json",
+ "tempfile",
  "terminal_size",
 ]
 

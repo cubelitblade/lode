@@ -189,6 +189,86 @@ impl super::Store {
         Ok(chunks)
     }
 
+    /// Chunks adjacent to a target rowid within the same section.
+    ///
+    /// The target itself is excluded. Neighbors are limited to the same
+    /// content, heading chain, and sequence window, then returned in sequence
+    /// order with all referencing paths attached. A zero radius or unknown
+    /// target yields an empty result.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the target or neighbor queries fail.
+    ///
+    /// # Panics
+    ///
+    /// The internal row parser is expected to succeed for rows produced by
+    /// the store schema; a parser failure indicates a schema or query bug.
+    pub fn get_chunk_neighbors(
+        &self,
+        rowid: i64,
+        radius: u32,
+    ) -> crate::Result<Vec<ChunkWithRefs>> {
+        if radius == 0 {
+            return Ok(Vec::new());
+        }
+
+        let target: Option<(i64, i64, String)> = self
+            .conn
+            .query_row(
+                "SELECT content_id, seq, heading FROM chunks WHERE id = ?1",
+                rusqlite::params![rowid],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        let Some((content_id, seq, heading)) = target else {
+            return Ok(Vec::new());
+        };
+
+        let radius = i64::from(radius);
+        let lower = seq.saturating_sub(radius);
+        let upper = seq.saturating_add(radius);
+        let sql = format!(
+            "SELECT {CHUNK_COLUMNS} FROM chunks c JOIN files f ON f.content_id = c.content_id \
+             WHERE c.content_id = ?1 AND c.id != ?2 AND c.seq BETWEEN ?3 AND ?4 \
+             AND c.heading = ?5 ORDER BY c.seq"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let mut rows = stmt.query(rusqlite::params![content_id, rowid, lower, upper, heading,])?;
+        let mut grouped: BTreeMap<i64, ChunkWithRefs> = BTreeMap::new();
+        while let Some(row) = rows.next()? {
+            let current_rowid: i64 = row.get(0)?;
+            grouped
+                .entry(current_rowid)
+                .or_insert_with(|| chunk_from_row(row).expect("row group head"))
+                .refs
+                .push(path_ref_from_row(row));
+        }
+
+        let mut chunks: Vec<ChunkWithRefs> = grouped.into_values().collect();
+        chunks.sort_by_key(|chunk| chunk.seq.unwrap_or_default());
+        Ok(chunks)
+    }
+
+    /// Rowids of chunks whose digest starts with `prefix`, ordered by rowid.
+    ///
+    /// The prefix is the hex portion of a content address (`blake3:` already
+    /// stripped). This lightweight resolver lets callers distinguish
+    /// not-found from ambiguous prefixes without loading chunk bodies.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the row query fails.
+    pub fn find_chunk_rowids(&self, prefix: &str) -> crate::Result<Vec<i64>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id FROM chunks WHERE digest LIKE ?1 ORDER BY id")?;
+        let rows = stmt.query_map(rusqlite::params![format!("blake3:{prefix}%")], |row| {
+            row.get(0)
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
     /// Chunks whose digest starts with `prefix`, ordered by primary path then
     /// sequence.
     ///

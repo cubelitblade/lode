@@ -1057,6 +1057,75 @@ mod tests {
     }
 
     #[test]
+    fn find_chunk_rowids_resolves_prefix_without_loading_chunks() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("index.db");
+        let mut store = Store::open(&db, "test-model", 4, "unicode61").unwrap();
+        let first = make_record("a.txt", "blake3:dead0001", 1.0, 10);
+        let second = make_record("b.txt", "blake3:dead0002", 1.0, 10);
+        store
+            .replace_file(&first, &make_chunks("blake3:dead0001", 2), None)
+            .unwrap();
+        store
+            .replace_file(&second, &make_chunks("blake3:dead0002", 1), None)
+            .unwrap();
+
+        assert_eq!(store.find_chunk_rowids("dead0001").unwrap(), vec![1, 2]);
+        assert_eq!(store.find_chunk_rowids("dead").unwrap(), vec![1, 2, 3]);
+        assert!(store.find_chunk_rowids("beef").unwrap().is_empty());
+    }
+
+    #[test]
+    fn get_chunk_neighbors_stays_within_heading_and_radius() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("index.db");
+        let mut store = Store::open(&db, "test-model", 4, "unicode61").unwrap();
+        let chunks = vec![
+            Chunk {
+                digest: "blake3:section".into(),
+                text: "zero".into(),
+                seq: 0,
+                heading: "A".into(),
+                page: None,
+            },
+            Chunk {
+                digest: "blake3:section".into(),
+                text: "one".into(),
+                seq: 1,
+                heading: "A".into(),
+                page: None,
+            },
+            Chunk {
+                digest: "blake3:section".into(),
+                text: "two".into(),
+                seq: 2,
+                heading: "A".into(),
+                page: None,
+            },
+            Chunk {
+                digest: "blake3:section".into(),
+                text: "three".into(),
+                seq: 3,
+                heading: "B".into(),
+                page: None,
+            },
+        ];
+        let record = make_record("doc.txt", "blake3:section", 1.0, 10);
+        store.replace_file(&record, &chunks, None).unwrap();
+
+        let neighbors = store.get_chunk_neighbors(2, 1).unwrap();
+        assert_eq!(
+            neighbors
+                .iter()
+                .map(|c| c.text.as_str())
+                .collect::<Vec<_>>(),
+            ["zero", "two"]
+        );
+        assert!(store.get_chunk_neighbors(2, 0).unwrap().is_empty());
+        assert!(store.get_chunk_neighbors(999, 2).unwrap().is_empty());
+    }
+
+    #[test]
     fn dense_search_returns_nearest_first() {
         let (_dir, store) = seeded_store("blake3:vec", &["zero", "one", "two"]);
 

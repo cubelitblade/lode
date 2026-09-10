@@ -8,7 +8,7 @@ use terminal_size::{Width, terminal_size};
 
 use lode_core::config::build_embedder;
 use lode_core::config::layered::load_settings_for;
-use lode_core::index::records::FileRecord;
+use lode_core::index::records::{ChunkWithRefs, FileRecord};
 use lode_core::index::store::Store;
 use lode_core::ingestion::pipeline::{
     Change, DetectResult, SyncSummary, classify, detect_changes, sync,
@@ -125,7 +125,14 @@ enum Command {
         top_k: Option<u32>,
     },
     /// Fetch a stored record (alias: get).
-    Dig,
+    #[command(alias = "get")]
+    Dig {
+        /// Chunk digest or hexadecimal prefix.
+        digest: String,
+        /// Number of adjacent chunks to include on each side.
+        #[arg(long, default_value_t = 0)]
+        radius: u32,
+    },
     /// Analyze the store: why | how.
     Assay,
     /// Show or edit configuration.
@@ -145,7 +152,7 @@ fn dispatch(cli: Cli) -> u8 {
         Command::Survey => survey(&cli.workspace, cli.view),
         Command::Mine { from_scratch } => mine(&cli.workspace, cli.view, from_scratch),
         Command::Prospect { query, top_k } => prospect(&cli.workspace, query, top_k, cli.view),
-        Command::Dig => todo_command("dig"),
+        Command::Dig { digest, radius } => dig(&cli.workspace, digest, radius, cli.view),
         Command::Assay => todo_command("assay"),
         Command::Config => todo_command("config"),
     }
@@ -230,7 +237,273 @@ mod ui_msg {
 /// The relative path of the index database within the workspace.
 const INDEX_DB_RELATIVE: &str = ".lode/index.db";
 
-/// Run the prospect command: search the index with a hybrid query.
+/// Run the dig command: fetch one chunk and an optional same-section window.
+fn dig(workspace: &std::path::Path, input: String, radius: u32, view: View) -> u8 {
+    if let Some(code) = ui_msg::bad_workspace("dig", workspace) {
+        return code;
+    }
+
+    let db_path = workspace.join(INDEX_DB_RELATIVE);
+    if !db_path.is_file() {
+        let text = lode_core::messages::require("no_index");
+        let index_path = db_path.display().to_string();
+        let error = lode_core::messages::format(text.error, &[("index_path", index_path)]);
+        return dig_error_with_text(view, &error, text.hint, "no_index", &input, &[]);
+    }
+
+    let mut store = match Store::open_existing(&db_path) {
+        Ok(store) => store,
+        Err(e) => {
+            return ui_msg::die(
+                "dig",
+                &format!("Cannot open the lode index: {e}"),
+                Some("Ensure `.lode/index.db` is intact, or delete it and remine."),
+            );
+        }
+    };
+    if let Err(e) = detect_changes(&mut store, workspace, &[]) {
+        return ui_msg::die(
+            "dig",
+            &format!("Could not finish scanning the workspace: {e}"),
+            Some("Fix the underlying error and rerun `lode dig`."),
+        );
+    }
+
+    let token = match normalize_digest(&input) {
+        Some(token) => token,
+        None => return dig_error(view, "invalid_digest", &input, &[]),
+    };
+
+    let rowids = match store.find_chunk_rowids(&token) {
+        Ok(rowids) => rowids,
+        Err(e) => {
+            return ui_msg::die(
+                "dig",
+                &format!("Could not read the lode index: {e}"),
+                Some("Ensure `.lode/index.db` is intact, or delete it and remine."),
+            );
+        }
+    };
+    if rowids.is_empty() {
+        return dig_error(view, "not_found", &input, &[]);
+    }
+    if rowids.len() > 1 {
+        let candidates = match store.find_chunks_by_digest(&token) {
+            Ok(chunks) => chunks,
+            Err(e) => {
+                return ui_msg::die(
+                    "dig",
+                    &format!("Could not read the lode index: {e}"),
+                    Some("Ensure `.lode/index.db` is intact, or delete it and remine."),
+                );
+            }
+        };
+        return dig_error(view, "ambiguous", &input, &candidates);
+    }
+
+    let rowid = rowids[0];
+    let chunks = match store.get_chunks(&[rowid]) {
+        Ok(chunks) => chunks,
+        Err(e) => {
+            return ui_msg::die(
+                "dig",
+                &format!("Could not read the lode index: {e}"),
+                Some("Ensure `.lode/index.db` is intact, or delete it and remine."),
+            );
+        }
+    };
+    let Some(target) = chunks.get(&rowid).cloned() else {
+        return dig_error(view, "not_found", &input, &[]);
+    };
+    let mut window = vec![target.clone()];
+    if radius > 0 {
+        match store.get_chunk_neighbors(rowid, radius) {
+            Ok(neighbors) => window.extend(neighbors),
+            Err(e) => {
+                return ui_msg::die(
+                    "dig",
+                    &format!("Could not read the lode index: {e}"),
+                    Some("Ensure `.lode/index.db` is intact, or delete it and remine."),
+                );
+            }
+        }
+    }
+    window.sort_by_key(|chunk| chunk.seq.unwrap_or_default());
+
+    match view {
+        View::Compact => render_dig(&input, &target, &window, radius),
+        View::Extended => render_dig_extended(&input, &target, &window, radius),
+        View::Table => render_dig_table(&window, target.seq),
+        View::Json => emit_dig_json(&target, &window, radius),
+    }
+    0
+}
+
+/// Normalize and validate a user-supplied digest or hexadecimal prefix.
+fn normalize_digest(input: &str) -> Option<String> {
+    let token = input.trim().strip_prefix("blake3:").unwrap_or(input.trim());
+    let token = token.to_ascii_lowercase();
+    if !token.is_empty() && token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        Some(token)
+    } else {
+        None
+    }
+}
+
+fn dig_error(view: View, code: &str, input: &str, candidates: &[ChunkWithRefs]) -> u8 {
+    let text = lode_core::messages::require(code);
+    let count = candidates.len();
+    let error = lode_core::messages::format(
+        text.error,
+        &[("digest", input.to_string()), ("count", count.to_string())],
+    );
+    dig_error_with_text(view, &error, text.hint, code, input, candidates)
+}
+
+fn dig_error_with_text(
+    view: View,
+    error: &str,
+    hint: Option<&str>,
+    code: &str,
+    _input: &str,
+    candidates: &[ChunkWithRefs],
+) -> u8 {
+    if view == View::Json {
+        let mut payload = serde_json::json!({
+            "code": code,
+            "message": format!("{}\\n{}", error, hint.unwrap_or_default()),
+        });
+        if code == "ambiguous" {
+            payload["candidates"] = serde_json::Value::Array(
+                candidates.iter().map(dig_chunk_json_without_text).collect(),
+            );
+        }
+        println!("{}", serde_json::to_string_pretty(&payload).unwrap());
+        return 1;
+    }
+    let result = ui_msg::die("dig", error, hint);
+    if code == "ambiguous" {
+        for candidate in candidates {
+            println!(
+                "  #{} {}",
+                short_id(&candidate.digest),
+                dig_source_line(candidate)
+            );
+        }
+    }
+    result
+}
+
+fn dig_source_line(chunk: &ChunkWithRefs) -> String {
+    let primary = chunk.primary();
+    let mut source = primary.path.to_native().to_string_lossy().into_owned();
+    if chunk.refs.len() > 1 {
+        source += &format!(" (+{} more)", chunk.refs.len() - 1);
+    }
+    if !chunk.heading.is_empty() {
+        source += &format!(" > {}", chunk.heading);
+    }
+    if let Some(page) = chunk.page {
+        source += &format!(" (p.{page})");
+    }
+    if primary.status == lode_core::index::records::FileStatus::Stale {
+        source += " [stale]";
+    }
+    source
+}
+
+fn dig_chunk_json(chunk: &ChunkWithRefs) -> serde_json::Value {
+    let mut value = dig_chunk_json_without_text(chunk);
+    value["text"] = serde_json::Value::String(chunk.text.clone());
+    value
+}
+
+fn dig_chunk_json_without_text(chunk: &ChunkWithRefs) -> serde_json::Value {
+    serde_json::json!({
+        "digest": chunk.digest,
+        "paths": chunk.refs.iter().map(|reference| serde_json::json!({
+            "path": reference.path.as_str(),
+            "state": reference.status.to_string(),
+        })).collect::<Vec<_>>(),
+        "heading": chunk.heading,
+        "page": chunk.page,
+        "seq": chunk.seq,
+    })
+}
+
+fn emit_dig_json(target: &ChunkWithRefs, window: &[ChunkWithRefs], radius: u32) {
+    let payload = serde_json::json!({
+        "digest": target.digest,
+        "window": {
+            "center_seq": target.seq,
+            "radius": radius,
+            "chunks": window.iter().map(dig_chunk_json).collect::<Vec<_>>(),
+        },
+    });
+    println!("{}", serde_json::to_string_pretty(&payload).unwrap());
+}
+
+fn render_dig_header(digest: &str, radius: u32) {
+    let label = short_id(digest);
+    if radius == 0 {
+        println!("Dug {label}");
+    } else {
+        println!("Dug {label} with radius {radius}.");
+    }
+}
+
+fn render_dig(_input: &str, target: &ChunkWithRefs, window: &[ChunkWithRefs], radius: u32) {
+    render_dig_header(&target.digest, radius);
+    for chunk in window {
+        let center = chunk.seq == target.seq;
+        let title = match chunk.seq {
+            Some(seq) => seq.to_string(),
+            None => short_id(&chunk.digest).to_string(),
+        };
+        println!();
+        println!("{}{}", title, if center { " · center" } else { "" });
+        println!("  {}", dig_source_line(chunk));
+        println!("  {}", chunk.text);
+        println!("  {}", short_id(&chunk.digest));
+    }
+}
+
+fn render_dig_extended(input: &str, target: &ChunkWithRefs, window: &[ChunkWithRefs], radius: u32) {
+    render_dig(input, target, window, radius);
+    println!();
+    println!("Window: center_seq={:?}, radius={radius}", target.seq);
+    for chunk in window {
+        println!("  {}", short_id(&chunk.digest));
+        for reference in &chunk.refs {
+            println!("    {} ({})", reference.path.as_str(), reference.status);
+        }
+    }
+}
+
+fn chunk_stale(chunk: &ChunkWithRefs) -> bool {
+    chunk
+        .refs
+        .iter()
+        .any(|reference| reference.status == lode_core::index::records::FileStatus::Stale)
+}
+
+fn render_dig_table(window: &[ChunkWithRefs], center_seq: Option<u32>) {
+    println!("SEQ  CENTER  STATE  DIGEST        PATH");
+    for chunk in window {
+        let seq = chunk
+            .seq
+            .map_or_else(|| "-".to_string(), |value| value.to_string());
+        let center = if chunk.seq == center_seq { "yes" } else { "no" };
+        let state = if chunk_stale(chunk) { "stale" } else { "fresh" };
+        println!(
+            "{seq:<4} {center:<7} {state:<6} {:<12} {}",
+            short_id(&chunk.digest),
+            dig_source_line(chunk)
+        );
+        println!("     {}", chunk.text);
+    }
+}
+
 ///
 /// Runs a silent detection first so the stale bits are fresh before search
 /// reads them — this command writes `files.status` (it is not read-only).
@@ -1601,4 +1874,40 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
     let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
     (y + if m <= 2 { 1 } else { 0 }, m, d)
+}
+
+#[cfg(test)]
+mod dig_tests {
+    use super::*;
+
+    #[test]
+    fn normalize_digest_accepts_prefixed_bare_and_case_insensitive_hex() {
+        assert_eq!(
+            normalize_digest(" blake3:AbC123 ").as_deref(),
+            Some("abc123")
+        );
+        assert_eq!(normalize_digest("DeAd").as_deref(), Some("dead"));
+    }
+
+    #[test]
+    fn normalize_digest_rejects_empty_and_non_hex() {
+        assert!(normalize_digest("").is_none());
+        assert!(normalize_digest("blake3:").is_none());
+        assert!(normalize_digest("#dead").is_none());
+        assert!(normalize_digest("dead-gold").is_none());
+    }
+
+    #[test]
+    fn dig_chunk_json_contains_text_only_for_full_chunks() {
+        let chunk = ChunkWithRefs {
+            digest: "blake3:abc".into(),
+            text: "ore".into(),
+            heading: "A".into(),
+            seq: Some(2),
+            page: None,
+            refs: vec![],
+        };
+        assert!(dig_chunk_json(&chunk).get("text").is_some());
+        assert!(dig_chunk_json_without_text(&chunk).get("text").is_none());
+    }
 }
