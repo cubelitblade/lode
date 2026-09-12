@@ -1,0 +1,19 @@
+[package]
+name = "document-extractor-rust-runner"
+version = "0.0.0"
+edition = "2024"
+publish = false
+rust-version = "1.88"
+license = "MIT"
+
+[dependencies]
+lode-core = { path = "../../../lode-rs/crates/lode-core" }
+docx-rs = { version = "=0.4.22", default-features = false }
+office_oxide = { version = "=0.1.10", default-features = false }
+pdf-extract = "=0.12.0"
+pdf_oxide = { version = "=0.3.78", default-features = false }
+rs-docx = "=0.2.0"
+rwml = { version = "=0.1.4", default-features = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+unicode-normalization = "=0.1.25"

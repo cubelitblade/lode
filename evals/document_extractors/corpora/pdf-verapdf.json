@@ -1,0 +1,19 @@
+{
+  "corpus": "veraPDF PDF/A test corpus subset",
+  "revision": "01e40281d48e2f3755006fdf596ca25caaea8634",
+  "license": "CC-BY-4.0",
+  "license_url": "https://github.com/veraPDF/veraPDF-corpus/blob/01e40281d48e2f3755006fdf596ca25caaea8634/README.md",
+  "source_url": "https://github.com/veraPDF/veraPDF-corpus/tree/01e40281d48e2f3755006fdf596ca25caaea8634",
+  "base_url": "https://raw.githubusercontent.com/veraPDF/veraPDF-corpus/01e40281d48e2f3755006fdf596ca25caaea8634",
+  "cache_dir": "verapdf",
+  "files": [
+    {"name": "unicode-pass-a.pdf", "url_path": "PDF_A-1a/6.3 Fonts/6.3.8 Unicode character maps/veraPDF test suite 6-3-8-t01-pass-a.pdf", "sha256": "42df79430e88e6ce0e8fbe8f5c81111502d3b28dcb4b3959e76ba6ee3ab4fdc1"},
+    {"name": "unicode-fail-a.pdf", "url_path": "PDF_A-1a/6.3 Fonts/6.3.8 Unicode character maps/veraPDF test suite 6-3-8-t01-fail-a.pdf", "sha256": "3177f85287fa16d0a3a5060895498b69f535e3e7a51969effeb3ac45dadc0662"},
+    {"name": "tagged-pass-a.pdf", "url_path": "PDF_A-1a/6.8 Logical structure/6.8.2 Tagged PDF/6.8.2.2 Mark information dictionary/veraPDF test suite 6-8-2-2-t01-pass-a.pdf", "sha256": "b5d194c0e6d91119f0f99354f3d1078877406b695cecf75fb0b5cb51b18c14fd"},
+    {"name": "artifact-pass-a.pdf", "url_path": "PDF_A-1a/6.8 Logical structure/6.8.3 Artifacts/6.8.3.4 Structure types/veraPDF test suite 6-8-3-4-t01-pass-a.pdf", "sha256": "6eebbaaced8f509d800c0797c3ed58a45e297e1546e3060f04953cfc784351a0"},
+    {"name": "language-pass-a.pdf", "url_path": "PDF_A-1a/6.8 Logical structure/6.8.4 Natural language specification/veraPDF test suite 6-8-4-t01-pass-a.pdf", "sha256": "a8817d6a233d91d38abb8b90b8e9700cec77fe33953684acf26b0e424419fda1"},
+    {"name": "form-xobject-pass-a.pdf", "url_path": "PDF_A-1b/6.2 Graphics/6.2.5 Form XObjects/veraPDF test suite 6-2-5-t02-pass-a.pdf", "sha256": "8dae69927d926b816b8b91534926107d5c6cd79cb44278e557fa2cf4892d474c"},
+    {"name": "docinfo-pass-a.pdf", "url_path": "PDF_A-1b/6.7 Metadata/6.7.3 Document information dictionary/veraPDF test suite 6-7-3-t01-pass-a.pdf", "sha256": "d9346f20c60324f74b8f4a73aa3146903641411d8100bc2364c81a6433df49d6"},
+    {"name": "cidfont-pass-a.pdf", "url_path": "PDF_A-2b/6.2 Graphics/6.2.11 Fonts/6.2.11.3 Composite fonts/6.2.11.3.2 CIDFonts/veraPDF test suite 6-2-11-3-2-t01-pass-a.pdf", "sha256": "ba939c67c486838167f13a9ef386a49d2edf8091494accf15824eadfaf40972e"}
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "corpus": "Mozilla PDF.js test PDFs",
+  "revision": "f4f90c2f6902fb2e707d1cc22c42fad4c7f67dc5",
+  "license": "Apache-2.0 repository; fixture provenance follows PDF.js test data",
+  "license_url": "https://github.com/mozilla/pdf.js/blob/f4f90c2f6902fb2e707d1cc22c42fad4c7f67dc5/LICENSE",
+  "source_url": "https://github.com/mozilla/pdf.js/tree/f4f90c2f6902fb2e707d1cc22c42fad4c7f67dc5/test/pdfs",
+  "base_url": "https://raw.githubusercontent.com/mozilla/pdf.js/f4f90c2f6902fb2e707d1cc22c42fad4c7f67dc5",
+  "cache_dir": "pdfjs",
+  "files": [
+    {"name": "helloworld.pdf", "url_path": "examples/learning/helloworld.pdf", "sha256": "c9efcaa374939ff19fc37974131f1db6d457eb942700c02a63fc9dda983e1400"},
+    {"name": "hello_world_rotated.pdf", "url_path": "test/pdfs/hello_world_rotated.pdf", "sha256": "ab0cb700cd5e5338fd676dfca25becae800acd2be03a4e57856485b8cfd2d28b"},
+    {"name": "rotation.pdf", "url_path": "test/pdfs/rotation.pdf", "sha256": "5087c2afe763d145537d652bb3bc6c321ace3a267b2679ae2c178add3ba7f1d9"},
+    {"name": "nested_outline.pdf", "url_path": "test/pdfs/nested_outline.pdf", "sha256": "1283aa2173bc57def82323ea2601a4e08ada5beb2466873aec8aa04ddd74c013"},
+    {"name": "outline_goto_action.pdf", "url_path": "test/pdfs/outline_goto_action.pdf", "sha256": "7b653d3e95ca550509abcfd3887754d2ec0c68da330ec03a95c77bdb47479ecc"},
+    {"name": "copy_paste_ligatures.pdf", "url_path": "test/pdfs/copy_paste_ligatures.pdf", "sha256": "3a6948ca33558a0f1c9dabf70902e14e263e814b6a12da44ba8ec9439c0bafdd"},
+    {"name": "ArabicCIDTrueType.pdf", "url_path": "test/pdfs/ArabicCIDTrueType.pdf", "sha256": "1cad1de912ba29f89a6d8b08bc5b0f84382874ffedab2c8f9e05ef608c265bb1"},
+    {"name": "arial_unicode_ab_cidfont.pdf", "url_path": "test/pdfs/arial_unicode_ab_cidfont.pdf", "sha256": "049a4330710d8470896061acf7ee486735e94cef2769f6cc13fec3cb13bb65aa"},
+    {"name": "Embedded_font.pdf", "url_path": "test/pdfs/Embedded_font.pdf", "sha256": "4b7588e070cd37c7cfa2ce0a493ba9ec6d57fb36a2ca3c6ab50c74a7818a2f9a"},
+    {"name": "simpletype3font.pdf", "url_path": "test/pdfs/simpletype3font.pdf", "sha256": "a5697cbc51c19816944658b91e3a41f86e98ae63fbd1007798994b073385aef1"},
+    {"name": "standard_fonts.pdf", "url_path": "test/pdfs/standard_fonts.pdf", "sha256": "4d48fc12e619a823bf70b3a4d8e9d916a85683ecb176d138af66a57351bd21f9"},
+    {"name": "form_two_pages.pdf", "url_path": "test/pdfs/form_two_pages.pdf", "sha256": "6d7c608d0102fa1e1b3cbc2c3b0a989783e90f84ff1a7fe7cbdb6dc2a1b60fbd"},
+    {"name": "file_pdfjs_form.pdf", "url_path": "test/pdfs/file_pdfjs_form.pdf", "sha256": "808af1e794952475e8af824ad1ee6ac41d6646de122e5ac91975e75b0951c80b"}
+  ]
+}

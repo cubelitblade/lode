@@ -1,0 +1,87 @@
+[
+  {
+    "sample_id": "public-pdfjs-003",
+    "category": "rotation",
+    "sha256": "5087c2afe763d145537d652bb3bc6c321ace3a267b2679ae2c178add3ba7f1d9",
+    "selection_scope": true,
+    "expected_text": "This is my first page with normal layout.\nThis is the second line on the page.\nThis is my second page. It will have a landscape layout.\nSecond line here.",
+    "anchors": [
+      "This is my first page with normal layout.",
+      "This is the second line on the page.",
+      "This is my second page. It will have a landscape layout.",
+      "Second line here."
+    ],
+    "page_anchors": [
+      ["This is my first page with normal layout.", "This is the second line on the page."],
+      ["This is my second page. It will have a landscape layout.", "Second line here."]
+    ],
+    "note": "Rendered page 2 places the landscape-layout sentence before the second line."
+  },
+  {
+    "sample_id": "public-pdfjs-007",
+    "category": "arabic-cid-truetype",
+    "sha256": "1cad1de912ba29f89a6d8b08bc5b0f84382874ffedab2c8f9e05ef608c265bb1",
+    "selection_scope": true,
+    "expected_text": "انواع الخطوط العربية\nانواع الخطوط العربية\nانواع الخطوط العربية\nانواع الخطوط العربية",
+    "anchors": [
+      "انواع الخطوط العربية",
+      "انواع الخطوط العربية",
+      "انواع الخطوط العربية",
+      "انواع الخطوط العربية"
+    ],
+    "page_anchors": [["انواع الخطوط العربية"]],
+    "note": "The rendered page contains the same Arabic phrase on four lines in four font styles."
+  },
+  {
+    "sample_id": "public-pdfjs-008",
+    "category": "arabic-cid-unicode-map",
+    "sha256": "049a4330710d8470896061acf7ee486735e94cef2769f6cc13fec3cb13bb65aa",
+    "selection_scope": true,
+    "expected_text": "عربي",
+    "anchors": ["عربي"],
+    "page_anchors": [["عربي"]],
+    "note": "The page visibly contains one Arabic word; replacement characters and empty output are both failures."
+  },
+  {
+    "sample_id": "public-pdfjs-011",
+    "category": "standard-font-grid",
+    "sha256": "4d48fc12e619a823bf70b3a4d8e9d916a85683ecb176d138af66a57351bd21f9",
+    "selection_scope": false,
+    "anchors": ["FONT: courier", "FONT: helvetica", "FONT: times", "FONT: symbol", "FONT: zapfdingbats"],
+    "page_anchors": [
+      ["FONT: courier", "The quick brown fox jumps over the lazy dog", "page 1 / 14"],
+      ["FONT: courierB", "The quick brown fox jumps over the lazy dog", "page 2 / 14"],
+      ["FONT: courierI", "The quick brown fox jumps over the lazy dog", "page 3 / 14"],
+      ["FONT: courierBI", "The quick brown fox jumps over the lazy dog", "page 4 / 14"],
+      ["FONT: helvetica", "The quick brown fox jumps over the lazy dog", "page 5 / 14"],
+      ["FONT: helveticaB", "The quick brown fox jumps over the lazy dog", "page 6 / 14"],
+      ["FONT: helveticaI", "The quick brown fox jumps over the lazy dog", "page 7 / 14"],
+      ["FONT: helveticaBI", "The quick brown fox jumps over the lazy dog", "page 8 / 14"],
+      ["FONT: times", "The quick brown fox jumps over the lazy dog", "page 9 / 14"],
+      ["FONT: timesB", "The quick brown fox jumps over the lazy dog", "page 10 / 14"],
+      ["FONT: timesI", "The quick brown fox jumps over the lazy dog", "page 11 / 14"],
+      ["FONT: timesBI", "The quick brown fox jumps over the lazy dog", "page 12 / 14"],
+      ["FONT: symbol", "Τηε θυιχκ βροων φοξ", "page 13 / 14"],
+      ["FONT: zapfdingbats", "➀ ➁ ➂ ➃", "page 14 / 14"]
+    ],
+    "note": "The 14-page character grids are table-like and non-gating; page headings, representative lines, and page order remain diagnostic."
+  },
+  {
+    "sample_id": "public-pdfjs-013",
+    "category": "acroform",
+    "sha256": "808af1e794952475e8af824ad1ee6ac41d6646de122e5ac91975e75b0951c80b",
+    "selection_scope": true,
+    "anchors": ["AcroForm", "TextField:", "page 1 / 1"],
+    "page_anchors": [["AcroForm", "TextField:", "page 1 / 1"]],
+    "note": "The rendered page visibly contains the title, field label, and footer in that order."
+  },
+  {
+    "sample_id": "public-verapdf-002",
+    "category": "invalid-to-unicode-formula",
+    "sha256": "3177f85287fa16d0a3a5060895498b69f535e3e7a51969effeb3ac45dadc0662",
+    "selection_scope": false,
+    "anchors": ["Here is a sample text.", "And here is a sample formula:", "f(x)", "eitx", "dt", "1"],
+    "page_anchors": [["Here is a sample text.", "And here is a sample formula:", "f(x)", "eitx", "dt", "1"]],
+    "note": "The file intentionally lacks a required ToUnicode map; prose spacing and a readable formula linearization are best-effort diagnostics."
+  }
+]
