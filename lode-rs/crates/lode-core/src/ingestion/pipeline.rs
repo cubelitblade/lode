@@ -1,14 +1,14 @@
 //! Two-stage update pipeline: detect changes + sync.
 //!
-//! 1a scope: `classify` (pure disk-vs-index stat comparison) and
-//! `detect_changes` (classify + mark stale). `sync` is deferred to 1b.
+//! `classify` performs disk-vs-index change detection, while `sync` performs
+//! extraction, embedding, and storage for the resulting change set.
 //!
 //! The pipeline uses a Rust-native event model: [`Change`] enum variants
 //! represent state transitions, and [`DetectResult`] collects them alongside
 //! skipped (unsupported) files. This differs from Python's bucket-list
 //! `DetectResult` dataclass.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
@@ -16,7 +16,7 @@ use crate::embeddings::base::Embedder;
 use crate::index::records::{FileRecord, FileStatus};
 use crate::index::store::Store;
 use crate::ingestion::digest::file_digest;
-use crate::ingestion::formats::is_ingestable;
+use crate::ingestion::formats::{PLAIN_EXTENSIONS, is_ingestable};
 use crate::relpath::WorkspacePath;
 
 /// Disk state of a file (no status — status belongs to the index side).
@@ -285,6 +285,19 @@ pub fn sync(
         ..Default::default()
     };
 
+    // Snapshot digest ownership once. A per-file SQL lookup would repeatedly
+    // scan the files table during large first syncs; this cache keeps reuse
+    // checks linear in the number of indexed and incoming files.
+    let mut reusable_families: HashMap<String, HashSet<&'static str>> = HashMap::new();
+    for record in store.list_files()? {
+        if let Some(family) = extractor_family(record.path.as_str()) {
+            reusable_families
+                .entry(record.digest)
+                .or_default()
+                .insert(family);
+        }
+    }
+
     // Collect paths that need extraction + chunking (adds, modifies, rename fallbacks).
     let mut to_embed: Vec<WorkspacePath> = Vec::new();
     let mut added_set: std::collections::HashSet<WorkspacePath> = std::collections::HashSet::new();
@@ -330,7 +343,13 @@ pub fn sync(
                 size: stat.len(),
                 status: FileStatus::Fresh,
             };
-            if store.reference_file(&record)? {
+            if can_reuse_content(&reusable_families, &record) && store.reference_file(&record)? {
+                if let Some(family) = extractor_family(record.path.as_str()) {
+                    reusable_families
+                        .entry(record.digest.clone())
+                        .or_default()
+                        .insert(family);
+                }
                 store.remove_file(from)?;
                 summary.renamed.push((from.clone(), to.clone()));
             } else {
@@ -404,8 +423,10 @@ pub fn sync(
             status: FileStatus::Fresh,
         };
 
-        // Content-reuse check.
-        if store.reference_file(&record)? {
+        // Content-reuse check. The digest alone is insufficient because the
+        // same bytes can be valid text but malformed DOCX/PDF under another
+        // extension; only reuse content produced by the same extractor family.
+        if can_reuse_content(&reusable_families, &record) && store.reference_file(&record)? {
             if added_set.contains(rel) {
                 summary.added.push(rel.clone());
             } else {
@@ -422,9 +443,17 @@ pub fn sync(
             .map(|s| format!(".{s}"))
             .unwrap_or_default();
         let segments = match extract_document(&data, &suffix) {
-            Some(s) => s,
-            None => {
+            Ok(Some(s)) => s,
+            Ok(None) => {
                 summary.skipped += 1;
+                continue;
+            }
+            Err(exc) => {
+                summary.failed.push(FailedFile {
+                    path: rel.clone(),
+                    error: exc.to_string(),
+                });
+                store.mark_stale(rel)?;
                 continue;
             }
         };
@@ -449,6 +478,12 @@ pub fn sync(
 
         match outcome {
             Ok(()) => {
+                if let Some(family) = extractor_family(record.path.as_str()) {
+                    reusable_families
+                        .entry(record.digest.clone())
+                        .or_default()
+                        .insert(family);
+                }
                 if added_set.contains(rel) {
                     summary.added.push(rel.clone());
                 } else {
@@ -499,6 +534,34 @@ pub fn sync(
     }
 
     Ok(summary)
+}
+
+fn can_reuse_content(
+    reusable_families: &HashMap<String, HashSet<&'static str>>,
+    record: &FileRecord,
+) -> bool {
+    let Some(target_family) = extractor_family(record.path.as_str()) else {
+        return false;
+    };
+    reusable_families
+        .get(&record.digest)
+        .is_some_and(|families| families.contains(target_family))
+}
+
+fn extractor_family(path: &str) -> Option<&'static str> {
+    let suffix = path
+        .rsplit('.')
+        .next()
+        .map(|extension| format!(".{extension}").to_ascii_lowercase())?;
+    if PLAIN_EXTENSIONS.contains(&suffix.as_str()) {
+        Some("plain")
+    } else {
+        match suffix.as_str() {
+            ".docx" => Some("docx"),
+            ".pdf" => Some("pdf"),
+            _ => None,
+        }
+    }
 }
 
 /// Fold exact-content moves out of Added/Removed into Renamed pairs.
@@ -817,6 +880,129 @@ mod tests {
         let summary = sync(&mut store, root, &splitter, &detect, None, None).unwrap();
         assert_eq!(summary.skipped, 1);
         assert!(store.list_files().unwrap().is_empty());
+    }
+
+    #[test]
+    fn sync_records_supported_extraction_failures_and_continues() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("broken.docx"), b"not an OOXML package").unwrap();
+        fs::write(root.join("broken.pdf"), b"not a PDF").unwrap();
+        fs::write(root.join("ok.txt"), "this file should still index").unwrap();
+
+        let db_dir = tempfile::tempdir().unwrap();
+        let db = db_dir.path().join("index.db");
+        let mut store = Store::open(&db, "test-model", 128, "unicode61").unwrap();
+        let splitter = crate::ingestion::split::RecursiveSegmentSplitter::new(200, 50).unwrap();
+
+        let detect = detect_changes(&mut store, root, &[]).unwrap();
+        let summary = sync(&mut store, root, &splitter, &detect, None, None).unwrap();
+
+        assert_eq!(summary.failed.len(), 2);
+        assert!(
+            summary
+                .failed
+                .iter()
+                .any(|failure| failure.path.as_str() == "broken.docx")
+        );
+        assert!(
+            summary
+                .failed
+                .iter()
+                .any(|failure| failure.path.as_str() == "broken.pdf")
+        );
+        assert!(
+            summary
+                .failed
+                .iter()
+                .all(|failure| !failure.error.is_empty())
+        );
+        assert_eq!(summary.added.len(), 1);
+        assert!(
+            store
+                .get_file(&WorkspacePath::from_posix("ok.txt"))
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            store
+                .get_file(&WorkspacePath::from_posix("broken.docx"))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn sync_does_not_reuse_plain_content_for_corrupt_docx() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("source.txt"), "plain bytes").unwrap();
+
+        let db_dir = tempfile::tempdir().unwrap();
+        let db = db_dir.path().join("index.db");
+        let mut store = Store::open(&db, "test-model", 128, "unicode61").unwrap();
+        let splitter = crate::ingestion::split::RecursiveSegmentSplitter::new(200, 50).unwrap();
+
+        let first_detect = detect_changes(&mut store, root, &[]).unwrap();
+        let first_summary = sync(&mut store, root, &splitter, &first_detect, None, None).unwrap();
+        assert!(first_summary.failed.is_empty());
+
+        fs::copy(root.join("source.txt"), root.join("corrupt.docx")).unwrap();
+        let second_detect = detect_changes(&mut store, root, &[]).unwrap();
+        let second_summary = sync(&mut store, root, &splitter, &second_detect, None, None).unwrap();
+
+        assert!(second_summary.failed.iter().any(|failure| {
+            failure.path.as_str() == "corrupt.docx"
+                && failure.error.contains("could not parse DOCX document")
+        }));
+        assert!(
+            store
+                .get_file(&WorkspacePath::from_posix("corrupt.docx"))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            store
+                .get_file(&WorkspacePath::from_posix("source.txt"))
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn sync_keeps_old_chunks_and_marks_docx_stale_after_parse_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mut writer = office_oxide::docx::write::DocxWriter::new();
+        writer.add_paragraph("original body");
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        writer.write_to(&mut bytes).unwrap();
+        fs::write(root.join("document.docx"), bytes.get_ref()).unwrap();
+
+        let db_dir = tempfile::tempdir().unwrap();
+        let db = db_dir.path().join("index.db");
+        let mut store = Store::open(&db, "test-model", 128, "unicode61").unwrap();
+        let splitter = crate::ingestion::split::RecursiveSegmentSplitter::new(200, 50).unwrap();
+        let first_detect = detect_changes(&mut store, root, &[]).unwrap();
+        sync(&mut store, root, &splitter, &first_detect, None, None).unwrap();
+        let original_chunks = store.find_chunks_by_digest("").unwrap();
+        assert!(!original_chunks.is_empty());
+
+        fs::write(root.join("document.docx"), b"broken OOXML").unwrap();
+        let second_detect = detect_changes(&mut store, root, &[]).unwrap();
+        let summary = sync(&mut store, root, &splitter, &second_detect, None, None).unwrap();
+
+        assert_eq!(summary.failed.len(), 1);
+        let record = store
+            .get_file(&WorkspacePath::from_posix("document.docx"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.status, FileStatus::Stale);
+        let stale_chunks = store.find_chunks_by_digest("").unwrap();
+        assert_eq!(stale_chunks.len(), original_chunks.len());
+        assert_eq!(stale_chunks[0].digest, original_chunks[0].digest);
+        assert_eq!(stale_chunks[0].text, original_chunks[0].text);
+        assert_eq!(stale_chunks[0].refs[0].status, FileStatus::Stale);
     }
 
     #[test]

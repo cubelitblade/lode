@@ -24,7 +24,7 @@ pub const SUPPORTED_EXTENSIONS: &[&str] = &[
     ".txt",
     ".md",
     ".markdown",
-    // Structured (1b / Phase 2)
+    // Structured document formats.
     ".docx",
     ".pdf",
 ];
