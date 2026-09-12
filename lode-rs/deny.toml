@@ -5,6 +5,13 @@ allow = [
     "BSD-2-Clause",
     "BSD-3-Clause",
     "ISC",
+    "Zlib",
     "Unicode-3.0",
     "CDLA-Permissive-2.0", # Root certificate data distributed by webpki-root-certs.
 ]
+
+[advisories]
+# pdf_oxide 0.3.78 requires ttf-parser 0.25.1 transitively. RustSec marks it
+# unmaintained, but reports no safe upgrade; keep the exception narrow and
+# revisit when pdf_oxide moves to skrifa-only font parsing.
+ignore = ["RUSTSEC-2026-0192"]
