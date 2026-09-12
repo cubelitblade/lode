@@ -64,7 +64,9 @@ pub fn extract_document(
 }
 
 fn extract_doc(data: &[u8]) -> Result<Vec<Segment>, ExtractionError> {
-    let text = rwml::extract_text(data).map_err(|error| ExtractionError::Doc(error.to_string()))?;
+    let document = Document::from_reader(Cursor::new(data.to_vec()), DocumentFormat::Doc)
+        .map_err(|error| ExtractionError::Doc(error.to_string()))?;
+    let text = sanitize_doc_text(&document.plain_text());
     let text = text.trim().to_owned();
     if text.is_empty() {
         return Err(ExtractionError::Doc(
@@ -76,6 +78,12 @@ fn extract_doc(data: &[u8]) -> Result<Vec<Segment>, ExtractionError> {
         heading: String::new(),
         page: None,
     }])
+}
+
+fn sanitize_doc_text(text: &str) -> String {
+    text.chars()
+        .filter(|character| !character.is_control() || matches!(character, '\n' | '\r' | '\t'))
+        .collect()
 }
 
 /// Decode plain text with the same permissive fallback used by the Python
@@ -553,6 +561,14 @@ mod tests {
     fn rejects_corrupt_legacy_doc_input() {
         let error = extract_document(b"not an OLE2 compound file", ".doc").unwrap_err();
         assert!(matches!(error, ExtractionError::Doc(_)));
+    }
+
+    #[test]
+    fn sanitizes_legacy_doc_control_characters() {
+        assert_eq!(
+            sanitize_doc_text("before\u{0002}after\tline\nnext\rfinal\u{001f}"),
+            "beforeafter\tline\nnext\rfinal"
+        );
     }
 
     #[test]

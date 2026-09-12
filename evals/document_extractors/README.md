@@ -34,8 +34,11 @@ presence checks to the same pinned corpus. Markdown remains a structural
 diagnostic only.
 
 The first result is summarized in
-[`reports/doc-quality-round-1.md`](reports/doc-quality-round-1.md). `rwml`
-passed this gate; `office_oxide` did not meet the table-structure threshold.
+[`reports/doc-quality-round-1.md`](reports/doc-quality-round-1.md). That report
+is historical: it used the candidate-owned `rwml` corpus and evaluated
+`office_oxide`'s format-specific Markdown path. The current production
+decision uses `office_oxide::plain_text()` for DOC, while the shared IR path
+remains a later structural-table experiment.
 
 ### DOCX smoke and quality
 
@@ -134,7 +137,9 @@ selected PDF scope (for example, two-column pages) remain visible as
 diagnostics but do not affect the gate. Reports are written to
 `.ai/process/extractor-evals/`.
 
-The first production `.doc` run is summarized in
-[`reports/doc-operational.md`](reports/doc-operational.md). It passed with
-`rwml 0.1.4`; cross-platform release CI is still required before final
-cutover.
+The current production `.doc` run is summarized in
+[`reports/doc-operational.md`](reports/doc-operational.md). The current
+implementation uses `office_oxide 0.1.10`; the former `rwml 0.1.4` run is
+historical only. A manual production-binary `mine -> prospect -> dig` check
+against an independent public `.doc` sample also passed. Cross-platform
+release CI remains before final cutover.

@@ -18,9 +18,9 @@ use rusqlite::Connection;
 
 /// Bump when the schema changes incompatibly; a mismatch makes the store
 /// refuse to open until an explicit rebuild.
-/// Version 3 adds extractor family to content identity, which must not be
-/// mixed with a version 2 index.
-pub const SCHEMA_VERSION: u32 = 3;
+/// Version 4 invalidates indexes built with the previous legacy-DOC
+/// projection, which must not be silently reused after the extractor switch.
+pub const SCHEMA_VERSION: u32 = 4;
 
 /// FTS5 tokenizers the schema accepts. `tokenize_clause` is interpolated
 /// into DDL, so it must stay on this whitelist (mirrors the Python

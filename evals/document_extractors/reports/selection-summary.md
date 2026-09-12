@@ -1,6 +1,6 @@
 # Document extractor selection summary
 
-Date: 2026-09-12
+Date: 2026-09-13
 
 ## Current selection
 
@@ -8,7 +8,7 @@ Date: 2026-09-12
 | --- | --- | --- | --- |
 | DOCX | `office_oxide 0.1.10` | Quality and restricted-scope Operational pass; ordinary paragraphs/tables and heading chains | Cross-platform CI |
 | PDF | `pdf_oxide 0.3.78` | Restricted single-flow digital PDF Quality and Operational pass | Cross-platform CI |
-| DOC | `rwml 0.1.4` | Smoke, Quality, and production Operational pass; pinned synthetic corpus and flattened text extraction | Cross-platform CI |
+| DOC | `office_oxide 0.1.10` | Independent-corpus validation pass and production CLI integration check for conservative plain text; table IR deferred | Cross-platform CI |
 
 The PDF choice explicitly excludes general multi-column reading order, PDF
 table reconstruction, OCR/scanned text, and general RTL PDFs whose glyph-to-
@@ -54,10 +54,19 @@ and [`pdf-operational.md`](pdf-operational.md).
 
 ### DOC
 
-`rwml 0.1.4` passed the pinned three-file legacy DOC Quality round with exact
-anchor, boundary, and table-presence truth. The production `lode-core` adapter
-then passed Operational with all valid fixtures parsing and corrupt/truncated
-fixtures rejected across repeated iterations.
+The former `rwml 0.1.4` result passed a pinned three-file legacy DOC Quality
+round, but that corpus was candidate-owned and the production path flattened
+text. It is retained as historical evidence, not as the current selection
+gate.
+
+The revised decision uses `office_oxide 0.1.10` for DOC plain text, matching the
+existing DOCX production dependency. Validation against eight independently
+sampled Apache POI and LibreOffice legacy-DOC fixtures produced text/status
+behavior consistent with the former path: six samples had indexable text and
+two explicitly had none; corrupt and truncated inputs were rejected. This is a
+validation slice, not yet a replacement statistical Quality round. The
+`office_oxide` shared IR path remains deferred because one independent sample
+lost its first paragraph under that projection.
 
 Reports: [`doc-smoke-contract.md`](doc-smoke-contract.md),
 [`doc-quality-round-1.md`](doc-quality-round-1.md), and
@@ -87,9 +96,10 @@ because the required three-platform static setup was not demonstrated.
   builds and final dependency audit remain CI responsibilities.
 - PDF restricted-scope Operational is complete on Linux/WSL2 with Rust 1.88;
   three-platform builds and final dependency audit remain CI responsibilities.
-- DOC Operational is complete on Linux/WSL2 with Rust 1.98.1; the corpus is
-  synthetic and narrow, table output is a structural diagnostic, and
-  three-platform builds plus final dependency audit remain CI responsibilities.
+- DOC Operational is complete with the current `office_oxide` production
+  adapter. The independent validation corpus remains a small diagnostic slice,
+  and three-platform builds plus final dependency audit remain CI
+  responsibilities.
 - Missing PDF `ToUnicode` mappings are information loss, not merely a bidi
   sorting defect. Adobe's PDF reference describes `ToUnicode` as the mapping
   from character codes to Unicode and notes that without it some glyphs have no
@@ -103,9 +113,11 @@ because the required three-platform static setup was not demonstrated.
 
 ## Decision record
 
-The current decision is to proceed with `office_oxide` for DOCX, `rwml` for
-legacy DOC, and `pdf_oxide` for the deliberately narrowed PDF scope. All three
-format-specific Operational gates passed using the production `lode-core`
-adapter. General RTL PDF support is deferred for post-product optimization.
-Cross-platform CI, dependency license and vulnerability checks remain the
-final release gate.
+The current decision is to proceed with `office_oxide` for both DOCX and
+legacy DOC, using DOCX's existing IR projection and DOC's conservative
+`plain_text()` projection. `pdf_oxide` remains selected for the deliberately
+narrowed PDF scope. DOC Operational and a manual production-binary
+`mine -> prospect -> dig` integration check have passed; cross-platform CI
+remains before release. The integration check is evidence for this decision,
+not yet an automated regression test. Dependency license and vulnerability
+checks remain final gates.

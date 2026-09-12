@@ -257,7 +257,7 @@ impl Store {
     ///
     /// Fails when the lookup, upsert, or GC statements fail.
     pub fn reference_file(&mut self, record: &FileRecord, extractor: &str) -> crate::Result<bool> {
-        if !matches!(extractor, "text" | "markdown" | "docx" | "pdf") {
+        if !matches!(extractor, "text" | "markdown" | "doc" | "docx" | "pdf") {
             return Err(crate::Error::Store(format!(
                 "unknown extractor family {extractor:?}"
             )));
@@ -511,14 +511,14 @@ mod tests {
     }
 
     #[test]
-    fn schema_v2_requires_explicit_rebuild() {
+    fn schema_v3_requires_explicit_rebuild() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("index.db");
         let store = Store::open(&db, "test-model", 128, "unicode61").unwrap();
         store
             .conn
             .execute(
-                "UPDATE meta SET value = '2' WHERE key = 'schema_version'",
+                "UPDATE meta SET value = '3' WHERE key = 'schema_version'",
                 [],
             )
             .unwrap();
@@ -670,6 +670,26 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    #[test]
+    fn legacy_doc_extractor_family_is_storable_and_reusable() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("index.db");
+        let mut store = Store::open(&db, "test-model", 128, "unicode61").unwrap();
+        let record = make_record("legacy.doc", "blake3:legacy-doc", 1.0, 10);
+        let chunks = make_chunks("blake3:legacy-doc", 1);
+
+        assert!(store.replace_file(&record, "doc", &chunks, None).unwrap());
+        assert!(
+            store
+                .reference_file(
+                    &make_record("copy.doc", "blake3:legacy-doc", 2.0, 10),
+                    "doc"
+                )
+                .unwrap()
+        );
+        assert_eq!(store.list_files().unwrap().len(), 2);
     }
 
     /// `n` vectors of `dimension` width, each entry equal to its index.

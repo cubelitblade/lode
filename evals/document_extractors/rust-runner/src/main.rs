@@ -61,7 +61,7 @@ fn main() -> ExitCode {
     };
     let started = Instant::now();
     let result = match (format.as_str(), candidate.as_str()) {
-        ("docx", "lode_core") | ("pdf", "lode_core") => {
+        ("doc", "lode_core") | ("docx", "lode_core") | ("pdf", "lode_core") => {
             extract_lode_core(&bytes, format).map(CandidateExtraction::text_only)
         }
         ("docx", "office_oxide") => {
@@ -69,6 +69,7 @@ fn main() -> ExitCode {
         }
         ("docx", "rwml") => extract_rwml(&bytes).map(CandidateExtraction::text_only),
         ("doc", "office_oxide") => extract_office_oxide_doc(&bytes),
+        ("doc", "office_oxide_ir") => extract_office_oxide_doc_ir(&bytes),
         ("doc", "rwml") => extract_rwml_doc(&bytes),
         ("docx", "docx_rs") => extract_docx_rs(&bytes).map(CandidateExtraction::text_only),
         ("docx", "rs_docx") => extract_rs_docx(&bytes).map(CandidateExtraction::text_only),
@@ -335,6 +336,35 @@ fn extract_office_oxide_doc(bytes: &[u8]) -> Result<CandidateExtraction, String>
             page: None,
         }],
         markdown: Some(document.to_markdown().trim().to_owned()),
+        warnings: Vec::new(),
+    })
+}
+
+fn extract_office_oxide_doc_ir(bytes: &[u8]) -> Result<CandidateExtraction, String> {
+    use office_oxide::ir_render::{ImageEmbed, MarkdownOptions};
+
+    let document = office_oxide::Document::from_reader(
+        Cursor::new(bytes.to_vec()),
+        office_oxide::DocumentFormat::Doc,
+    )
+    .map_err(|error| error.to_string())?;
+    let markdown = document
+        .to_ir()
+        .to_markdown_with(MarkdownOptions {
+            image_embed: ImageEmbed::None,
+        })
+        .trim()
+        .to_owned();
+    if markdown.is_empty() {
+        return Err("document contains no indexable text".to_owned());
+    }
+    Ok(CandidateExtraction {
+        segments: vec![Segment {
+            text: markdown.clone(),
+            heading: String::new(),
+            page: None,
+        }],
+        markdown: Some(markdown),
         warnings: Vec::new(),
     })
 }

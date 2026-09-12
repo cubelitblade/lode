@@ -38,7 +38,7 @@ pub(super) fn ensure_content(
     digest: &str,
     extractor: &str,
 ) -> crate::Result<(i64, bool)> {
-    if !matches!(extractor, "text" | "markdown" | "docx" | "pdf") {
+    if !matches!(extractor, "text" | "markdown" | "doc" | "docx" | "pdf") {
         return Err(crate::Error::Store(format!(
             "unknown extractor family {extractor:?}"
         )));
