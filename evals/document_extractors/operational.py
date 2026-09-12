@@ -24,6 +24,7 @@ from evals.document_extractors.fixtures import (
     create_docx_quality_fixtures,
     create_pdf_quality_fixtures,
 )
+from evals.document_extractors.metrics import content_view, markdown_content_projection
 from evals.document_extractors.run import (
     ROOT,
     RUST_TOOLCHAIN,
@@ -95,6 +96,24 @@ def _timed_extract(executable: Path, fixture: Fixture) -> dict[str, Any]:
         "segments": payload.get("segments", []),
         "error": None if payload.get("error") is None else str(payload["error"]),
     }
+
+
+def _canonical_truth_pass(sample: dict[str, Any], fixture: Fixture) -> bool:
+    """Compare Markdown output to a fixture's semantic extraction truth."""
+    if not fixture.valid:
+        return True
+    actual_segments = sample.get("segments", [])
+    expected_segments = fixture.expected_segments
+    if len(actual_segments) != len(expected_segments):
+        return False
+    for actual, expected in zip(actual_segments, expected_segments, strict=True):
+        if content_view(markdown_content_projection(str(actual.get("text", "")))) != content_view(expected.text):
+            return False
+        if actual.get("heading") != expected.heading or actual.get("page") != expected.page:
+            return False
+    actual_text = "\n\n".join(str(segment.get("text", "")) for segment in actual_segments)
+    expected_text = "\n\n".join(segment.text for segment in expected_segments)
+    return content_view(markdown_content_projection(actual_text)) == content_view(expected_text)
 
 
 def _build_production_runner() -> tuple[Path, float]:
@@ -202,23 +221,13 @@ def run_operational(format_name: str, *, iterations: int = ITERATIONS) -> Path:
             process_statuses = [str(sample["process_status"]) for sample in samples]
             expected_ok = fixture.valid
             in_gate = fixture.selection_scope or not fixture.valid
-            expected_segments = [
-                {"text": segment.text, "heading": segment.heading, "page": segment.page}
-                for segment in fixture.expected_segments
-            ]
-            # The production adapter exposes the canonical document text as
-            # segments joined by a blank line.  Compare that representation
-            # rather than the legacy fixture shorthand, which predates the
-            # Segment-only index contract.
-            expected_text = "\n\n".join(segment.text for segment in fixture.expected_segments)
-            truth_pass = all(
-                not expected_ok
-                or (sample.get("text") == expected_text and sample.get("segments") == expected_segments)
-                for sample in samples
+            truth_pass = all(not expected_ok or _canonical_truth_pass(sample, fixture) for sample in samples)
+            gate_ok = (
+                in_gate
+                and all(status == ("ok" if expected_ok else "error") for status in statuses)
+                and all(status == "ok" for status in process_statuses)
+                and truth_pass
             )
-            gate_ok = in_gate and all(
-                status == ("ok" if expected_ok else "error") for status in statuses
-            ) and all(status == "ok" for status in process_statuses) and truth_pass
             cases.append(
                 {
                     "fixture_id": fixture.fixture_id,

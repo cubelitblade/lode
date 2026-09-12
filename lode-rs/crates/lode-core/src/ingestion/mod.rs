@@ -4,6 +4,7 @@ pub mod digest;
 pub mod discover;
 pub mod extract;
 pub mod formats;
+mod markdown;
 pub mod pipeline;
 pub mod split;
 pub mod types;

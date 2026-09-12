@@ -7,8 +7,10 @@ from evals.document_extractors.metrics import (
     anchor_order_accuracy,
     content_view,
     invalid_unicode_character_count,
+    markdown_content_projection,
     markdown_delimiters_balanced,
     markdown_heading_accuracy,
+    markdown_heading_sequence,
     markdown_plain_text,
     ngram_prf,
     normalized_edit_similarity,
@@ -73,6 +75,18 @@ def test_markdown_delimiter_balance_is_only_a_parity_check() -> None:
 def test_markdown_plain_text_only_removes_block_syntax() -> None:
     source = "# Heading\n\n- item with `literal` and * stars *\n```text\ncode\n```"
     assert markdown_plain_text(source) == "Heading\n\nitem with `literal` and * stars *\ncode"
+
+
+def test_markdown_content_projection_removes_generated_structure() -> None:
+    source = "# **Heading**\n\n| Name | Value |\n| --- | --- |\n| A | [one](https://example.test) |"
+    assert markdown_content_projection(source) == "Heading\n\nName | Value\nA | one"
+
+
+def test_markdown_heading_sequence_uses_readable_titles() -> None:
+    assert markdown_heading_sequence("# **Title**\n### [Section](#section)") == (
+        (1, "Title"),
+        (3, "Section"),
+    )
 
 
 def test_markdown_heading_accuracy_checks_level_and_sequence() -> None:

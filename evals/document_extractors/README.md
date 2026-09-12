@@ -31,6 +31,13 @@ after the quality and operational rounds.
 The frozen first DOCX quality result and provisional selection are summarized
 in [`reports/docx-quality-round-1.md`](reports/docx-quality-round-1.md).
 
+The canonical Markdown quality round evaluates the production DOCX path with
+heading, segment, projection, delimiter, and public-corpus diagnostics:
+
+```bash
+uv run python -m evals.document_extractors.run --format docx --round quality-markdown
+```
+
 ### PDF smoke
 
 ```bash

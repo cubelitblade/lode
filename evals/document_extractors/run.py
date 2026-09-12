@@ -1837,7 +1837,7 @@ def run_pdf_quality_round_2(*, public_corpus_dir: Path | None = None) -> Path:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run staged document extractor evaluations")
     parser.add_argument("--format", choices=("docx", "pdf"), required=True)
-    parser.add_argument("--round", choices=("smoke", "quality", "quality-2"), required=True)
+    parser.add_argument("--round", choices=("smoke", "quality", "quality-markdown", "quality-2"), required=True)
     parser.add_argument("--public-corpus-dir", type=Path)
     parser.add_argument("--private-corpus-dir", type=Path)
     args = parser.parse_args()
@@ -1845,6 +1845,13 @@ def main() -> None:
         run_docx_smoke()
     elif (args.format, args.round) == ("docx", "quality"):
         run_docx_quality(
+            public_corpus_dir=args.public_corpus_dir,
+            private_corpus_dir=args.private_corpus_dir,
+        )
+    elif (args.format, args.round) == ("docx", "quality-markdown"):
+        from evals.document_extractors.markdown_quality import run_docx_markdown_quality
+
+        run_docx_markdown_quality(
             public_corpus_dir=args.public_corpus_dir,
             private_corpus_dir=args.private_corpus_dir,
         )

@@ -7,11 +7,14 @@
 
 use std::io::Cursor;
 
-use office_oxide::docx::{BlockElement, DocxDocument, Paragraph, ParagraphContent, RunContent};
+use office_oxide::docx::{BlockElement, ParagraphContent, RunContent};
+use office_oxide::ir_render::{ImageEmbed, MarkdownOptions};
+use office_oxide::{Document, DocumentFormat};
 use pdf_oxide::converters::{ConversionOptions, ReadingOrderMode};
 use pdf_oxide::outline::{Destination, OutlineItem};
 
 use crate::ingestion::formats::PLAIN_EXTENSIONS;
+use crate::ingestion::markdown::into_segments;
 use crate::ingestion::types::{HEADING_SEP, Segment};
 
 /// Errors raised while parsing a supported document format.
@@ -92,185 +95,193 @@ pub fn decode_text(data: &[u8]) -> String {
 }
 
 fn extract_docx(data: &[u8]) -> Result<Vec<Segment>, ExtractionError> {
-    let document = DocxDocument::from_reader(Cursor::new(data.to_vec()))
+    let document = Document::from_reader(Cursor::new(data.to_vec()), DocumentFormat::Docx)
         .map_err(|error| ExtractionError::Docx(error.to_string()))?;
-    let mut output = SegmentAccumulator::default();
-
-    for block in &document.body.elements {
-        match block {
-            BlockElement::Paragraph(paragraph) => {
-                let style_id = paragraph
-                    .properties
-                    .as_ref()
-                    .and_then(|properties| properties.style_id.as_deref());
-                let style_name = style_id
-                    .and_then(|id| document.styles.as_ref()?.styles.get(id)?.name.as_deref());
-                output.push_paragraph(
-                    paragraph_text(paragraph),
-                    heading_level(style_id, style_name),
-                );
-            }
-            BlockElement::Table(table) => {
-                for row in &table.rows {
-                    let cells = row
-                        .cells
-                        .iter()
-                        .map(|cell| blocks_text(&cell.content))
-                        .collect::<Vec<_>>();
-                    output.push_body(cells.join(" | "));
-                }
-            }
-        }
-    }
-    Ok(output.finish())
-}
-
-fn paragraph_text(paragraph: &Paragraph) -> String {
-    let mut output = String::new();
-    let mut textbox_separator_pending = false;
-    for content in &paragraph.content {
-        let runs = match content {
-            ParagraphContent::Run(run) => std::slice::from_ref(run),
-            ParagraphContent::Hyperlink(link) => link.runs.as_slice(),
-        };
-        for run in runs {
-            for item in &run.content {
-                match item {
-                    RunContent::Text(text) => {
-                        if !text.is_empty() {
-                            if textbox_separator_pending {
-                                output.push('\n');
-                                textbox_separator_pending = false;
-                            }
-                            output.push_str(text);
-                        }
-                    }
-                    RunContent::Break(_) => {
-                        textbox_separator_pending = false;
-                        output.push('\n');
-                    }
-                    RunContent::Tab => {
-                        // A tab is inline content; keep it adjacent to a
-                        // preceding textbox and let the next text run consume
-                        // the lazy textbox boundary.
-                        output.push('\t');
-                    }
-                    RunContent::TextBox(blocks) => {
-                        let boxed = blocks_text(blocks);
-                        if !boxed.is_empty() {
-                            if textbox_separator_pending {
-                                output.push('\n');
-                            }
-                            if !output.is_empty() && !output.ends_with('\n') {
-                                output.push('\n');
-                            }
-                            output.push_str(&boxed);
-                            textbox_separator_pending = true;
-                        }
-                    }
-                    RunContent::Drawing(_) => {}
-                }
-            }
-        }
-    }
-    output
-}
-
-fn blocks_text(blocks: &[BlockElement]) -> String {
-    let mut output = Vec::new();
-    for block in blocks {
-        match block {
-            BlockElement::Paragraph(paragraph) => {
-                let text = paragraph_text(paragraph);
-                if !text.trim().is_empty() {
-                    output.push(text);
-                }
-            }
-            BlockElement::Table(table) => {
-                for row in &table.rows {
-                    output.push(
-                        row.cells
-                            .iter()
-                            .map(|cell| blocks_text(&cell.content))
-                            .collect::<Vec<_>>()
-                            .join(" | "),
-                    );
-                }
-            }
-        }
-    }
-    output.join("\n")
-}
-
-fn heading_level(style_id: Option<&str>, style_name: Option<&str>) -> Option<usize> {
-    style_id
-        .and_then(heading_level_from_label)
-        .or_else(|| style_name.and_then(heading_level_from_label))
-}
-
-fn heading_level_from_label(label: &str) -> Option<usize> {
-    let normalized = label.trim().to_ascii_lowercase();
-    if normalized == "title" {
-        return Some(0);
-    }
-    let level = normalized.strip_prefix("heading")?.trim().parse().ok()?;
-    (1..=9).contains(&level).then_some(level)
-}
-
-#[derive(Default)]
-struct SegmentAccumulator {
-    segments: Vec<Segment>,
-    heading_stack: Vec<(usize, String)>,
-    current_heading: String,
-    current_text: Vec<String>,
-}
-
-impl SegmentAccumulator {
-    fn push_paragraph(&mut self, text: String, level: Option<usize>) {
-        if text.trim().is_empty() {
-            return;
-        }
-        if let Some(level) = level {
-            self.flush();
-            if level == 0 {
-                self.heading_stack = vec![(level, text.trim().to_owned())];
-            } else {
-                self.heading_stack
-                    .retain(|(heading_level, _)| *heading_level < level);
-                self.heading_stack.push((level, text.trim().to_owned()));
-            }
-            self.current_heading = self
-                .heading_stack
-                .iter()
-                .map(|(_, heading)| heading.as_str())
-                .collect::<Vec<_>>()
-                .join(HEADING_SEP);
-        }
-        self.current_text.push(text);
-    }
-
-    fn push_body(&mut self, text: String) {
-        if !text.trim().is_empty() {
-            self.current_text.push(text);
-        }
-    }
-
-    fn flush(&mut self) {
-        if self.current_text.is_empty() {
-            return;
-        }
-        self.segments.push(Segment {
-            text: self.current_text.join("\n"),
-            heading: self.current_heading.clone(),
-            page: None,
+    let title = document.as_docx().and_then(find_docx_title);
+    let mut ir = document.to_ir();
+    promote_docx_title(&mut ir, title.as_deref());
+    for section in &mut ir.sections {
+        // Preserve the existing body-only indexing contract. Headers and
+        // footers are repeated display furniture, not document body content.
+        section.header = None;
+        section.footer = None;
+        section.first_page_header = None;
+        section.first_page_footer = None;
+        section.even_page_header = None;
+        section.even_page_footer = None;
+        section.elements.retain(|element| {
+            !matches!(
+                element,
+                office_oxide::ir::Element::Footnote(_) | office_oxide::ir::Element::Endnote(_)
+            )
         });
-        self.current_text.clear();
+    }
+    let markdown = ir.to_markdown_with(MarkdownOptions {
+        image_embed: ImageEmbed::None,
+    });
+    Ok(into_segments(&markdown))
+}
+
+/// Find the first non-empty paragraph using Word's built-in `Title` style.
+///
+/// Word's `Title` is document-level metadata in the visual hierarchy, not a
+/// sibling of `Heading 1`. We therefore detect it from the source DOCX style
+/// before the format-agnostic converter turns the body into IR.
+fn find_docx_title(document: &office_oxide::docx::DocxDocument) -> Option<String> {
+    let styles = document.styles.as_ref()?;
+    document.body.elements.iter().find_map(|element| {
+        let BlockElement::Paragraph(paragraph) = element else {
+            return None;
+        };
+        let style_id = paragraph
+            .properties
+            .as_ref()
+            .and_then(|properties| properties.style_id.as_deref())?;
+        if !is_title_style(style_id, styles) {
+            return None;
+        }
+        let text = docx_paragraph_text(paragraph);
+        (!text.trim().is_empty()).then(|| text.trim().to_owned())
+    })
+}
+
+fn is_title_style(style_id: &str, styles: &office_oxide::docx::StyleSheet) -> bool {
+    let mut current = Some(style_id);
+    for _ in 0..20 {
+        let Some(id) = current else {
+            break;
+        };
+        if id.eq_ignore_ascii_case("title") {
+            return true;
+        }
+        let Some(style) = styles.styles.get(id) else {
+            break;
+        };
+        if style
+            .name
+            .as_deref()
+            .is_some_and(|name| name.trim().eq_ignore_ascii_case("title"))
+        {
+            return true;
+        }
+        current = style.based_on.as_deref();
+    }
+    false
+}
+
+fn docx_paragraph_text(paragraph: &office_oxide::docx::Paragraph) -> String {
+    paragraph
+        .content
+        .iter()
+        .flat_map(|content| match content {
+            ParagraphContent::Run(run) => run_content_text(&run.content),
+            ParagraphContent::Hyperlink(link) => link
+                .runs
+                .iter()
+                .flat_map(|run| run_content_text(&run.content))
+                .collect::<Vec<_>>(),
+        })
+        .collect()
+}
+
+fn run_content_text(content: &[RunContent]) -> Vec<String> {
+    content
+        .iter()
+        .flat_map(|item| match item {
+            RunContent::Text(text) => vec![text.clone()],
+            RunContent::Break(_) => vec!["\n".to_owned()],
+            RunContent::Tab => vec!["\t".to_owned()],
+            RunContent::Drawing(_) => Vec::new(),
+            RunContent::TextBox(blocks) => blocks
+                .iter()
+                .filter_map(|block| match block {
+                    BlockElement::Paragraph(paragraph) => Some(docx_paragraph_text(paragraph)),
+                    BlockElement::Table(_) => None,
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+/// Normalize DOCX title semantics before rendering Markdown.
+///
+/// A source `Title` becomes Markdown H1. Existing Word heading levels are
+/// shifted down one level only when that title exists; documents without a
+/// `Title` retain their ordinary `Heading 1` → H1 mapping. The converter also
+/// synthesizes a section title from the first heading, which would otherwise
+/// duplicate content in the Markdown, so section titles are cleared here.
+fn promote_docx_title(ir: &mut office_oxide::DocumentIR, title: Option<&str>) {
+    for section in &mut ir.sections {
+        section.title = None;
+    }
+    let Some(title) = title else {
+        return;
+    };
+
+    let title_position = ir
+        .sections
+        .iter()
+        .enumerate()
+        .find_map(|(section_index, section)| {
+            section
+                .elements
+                .iter()
+                .enumerate()
+                .find_map(|(element_index, element)| {
+                    let text = match element {
+                        office_oxide::ir::Element::Paragraph(paragraph) => {
+                            ir_inline_text(&paragraph.content)
+                        }
+                        office_oxide::ir::Element::Heading(heading) => {
+                            ir_inline_text(&heading.content)
+                        }
+                        _ => return None,
+                    };
+                    (text.trim() == title.trim()).then_some((section_index, element_index))
+                })
+        });
+    let Some((title_section, title_element)) = title_position else {
+        return;
+    };
+
+    if let office_oxide::ir::Element::Paragraph(paragraph) =
+        &mut ir.sections[title_section].elements[title_element]
+    {
+        let paragraph = std::mem::take(paragraph);
+        ir.sections[title_section].elements[title_element] =
+            office_oxide::ir::Element::Heading(office_oxide::ir::Heading {
+                level: 1,
+                content: paragraph.content,
+                frame_position: paragraph.frame_position,
+                alignment: paragraph.alignment,
+            });
+    } else if let office_oxide::ir::Element::Heading(heading) =
+        &mut ir.sections[title_section].elements[title_element]
+    {
+        heading.level = 1;
     }
 
-    fn finish(mut self) -> Vec<Segment> {
-        self.flush();
-        self.segments
+    for (section_index, section) in ir.sections.iter_mut().enumerate() {
+        for (element_index, element) in section.elements.iter_mut().enumerate() {
+            if (section_index, element_index) == (title_section, title_element) {
+                continue;
+            }
+            if let office_oxide::ir::Element::Heading(heading) = element {
+                heading.level = heading.level.saturating_add(1).min(6);
+            }
+        }
     }
+}
+
+fn ir_inline_text(content: &[office_oxide::ir::InlineContent]) -> String {
+    content
+        .iter()
+        .filter_map(|item| match item {
+            office_oxide::ir::InlineContent::Text(span) => Some(span.text.as_str()),
+            office_oxide::ir::InlineContent::LineBreak => Some("\n"),
+            _ => None,
+        })
+        .collect()
 }
 
 fn extract_pdf(data: &[u8]) -> Result<Vec<Segment>, ExtractionError> {
@@ -458,129 +469,6 @@ mod tests {
     }
 
     #[test]
-    fn heading_labels_are_conservative() {
-        assert_eq!(heading_level_from_label("Title"), Some(0));
-        assert_eq!(heading_level_from_label("Heading 3"), Some(3));
-        assert_eq!(heading_level_from_label("Custom"), None);
-    }
-
-    #[test]
-    fn heading_stack_replaces_same_level_without_title() {
-        let mut output = SegmentAccumulator::default();
-        output.push_paragraph("First".to_owned(), Some(1));
-        output.push_body("first body".to_owned());
-        output.push_paragraph("Second".to_owned(), Some(1));
-        output.push_body("second body".to_owned());
-        output.push_paragraph("Nested".to_owned(), Some(2));
-        output.push_body("nested body".to_owned());
-        output.push_paragraph("Third".to_owned(), Some(1));
-        output.push_body("third body".to_owned());
-
-        let segments = output.finish();
-        assert_eq!(
-            segments
-                .iter()
-                .map(|segment| segment.heading.as_str())
-                .collect::<Vec<_>>(),
-            ["First", "Second", "Second / Nested", "Third",]
-        );
-    }
-
-    #[test]
-    fn paragraph_text_preserves_runs_breaks_tabs_and_textbox_boundaries() {
-        let paragraph = Paragraph {
-            properties: None,
-            content: vec![
-                ParagraphContent::Run(office_oxide::docx::Run {
-                    properties: None,
-                    content: vec![RunContent::Text("Before".to_owned())],
-                }),
-                ParagraphContent::Hyperlink(office_oxide::docx::Hyperlink {
-                    target: office_oxide::docx::HyperlinkTarget::External(
-                        "https://example.test".to_owned(),
-                    ),
-                    tooltip: None,
-                    runs: vec![office_oxide::docx::Run {
-                        properties: None,
-                        content: vec![RunContent::Text("Link".to_owned())],
-                    }],
-                }),
-                ParagraphContent::Run(office_oxide::docx::Run {
-                    properties: None,
-                    content: vec![
-                        RunContent::TextBox(vec![BlockElement::Paragraph(Paragraph {
-                            properties: None,
-                            content: vec![ParagraphContent::Run(office_oxide::docx::Run {
-                                properties: None,
-                                content: vec![RunContent::Text("Box".to_owned())],
-                            })],
-                        })]),
-                        RunContent::Tab,
-                        RunContent::Break(office_oxide::docx::BreakType::Line),
-                        RunContent::Text("After".to_owned()),
-                    ],
-                }),
-            ],
-        };
-
-        assert_eq!(paragraph_text(&paragraph), "BeforeLink\nBox\t\nAfter");
-
-        let breaks = Paragraph {
-            properties: None,
-            content: vec![ParagraphContent::Run(office_oxide::docx::Run {
-                properties: None,
-                content: vec![
-                    RunContent::Text("top".to_owned()),
-                    RunContent::Break(office_oxide::docx::BreakType::Line),
-                    RunContent::Break(office_oxide::docx::BreakType::Line),
-                    RunContent::Text("bottom".to_owned()),
-                ],
-            })],
-        };
-        assert_eq!(paragraph_text(&breaks), "top\n\nbottom");
-    }
-
-    #[test]
-    fn nested_table_blocks_keep_row_and_block_order() {
-        let paragraph = |text: &str| {
-            BlockElement::Paragraph(Paragraph {
-                properties: None,
-                content: vec![ParagraphContent::Run(office_oxide::docx::Run {
-                    properties: None,
-                    content: vec![RunContent::Text(text.to_owned())],
-                })],
-            })
-        };
-        let nested = BlockElement::Table(office_oxide::docx::Table {
-            properties: None,
-            grid: Vec::new(),
-            rows: vec![office_oxide::docx::TableRow {
-                properties: None,
-                cells: vec![office_oxide::docx::TableCell {
-                    properties: None,
-                    content: vec![paragraph("inner")],
-                }],
-            }],
-        });
-        let outer = office_oxide::docx::Table {
-            properties: None,
-            grid: Vec::new(),
-            rows: vec![office_oxide::docx::TableRow {
-                properties: None,
-                cells: vec![office_oxide::docx::TableCell {
-                    properties: None,
-                    content: vec![paragraph("before"), nested, paragraph("after")],
-                }],
-            }],
-        };
-
-        assert_eq!(
-            blocks_text(&[BlockElement::Table(outer)]),
-            "before\ninner\nafter"
-        );
-    }
-
-    #[test]
     fn extracts_docx_sections_and_tables() {
         let mut writer = office_oxide::docx::write::DocxWriter::new();
         writer
@@ -595,9 +483,12 @@ mod tests {
         let segments = extract_document(bytes.get_ref(), ".docx").unwrap().unwrap();
         assert_eq!(segments.len(), 2);
         assert_eq!(segments[0].heading, "Report");
-        assert_eq!(segments[0].text, "Report\nOverview");
+        assert_eq!(segments[0].text, "# **Report**\n\nOverview\n\n");
         assert_eq!(segments[1].heading, "Report / Details");
-        assert_eq!(segments[1].text, "Details\nBody\nName | Value\nA | 1");
+        assert_eq!(
+            segments[1].text,
+            "## **Details**\n\nBody\n\n| Name | Value |\n| --- | --- |\n| A | 1 |"
+        );
     }
 
     #[test]

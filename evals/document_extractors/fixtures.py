@@ -99,6 +99,7 @@ def create_docx_smoke_fixtures(directory: Path) -> list[Fixture]:
                     "总体报告 / 第三章 / 高温耐久性",
                 ),
             ),
+            expected_markdown_headings=((1, "总体报告"), (2, "第三章"), (3, "高温耐久性")),
         ),
         Fixture(
             fixture_id="split-runs",
@@ -107,6 +108,7 @@ def create_docx_smoke_fixtures(directory: Path) -> list[Fixture]:
             expected_text="Rust 抽取器\nEnglish and 中文 stay in reading order.\n最后一段",
             anchors=("Rust 抽取器", "English and 中文 stay in reading order.", "最后一段"),
             expected_segments=(ExpectedSegment("Rust 抽取器\nEnglish and 中文 stay in reading order.\n最后一段"),),
+            expected_markdown_headings=(),
         ),
         Fixture(fixture_id="corrupt", path=corrupt_path, valid=False),
     ]
@@ -183,6 +185,13 @@ def create_docx_quality_fixtures(directory: Path) -> list[Fixture]:
                     ExpectedSegment("二级结论\n结论正文", "项目 Atlas / 方法 / 二级结论"),
                     ExpectedSegment("结果\n结果正文", "项目 Atlas / 结果"),
                 ),
+                expected_markdown_headings=(
+                    (1, "项目 Atlas"),
+                    (2, "方法"),
+                    (4, "跳级细节"),
+                    (3, "二级结论"),
+                    (2, "结果"),
+                ),
             ),
             Fixture(
                 fixture_id="interleaved-tables",
@@ -200,6 +209,7 @@ def create_docx_quality_fixtures(directory: Path) -> list[Fixture]:
                         "数据",
                     ),
                 ),
+                expected_markdown_headings=((1, "数据"),),
             ),
             Fixture(
                 fixture_id="text-features",
@@ -208,6 +218,7 @@ def create_docx_quality_fixtures(directory: Path) -> list[Fixture]:
                 expected_text=f"前缀与拆分运行\t制表后\n{_RTL_TEXT}\n自定义样式不是标题",
                 anchors=("前缀与拆分运行", "制表后", "中文", "自定义样式不是标题"),
                 expected_segments=(ExpectedSegment(f"前缀与拆分运行\t制表后\n{_RTL_TEXT}\n自定义样式不是标题"),),
+                expected_markdown_headings=(),
             ),
         ]
     )

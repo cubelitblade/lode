@@ -17,7 +17,9 @@ use rusqlite::Connection;
 
 /// Bump when the schema changes incompatibly; a mismatch makes the store
 /// refuse to open until an explicit rebuild.
-pub const SCHEMA_VERSION: u32 = 1;
+/// Version 2 also marks the DOCX chunk representation change from plain text
+/// to canonical Markdown, which must not be mixed in one index.
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// FTS5 tokenizers the schema accepts. `tokenize_clause` is interpolated
 /// into DDL, so it must stay on this whitelist (mirrors the Python

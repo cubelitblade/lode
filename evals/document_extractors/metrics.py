@@ -9,6 +9,9 @@ from collections import Counter
 _WHITESPACE_RE = re.compile(r"\s+")
 _MARKDOWN_HEADING_RE = re.compile(r"^(#{1,6})[ \t]+(.+?)\s*$")
 _MARKDOWN_BLOCK_PREFIX_RE = re.compile(r"^[ \t]*(?:#{1,6}|[-+*]|\d+[.)])[ \t]+")
+_MARKDOWN_TABLE_SEPARATOR_RE = re.compile(r"^\|?(?:[ \t]*:?-{3,}:?[ \t]*\|)+[ \t]*$")
+_MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]*\)")
+_MARKDOWN_TAG_RE = re.compile(r"</?[A-Za-z][^>]*>")
 
 
 def strict_view(text: str) -> str:
@@ -108,6 +111,37 @@ def markdown_plain_text(markdown: str) -> str:
             continue
         lines.append(_MARKDOWN_BLOCK_PREFIX_RE.sub("", line))
     return "\n".join(lines)
+
+
+def markdown_content_projection(markdown: str) -> str:
+    """Project canonical Markdown to readable content for quality metrics."""
+    lines: list[str] = []
+    for raw_line in strict_view(markdown).splitlines():
+        line = raw_line.strip()
+        if line.startswith("```"):
+            continue
+        if _MARKDOWN_TABLE_SEPARATOR_RE.match(line):
+            continue
+        line = _MARKDOWN_BLOCK_PREFIX_RE.sub("", line)
+        if line.startswith("|") and line.endswith("|"):
+            line = line[1:-1].strip()
+        line = _MARKDOWN_LINK_RE.sub(r"\1", line)
+        line = _MARKDOWN_TAG_RE.sub("", line)
+        line = re.sub(r"([*_~`])", "", line)
+        line = line.replace(r"\\", "\\")
+        line = line.replace(r"\|", "|")
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def markdown_heading_sequence(markdown: str) -> tuple[tuple[int, str], ...]:
+    """Return heading levels and readable titles in source order."""
+    headings: list[tuple[int, str]] = []
+    for line in strict_view(markdown).splitlines():
+        match = _MARKDOWN_HEADING_RE.match(line)
+        if match is not None:
+            headings.append((len(match.group(1)), markdown_content_projection(match.group(2))))
+    return tuple(headings)
 
 
 def markdown_heading_accuracy(markdown: str, expected: tuple[tuple[int, str], ...]) -> float:
