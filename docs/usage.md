@@ -1,5 +1,18 @@
 # Usage
 
+## Supported document formats
+
+The Rust CLI indexes UTF-8/UTF-16/Latin-1 text files, Markdown, DOCX, and
+digital PDFs. DOCX extraction preserves paragraph order, built-in heading
+chains, and table rows as pipe-delimited text. PDF extraction preserves
+non-empty page numbers and outline headings for single-flow digital documents.
+
+PDF table reconstruction, OCR/scanned pages, general multi-column or complex
+layout reading order, and general RTL PDFs are not supported. Image-only PDF
+pages are accepted but produce no text. Corrupt or unauthenticated encrypted
+DOCX/PDF files are reported as per-file mining failures and do not discard the
+rest of a run.
+
 ## Global options
 
 Options that apply to every command and must appear before the command name:

@@ -185,6 +185,25 @@ uv run pytest
 
 CI runs ruff, pyright, and pytest on Linux/macOS/Windows across Python 3.12–3.14, so keep path handling and output platform-neutral (see Path conventions above).
 
+### Rust rewrite quality gates
+
+Changes under `lode-rs/` must also follow `lode-rs/AGENTS.md`. Before handoff,
+run the Rust checks from that workspace:
+
+```bash
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace
+cargo deny --locked check
+cargo audit
+```
+
+Use Rust 1.88 for release/Operational measurements. Substantial new Rust
+modules should enable and review `clippy::pedantic`; do not mass-refactor
+unrelated baseline warnings just to make the entire legacy workspace pedantic
+clean. Document any environment-limited checks and keep cross-platform build
+validation in CI.
+
 ## Code Style
 
 Follow modern Python practices.
