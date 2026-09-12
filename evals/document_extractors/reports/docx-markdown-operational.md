@@ -5,9 +5,8 @@ adapter, release builds, and three iterations per fixture with a 15-second
 per-file timeout.
 
 - Linux/WSL2; runner build `0.27s`; production workspace build `0.42s`
-- Compiler: stable `rustc 1.98.1` (the pinned Rust 1.88 toolchain is installed,
-  but its clean release build exceeded the local execution window; CI remains
-  the 1.88 compatibility gate)
+- Compiler: stable `rustc 1.98.1`; the exact version is retained as run
+  provenance
 - Runner dependencies: 331 packages; production dependencies: 342 packages
 - Runner binary: `13,329,208` bytes
 - Production binaries: `lode` `25,623,736` bytes; `lode-mcp` `451,440` bytes

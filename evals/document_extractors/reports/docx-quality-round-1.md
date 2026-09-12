@@ -64,5 +64,5 @@ provisional selection.
 
 Run DOCX Operational only after the PDF and DOC staged evaluations reach their
 respective review points. Measure release p50/p95, throughput, RSS, dependency
-count, build time, artifact delta, Rust 1.88 three-platform builds, and license
-compliance.
+count, build time, artifact delta, repository-toolchain three-platform builds,
+and license compliance.

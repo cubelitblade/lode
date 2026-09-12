@@ -198,7 +198,8 @@ cargo deny --locked check
 cargo audit
 ```
 
-Use Rust 1.88 for release/Operational measurements. Substantial new Rust
+Use the repository stable toolchain for release/Operational measurements and
+record the exact compiler version in generated reports. Substantial new Rust
 modules should enable and review `clippy::pedantic`; do not mass-refactor
 unrelated baseline warnings just to make the entire legacy workspace pedantic
 clean. Document any environment-limited checks and keep cross-platform build

@@ -13,8 +13,9 @@ rounds invoke the selected production `lode-core` adapter through the minimal
 uv run python -m evals.document_extractors.run --format docx --round smoke
 ```
 
-Set `LODE_EVAL_RUST_TOOLCHAIN=1.88.0` to run the candidate build with the
-project's minimum supported Rust version rather than the active toolchain.
+Candidate builds use the repository Rust toolchain by default. Set
+`LODE_EVAL_RUST_TOOLCHAIN=<toolchain>` only to reproduce a run with a specific
+installed toolchain; reports record the actual compiler version.
 
 The smoke gate checks that every candidate:
 
@@ -86,17 +87,17 @@ A bounded runner-only remediation experiment is summarized in
 ### Operational
 
 Operational measurements run the selected Rust candidate in release mode with
-Rust 1.88, a 15-second per-file timeout, repeated fixture extraction, and
-best-effort peak RSS measurement on POSIX hosts:
+the repository stable toolchain, a 15-second per-file timeout, repeated fixture
+extraction, and best-effort peak RSS measurement on POSIX hosts:
 
 ```bash
-LODE_EVAL_RUST_TOOLCHAIN=1.88.0 uv run python -m evals.document_extractors.operational --format docx
-LODE_EVAL_RUST_TOOLCHAIN=1.88.0 uv run python -m evals.document_extractors.operational --format pdf
+uv run python -m evals.document_extractors.operational --format docx
+uv run python -m evals.document_extractors.operational --format pdf
 ```
 
-The report records p50/p95 latency (three iterations by default), runner and
-production build time, dependency count, release binary size, and
-invalid-input behavior. Valid layout samples outside the
+The report records the exact compiler version, p50/p95 latency (three
+iterations by default), runner and production build time, dependency count,
+release binary size, and invalid-input behavior. Valid layout samples outside the
 selected PDF scope (for example, two-column pages) remain visible as
 diagnostics but do not affect the gate. Reports are written to
 `.ai/process/extractor-evals/`.

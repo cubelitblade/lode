@@ -164,7 +164,7 @@ def _production_binary_sizes() -> dict[str, int]:
 
 
 def _build_production_binaries() -> tuple[float, dict[str, int]]:
-    """Build the shipping workspace with the same pinned Rust toolchain."""
+    """Build the shipping workspace with the same selected Rust toolchain."""
     started = time.perf_counter()
     subprocess.run(
         _cargo_command(
