@@ -1,0 +1,13 @@
+{
+  "corpus": "rwml public legacy DOC benchmark",
+  "revision": "v0.1.4",
+  "license": "MIT",
+  "license_url": "https://github.com/HyunjoJung/rwml/blob/v0.1.4/LICENSE",
+  "source_url": "https://github.com/HyunjoJung/rwml/tree/v0.1.4/corpus/public/benchmark/sample",
+  "base_url": "https://raw.githubusercontent.com/HyunjoJung/rwml/v0.1.4/corpus/public/benchmark/sample",
+  "files": [
+    {"name": "floating_text_bearing.doc", "sha256": "6a60920d650d9ec55372eef7607f708dfe5d856875c4d0162273856c1caefdf4"},
+    {"name": "floating_wrap_policy.doc", "sha256": "65965d61822fdc4377ecc1754506494b9daf7b63572c39d68d5eac008e9f74f1"},
+    {"name": "nested_tables.doc", "sha256": "9997f2b1eaa132c23e96d133c8b1e26f5df0f86702ae96e5655a3edf56e238fd"}
+  ]
+}

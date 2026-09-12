@@ -12,6 +12,7 @@ from evals.document_extractors.metrics import (
     markdown_heading_accuracy,
     markdown_heading_sequence,
     markdown_plain_text,
+    markdown_table_count,
     ngram_prf,
     normalized_edit_similarity,
     segment_boundary_accuracy,
@@ -70,6 +71,12 @@ def test_markdown_delimiter_balance_is_only_a_parity_check() -> None:
     assert markdown_delimiters_balanced("```text\nvalue\n```")
     assert not markdown_delimiters_balanced("**truncated")
     assert not markdown_delimiters_balanced("```text\ntruncated")
+
+
+def test_markdown_table_count_uses_gfm_separator_rows() -> None:
+    markdown = "| Name | Value |\n| --- | --- |\n| A | 1 |\n\nText"
+    assert markdown_table_count(markdown) == 1
+    assert markdown_table_count("| not a table |\n| value |") == 0
 
 
 def test_markdown_plain_text_only_removes_block_syntax() -> None:

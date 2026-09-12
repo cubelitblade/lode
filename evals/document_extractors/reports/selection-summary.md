@@ -1,6 +1,6 @@
 # Document extractor selection summary
 
-Date: 2026-09-11
+Date: 2026-09-12
 
 ## Current selection
 
@@ -8,7 +8,7 @@ Date: 2026-09-11
 | --- | --- | --- | --- |
 | DOCX | `office_oxide 0.1.10` | Quality and restricted-scope Operational pass; ordinary paragraphs/tables and heading chains | Cross-platform CI |
 | PDF | `pdf_oxide 0.3.78` | Restricted single-flow digital PDF Quality and Operational pass | Cross-platform CI |
-| DOC | None | Not evaluated yet | Smoke → Quality → Operational |
+| DOC | `rwml 0.1.4` | Smoke, Quality, and production Operational pass; pinned synthetic corpus and flattened text extraction | Cross-platform CI |
 
 The PDF choice explicitly excludes general multi-column reading order, PDF
 table reconstruction, OCR/scanned text, and general RTL PDFs whose glyph-to-
@@ -52,6 +52,17 @@ Reports: [`pdf-quality-round-1.md`](pdf-quality-round-1.md),
 Restricted-scope Operational reports: [`docx-operational.md`](docx-operational.md)
 and [`pdf-operational.md`](pdf-operational.md).
 
+### DOC
+
+`rwml 0.1.4` passed the pinned three-file legacy DOC Quality round with exact
+anchor, boundary, and table-presence truth. The production `lode-core` adapter
+then passed Operational with all valid fixtures parsing and corrupt/truncated
+fixtures rejected across repeated iterations.
+
+Reports: [`doc-smoke-contract.md`](doc-smoke-contract.md),
+[`doc-quality-round-1.md`](doc-quality-round-1.md), and
+[`doc-operational.md`](doc-operational.md)
+
 `pdf-extract 0.12.0` was rejected at Smoke because an encrypted PDF was
 accepted as a successful empty document. `pdfium-render` was not qualified
 because the required three-platform static setup was not demonstrated.
@@ -76,6 +87,9 @@ because the required three-platform static setup was not demonstrated.
   builds and final dependency audit remain CI responsibilities.
 - PDF restricted-scope Operational is complete on Linux/WSL2 with Rust 1.88;
   three-platform builds and final dependency audit remain CI responsibilities.
+- DOC Operational is complete on Linux/WSL2 with Rust 1.98.1; the corpus is
+  synthetic and narrow, table output is a structural diagnostic, and
+  three-platform builds plus final dependency audit remain CI responsibilities.
 - Missing PDF `ToUnicode` mappings are information loss, not merely a bidi
   sorting defect. Adobe's PDF reference describes `ToUnicode` as the mapping
   from character codes to Unicode and notes that without it some glyphs have no
@@ -89,8 +103,9 @@ because the required three-platform static setup was not demonstrated.
 
 ## Decision record
 
-The current decision is to proceed with `office_oxide` for DOCX and
-`pdf_oxide` for the deliberately narrowed PDF scope. Both format-specific
-Operational gates passed using the production `lode-core` adapter; general RTL
-PDF support is deferred for post-product optimization. Cross-platform CI,
-dependency license and vulnerability checks remain the final release gate.
+The current decision is to proceed with `office_oxide` for DOCX, `rwml` for
+legacy DOC, and `pdf_oxide` for the deliberately narrowed PDF scope. All three
+format-specific Operational gates passed using the production `lode-core`
+adapter. General RTL PDF support is deferred for post-product optimization.
+Cross-platform CI, dependency license and vulnerability checks remain the
+final release gate.

@@ -68,6 +68,8 @@ fn main() -> ExitCode {
             extract_office_oxide(&bytes).map(CandidateExtraction::text_only)
         }
         ("docx", "rwml") => extract_rwml(&bytes).map(CandidateExtraction::text_only),
+        ("doc", "office_oxide") => extract_office_oxide_doc(&bytes),
+        ("doc", "rwml") => extract_rwml_doc(&bytes),
         ("docx", "docx_rs") => extract_docx_rs(&bytes).map(CandidateExtraction::text_only),
         ("docx", "rs_docx") => extract_rs_docx(&bytes).map(CandidateExtraction::text_only),
         ("pdf", "pdf_oxide") => extract_pdf_oxide(&bytes),
@@ -316,6 +318,27 @@ fn extract_office_oxide(bytes: &[u8]) -> Result<Vec<Segment>, String> {
     Ok(output.finish())
 }
 
+fn extract_office_oxide_doc(bytes: &[u8]) -> Result<CandidateExtraction, String> {
+    let document = office_oxide::Document::from_reader(
+        Cursor::new(bytes.to_vec()),
+        office_oxide::DocumentFormat::Doc,
+    )
+    .map_err(|error| error.to_string())?;
+    let text = document.plain_text().trim().to_owned();
+    if text.is_empty() {
+        return Err("document contains no indexable text".to_owned());
+    }
+    Ok(CandidateExtraction {
+        segments: vec![Segment {
+            text,
+            heading: String::new(),
+            page: None,
+        }],
+        markdown: Some(document.to_markdown().trim().to_owned()),
+        warnings: Vec::new(),
+    })
+}
+
 fn office_oxide_paragraph_text(paragraph: &office_oxide::docx::Paragraph) -> String {
     use office_oxide::docx::{ParagraphContent, RunContent};
 
@@ -409,6 +432,24 @@ fn extract_rwml(bytes: &[u8]) -> Result<Vec<Segment>, String> {
         }
     }
     Ok(output.finish())
+}
+
+fn extract_rwml_doc(bytes: &[u8]) -> Result<CandidateExtraction, String> {
+    let document = rwml::Document::open(bytes).map_err(|error| error.to_string())?;
+    let text = document.text();
+    let text = text.trim().to_owned();
+    if text.is_empty() {
+        return Err("document contains no indexable text".to_owned());
+    }
+    Ok(CandidateExtraction {
+        segments: vec![Segment {
+            text,
+            heading: String::new(),
+            page: None,
+        }],
+        markdown: Some(document.to_markdown().trim().to_owned()),
+        warnings: Vec::new(),
+    })
 }
 
 fn rwml_blocks_text(blocks: &[rwml::Block]) -> String {

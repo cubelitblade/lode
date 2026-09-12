@@ -1,11 +1,11 @@
 """Run staged document extractor evaluations.
 
-The first implemented gate is the DOCX smoke round. It compares the current
-Python extractor with isolated Rust candidate adapters and writes both JSON and
+Selection rounds compare isolated candidate adapters and write both JSON and
 Markdown reports under the locally excluded ``.ai/process`` tree.
 
 Usage:
     uv run python -m evals.document_extractors.run --format docx --round smoke
+    uv run python -m evals.document_extractors.run --format doc --round smoke
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ from typing import Any
 
 from evals.document_extractors.corpus import (
     CorpusDocument,
+    load_doc_public_corpus,
     load_docx_public_corpus,
     load_pdf_public_corpus,
     load_private_docx_corpus,
@@ -33,10 +34,12 @@ from evals.document_extractors.corpus import (
 )
 from evals.document_extractors.fixtures import (
     Fixture,
+    create_doc_invalid_fixtures,
     create_docx_quality_fixtures,
     create_docx_smoke_fixtures,
     create_pdf_quality_fixtures,
     create_pdf_smoke_fixtures,
+    make_doc_public_fixture,
 )
 from evals.document_extractors.manual_truth import (
     ManualPdfTruth,
@@ -49,6 +52,7 @@ from evals.document_extractors.metrics import (
     markdown_delimiters_balanced,
     markdown_heading_accuracy,
     markdown_plain_text,
+    markdown_table_count,
     ngram_prf,
     normalized_edit_similarity,
     segment_boundary_accuracy,
@@ -62,6 +66,7 @@ ROOT = Path(__file__).resolve().parents[2]
 RUST_MANIFEST = ROOT / "evals" / "document_extractors" / "rust-runner" / "Cargo.toml"
 RUST_TARGET_DIR = Path(tempfile.gettempdir()) / "lode-document-extractor-target"
 DOCX_RUST_CANDIDATES = ("office_oxide", "rwml", "docx_rs", "rs_docx")
+DOC_RUST_CANDIDATES = ("office_oxide", "rwml")
 PDF_RUST_CANDIDATES = ("pdf_oxide", "pdf_extract")
 ALLOWED_LICENSES = {"MIT", "MIT OR Apache-2.0", "Apache-2.0 OR MIT"}
 RUST_TOOLCHAIN = os.environ.get("LODE_EVAL_RUST_TOOLCHAIN")
@@ -155,6 +160,39 @@ class QualitySummary:
     quality_score: float
     quality_pass: bool
     cases: tuple[QualityCase, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DocQualityCase:
+    fixture_id: str
+    expected_status: str
+    actual_status: str
+    ngram_f1: float | None
+    edit_similarity: float | None
+    anchor_order: float | None
+    segment_boundaries: float | None
+    expected_markdown_tables: int
+    actual_markdown_tables: int | None
+    markdown_delimiters_balanced: bool | None
+    process_status: str
+    error: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class DocQualitySummary:
+    candidate: str
+    license: str
+    license_allowed: bool
+    valid_success_rate: float
+    invalid_rejection_rate: float
+    minimum_ngram_f1: float
+    minimum_anchor_order: float
+    segment_boundary_accuracy: float
+    markdown_table_accuracy: float
+    quality_score: float
+    quality_pass: bool
+    crashes_or_timeouts: int
+    cases: tuple[DocQualityCase, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -516,8 +554,9 @@ def _license_audit() -> tuple[bool, str]:
 
 
 def _markdown_report(report: dict[str, Any]) -> str:
+    format_label = "legacy DOC" if report["format"] == "doc" else "DOCX"
     lines = [
-        "# DOCX extractor smoke report",
+        f"# {format_label} extractor smoke report",
         "",
         f"- Run: `{report['run_id']}`",
         f"- Platform: `{report['environment']['platform']}`",
@@ -594,7 +633,7 @@ def _markdown_report(report: dict[str, Any]) -> str:
             "## Gate",
             "",
             "Smoke passes only when the candidate has an allowed license, parses every valid fixture, "
-            "rejects every corrupt fixture without crashing, and preserves all anchors in order.",
+            "rejects every malformed fixture without crashing, and preserves all anchors in order.",
             "",
             "This report is a feasibility gate, not the final quality selection.",
             "",
@@ -678,6 +717,290 @@ def run_docx_smoke() -> Path:
     output_dir.mkdir(parents=True, exist_ok=False)
     (output_dir / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     markdown = _markdown_report(report)
+    (output_dir / "report.md").write_text(markdown, encoding="utf-8")
+    print(markdown)
+    print(f"Report: {output_dir / 'report.md'}")
+    return output_dir
+
+
+def run_doc_smoke(*, public_corpus_dir: Path | None = None) -> Path:
+    """Evaluate isolated native legacy DOC candidates before production integration."""
+    executable, build_seconds = _build_rust_runner()
+    public_metadata, public_documents = load_doc_public_corpus(public_corpus_dir)
+    with tempfile.TemporaryDirectory(prefix="lode-doc-smoke-") as temporary:
+        public_fixtures = [
+            make_doc_public_fixture(document.path, fixture_id=document.sample_id) for document in public_documents
+        ]
+        invalid_fixtures = create_doc_invalid_fixtures(Path(temporary), public_documents[0].path)
+        fixtures = [*public_fixtures, *invalid_fixtures]
+        all_results = {
+            candidate: [(fixture, _rust_extract(executable, candidate, fixture.path)) for fixture in fixtures]
+            for candidate in DOC_RUST_CANDIDATES
+        }
+
+    dependency_licenses_allowed, license_output = _license_audit()
+    package_names = {"office_oxide": "office_oxide", "rwml": "rwml"}
+    metadata = _candidate_metadata()
+    versions: dict[str, str] = {}
+    summaries: list[CandidateSummary] = []
+    for candidate in DOC_RUST_CANDIDATES:
+        version, license_name = metadata[package_names[candidate]]
+        versions[candidate] = version
+        summaries.append(
+            _score(
+                candidate,
+                all_results[candidate],
+                license_name,
+                dependency_licenses_allowed=dependency_licenses_allowed,
+            )
+        )
+
+    run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ-doc-smoke")
+    report: dict[str, Any] = {
+        "run_id": run_id,
+        "format": "doc",
+        "round": "smoke",
+        "environment": {
+            "platform": platform.platform(),
+            "python": platform.python_version(),
+            "rustc": _rustc_version(),
+        },
+        "versions": versions,
+        "build_seconds": build_seconds,
+        "sample_counts": {
+            "valid": len(public_fixtures),
+            "invalid": len(invalid_fixtures),
+        },
+        "public_corpus": asdict(public_metadata),
+        "license_audit": {"passed": dependency_licenses_allowed, "output": license_output},
+        "summaries": [asdict(summary) for summary in summaries],
+        "results": {
+            candidate: [
+                {"fixture_id": fixture.fixture_id, "valid": fixture.valid, "result": asdict(result)}
+                for fixture, result in results
+            ]
+            for candidate, results in all_results.items()
+        },
+    }
+    output_dir = ROOT / ".ai" / "process" / "extractor-evals" / run_id
+    output_dir.mkdir(parents=True, exist_ok=False)
+    (output_dir / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    markdown = _markdown_report(report)
+    (output_dir / "report.md").write_text(markdown, encoding="utf-8")
+    print(markdown)
+    print(f"Report: {output_dir / 'report.md'}")
+    return output_dir
+
+
+def _score_doc_quality_candidate(
+    candidate: str,
+    results: list[tuple[Fixture, ExtractionResult]],
+    license_name: str,
+    *,
+    dependency_licenses_allowed: bool,
+) -> DocQualitySummary:
+    cases: list[DocQualityCase] = []
+    valid_success = 0
+    invalid_rejected = 0
+    f1_scores: list[float] = []
+    anchor_scores: list[float] = []
+    boundary_scores: list[float] = []
+    table_scores: list[float] = []
+    crashes_or_timeouts = 0
+    for fixture, result in results:
+        if result.process_status != "ok":
+            crashes_or_timeouts += 1
+        if fixture.valid and result.status == "ok":
+            valid_success += 1
+            _, _, f1 = ngram_prf(result.text, fixture.expected_text)
+            edit = normalized_edit_similarity(result.text, fixture.expected_text)
+            anchors = anchor_order_accuracy(result.text, fixture.anchors)
+            boundaries = segment_boundary_accuracy(_segment_tuples(result), _expected_segment_tuples(fixture))
+            actual_tables = markdown_table_count(result.markdown or "")
+            table_accuracy = float(actual_tables == fixture.expected_markdown_table_count)
+            f1_scores.append(f1)
+            anchor_scores.append(anchors)
+            boundary_scores.append(boundaries)
+            table_scores.append(table_accuracy)
+            balanced = markdown_delimiters_balanced(result.markdown) if result.markdown else None
+        else:
+            f1 = edit = anchors = boundaries = None
+            actual_tables = None
+            balanced = None
+            if not fixture.valid and result.status == "error":
+                invalid_rejected += 1
+        cases.append(
+            DocQualityCase(
+                fixture_id=fixture.fixture_id,
+                expected_status="ok" if fixture.valid else "error",
+                actual_status=result.status,
+                ngram_f1=f1,
+                edit_similarity=edit,
+                anchor_order=anchors,
+                segment_boundaries=boundaries,
+                expected_markdown_tables=fixture.expected_markdown_table_count,
+                actual_markdown_tables=actual_tables,
+                markdown_delimiters_balanced=balanced,
+                process_status=result.process_status,
+                error=result.error,
+            )
+        )
+    valid_total = sum(fixture.valid for fixture, _ in results)
+    invalid_total = len(results) - valid_total
+    direct_license_allowed = license_name in ALLOWED_LICENSES
+    license_allowed = direct_license_allowed and dependency_licenses_allowed
+    valid_success_rate = valid_success / valid_total if valid_total else 0.0
+    invalid_rejection_rate = invalid_rejected / invalid_total if invalid_total else 0.0
+    minimum_f1 = min(f1_scores, default=0.0)
+    minimum_anchor = min(anchor_scores, default=0.0)
+    boundary_accuracy = _mean(boundary_scores)
+    table_accuracy = _mean(table_scores)
+    quality_score = 100 * _mean([_mean(f1_scores), _mean(anchor_scores), boundary_accuracy, table_accuracy])
+    quality_pass = (
+        license_allowed
+        and crashes_or_timeouts == 0
+        and valid_success == valid_total
+        and invalid_rejected == invalid_total
+        and minimum_f1 >= 0.98
+        and minimum_anchor >= 0.97
+        and boundary_accuracy >= 0.99
+        and table_accuracy >= 0.99
+    )
+    return DocQualitySummary(
+        candidate=candidate,
+        license=license_name,
+        license_allowed=license_allowed,
+        valid_success_rate=valid_success_rate,
+        invalid_rejection_rate=invalid_rejection_rate,
+        minimum_ngram_f1=minimum_f1,
+        minimum_anchor_order=minimum_anchor,
+        segment_boundary_accuracy=boundary_accuracy,
+        markdown_table_accuracy=table_accuracy,
+        quality_score=quality_score,
+        quality_pass=quality_pass,
+        crashes_or_timeouts=crashes_or_timeouts,
+        cases=tuple(cases),
+    )
+
+
+def _doc_quality_markdown_report(report: dict[str, Any]) -> str:
+    lines = [
+        "# Legacy DOC extractor quality report",
+        "",
+        f"- Run: `{report['run_id']}`",
+        f"- Rust: `{report['environment']['rustc']}`",
+        f"- Valid samples: `{report['sample_counts']['valid']}`",
+        f"- Invalid samples: `{report['sample_counts']['invalid']}`",
+        f"- Public source revision: `{report['public_corpus']['revision']}`",
+        "",
+        "## Summary",
+        "",
+        "| Candidate | License | Valid | Invalid rejected | Min F1 | Min order | Boundaries | "
+        "Table structure | Score | Gate |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+    ]
+    for summary in report["summaries"]:
+        lines.append(
+            f"| {summary['candidate']} | {summary['license']} | {summary['valid_success_rate']:.3f} | "
+            f"{summary['invalid_rejection_rate']:.3f} | {summary['minimum_ngram_f1']:.3f} | "
+            f"{summary['minimum_anchor_order']:.3f} | {summary['segment_boundary_accuracy']:.3f} | "
+            f"{summary['markdown_table_accuracy']:.3f} | {summary['quality_score']:.2f} | "
+            f"{'PASS' if summary['quality_pass'] else 'FAIL'} |"
+        )
+    lines.extend(["", "## Cases", ""])
+    for summary in report["summaries"]:
+        lines.extend(
+            [
+                f"### {summary['candidate']}",
+                "",
+                "| Fixture | Expected | Actual | F1 | Order | Boundaries | "
+                "Tables expected/actual | Markdown balanced | Error |",
+                "| --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- |",
+            ]
+        )
+        for case in summary["cases"]:
+            f1 = _optional_score(case["ngram_f1"])
+            order = _optional_score(case["anchor_order"])
+            boundaries = _optional_score(case["segment_boundaries"])
+            tables = (
+                "—"
+                if case["actual_markdown_tables"] is None
+                else (f"{case['expected_markdown_tables']}/{case['actual_markdown_tables']}")
+            )
+            balanced = (
+                "—"
+                if case["markdown_delimiters_balanced"] is None
+                else ("yes" if case["markdown_delimiters_balanced"] else "no")
+            )
+            error = (case["error"] or "").replace("|", "\\|").replace("\n", " ")
+            lines.append(
+                f"| {case['fixture_id']} | {case['expected_status']} | {case['actual_status']} | {f1} | "
+                f"{order} | {boundaries} | {tables} | {balanced} | {error} |"
+            )
+        lines.append("")
+    lines.extend(
+        [
+            "## Gate",
+            "",
+            "A candidate passes only with an allowed license, no crashes or timeouts, complete valid-file "
+            "success, complete malformed-file rejection, minimum 3-gram F1 of 0.98, minimum anchor order "
+            "of 0.97, segment boundaries of 0.99, and exact table-presence truth.",
+            "",
+            "Markdown is used here only as a structural diagnostic; it is not extraction truth.",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def run_doc_quality(*, public_corpus_dir: Path | None = None) -> Path:
+    """Compare isolated legacy DOC candidates against the frozen Quality truth."""
+    executable, build_seconds = _build_rust_runner()
+    public_metadata, public_documents = load_doc_public_corpus(public_corpus_dir)
+    with tempfile.TemporaryDirectory(prefix="lode-doc-quality-") as temporary:
+        public_fixtures = [
+            make_doc_public_fixture(document.path, fixture_id=document.sample_id) for document in public_documents
+        ]
+        invalid_fixtures = create_doc_invalid_fixtures(Path(temporary), public_documents[0].path)
+        fixtures = [*public_fixtures, *invalid_fixtures]
+        all_results = {
+            candidate: [(fixture, _rust_extract(executable, candidate, fixture.path)) for fixture in fixtures]
+            for candidate in DOC_RUST_CANDIDATES
+        }
+
+    dependency_licenses_allowed, license_output = _license_audit()
+    metadata = _candidate_metadata()
+    package_names = {"office_oxide": "office_oxide", "rwml": "rwml"}
+    summaries = [
+        _score_doc_quality_candidate(
+            candidate,
+            all_results[candidate],
+            metadata[package_names[candidate]][1],
+            dependency_licenses_allowed=dependency_licenses_allowed,
+        )
+        for candidate in DOC_RUST_CANDIDATES
+    ]
+    run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ-doc-quality")
+    report: dict[str, Any] = {
+        "run_id": run_id,
+        "format": "doc",
+        "round": "quality",
+        "environment": {
+            "platform": platform.platform(),
+            "python": platform.python_version(),
+            "rustc": _rustc_version(),
+        },
+        "versions": {candidate: metadata[package_names[candidate]][0] for candidate in DOC_RUST_CANDIDATES},
+        "build_seconds": build_seconds,
+        "sample_counts": {"valid": len(public_fixtures), "invalid": len(invalid_fixtures)},
+        "public_corpus": asdict(public_metadata),
+        "license_audit": {"passed": dependency_licenses_allowed, "output": license_output},
+        "summaries": [asdict(summary) for summary in summaries],
+    }
+    output_dir = ROOT / ".ai" / "process" / "extractor-evals" / run_id
+    output_dir.mkdir(parents=True, exist_ok=False)
+    (output_dir / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    markdown = _doc_quality_markdown_report(report)
     (output_dir / "report.md").write_text(markdown, encoding="utf-8")
     print(markdown)
     print(f"Report: {output_dir / 'report.md'}")
@@ -1836,12 +2159,16 @@ def run_pdf_quality_round_2(*, public_corpus_dir: Path | None = None) -> Path:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run staged document extractor evaluations")
-    parser.add_argument("--format", choices=("docx", "pdf"), required=True)
+    parser.add_argument("--format", choices=("doc", "docx", "pdf"), required=True)
     parser.add_argument("--round", choices=("smoke", "quality", "quality-markdown", "quality-2"), required=True)
     parser.add_argument("--public-corpus-dir", type=Path)
     parser.add_argument("--private-corpus-dir", type=Path)
     args = parser.parse_args()
-    if (args.format, args.round) == ("docx", "smoke"):
+    if (args.format, args.round) == ("doc", "smoke"):
+        run_doc_smoke(public_corpus_dir=args.public_corpus_dir)
+    elif (args.format, args.round) == ("doc", "quality"):
+        run_doc_quality(public_corpus_dir=args.public_corpus_dir)
+    elif (args.format, args.round) == ("docx", "smoke"):
         run_docx_smoke()
     elif (args.format, args.round) == ("docx", "quality"):
         run_docx_quality(

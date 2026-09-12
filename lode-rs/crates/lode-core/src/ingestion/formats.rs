@@ -28,6 +28,7 @@ pub const SUPPORTED_EXTENSIONS: &[&str] = &[
     ".md",
     ".markdown",
     // Structured document formats.
+    ".doc",
     ".docx",
     ".pdf",
 ];
@@ -61,6 +62,7 @@ pub fn extractor_family(path: &str) -> Option<&'static str> {
         Some("markdown")
     } else {
         match suffix.as_str() {
+            "doc" => Some("doc"),
             "docx" => Some("docx"),
             "pdf" => Some("pdf"),
             _ => None,
@@ -81,6 +83,7 @@ mod tests {
 
     #[test]
     fn structured_extensions() {
+        assert!(is_ingestable(Path::new("legacy.doc")));
         assert!(is_ingestable(Path::new("report.docx")));
         assert!(is_ingestable(Path::new("paper.pdf")));
     }
@@ -117,6 +120,7 @@ mod tests {
         assert_eq!(extractor_family("notes.md"), Some("markdown"));
         assert_eq!(extractor_family("notes.markdown"), Some("markdown"));
         assert_eq!(extractor_family("report.docx"), Some("docx"));
+        assert_eq!(extractor_family("legacy.doc"), Some("doc"));
         assert_eq!(extractor_family("paper.pdf"), Some("pdf"));
     }
 }

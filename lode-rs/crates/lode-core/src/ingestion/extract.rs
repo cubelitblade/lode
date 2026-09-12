@@ -20,6 +20,9 @@ use crate::ingestion::types::{HEADING_SEP, Segment};
 /// Errors raised while parsing a supported document format.
 #[derive(Debug, thiserror::Error)]
 pub enum ExtractionError {
+    /// The legacy Word binary document could not be parsed.
+    #[error("could not parse legacy DOC document: {0}")]
+    Doc(String),
     /// The DOCX package or its `WordprocessingML` contents were malformed.
     #[error("could not parse DOCX document: {0}")]
     Docx(String),
@@ -53,10 +56,26 @@ pub fn extract_document(
         return Ok(Some(into_segments(&decode_text(data))));
     }
     match suffix.as_str() {
+        ".doc" => extract_doc(data).map(Some),
         ".docx" => extract_docx(data).map(Some),
         ".pdf" => extract_pdf(data).map(Some),
         _ => Ok(None),
     }
+}
+
+fn extract_doc(data: &[u8]) -> Result<Vec<Segment>, ExtractionError> {
+    let text = rwml::extract_text(data).map_err(|error| ExtractionError::Doc(error.to_string()))?;
+    let text = text.trim().to_owned();
+    if text.is_empty() {
+        return Err(ExtractionError::Doc(
+            "document contains no indexable text".to_owned(),
+        ));
+    }
+    Ok(vec![Segment {
+        text,
+        heading: String::new(),
+        page: None,
+    }])
 }
 
 /// Decode plain text with the same permissive fallback used by the Python
@@ -528,6 +547,12 @@ mod tests {
             segments[1].text,
             "## **Details**\n\nBody\n\n| Name | Value |\n| --- | --- |\n| A | 1 |"
         );
+    }
+
+    #[test]
+    fn rejects_corrupt_legacy_doc_input() {
+        let error = extract_document(b"not an OLE2 compound file", ".doc").unwrap_err();
+        assert!(matches!(error, ExtractionError::Doc(_)));
     }
 
     #[test]

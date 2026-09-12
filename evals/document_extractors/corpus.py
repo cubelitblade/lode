@@ -14,6 +14,7 @@ from urllib.parse import quote
 
 ROOT = Path(__file__).resolve().parents[2]
 DOCX_MANIFEST = ROOT / "evals" / "document_extractors" / "corpora" / "docx-apache-poi.json"
+DOC_MANIFEST = ROOT / "evals" / "document_extractors" / "corpora" / "doc-rwml.json"
 PDF_MANIFESTS = (
     ROOT / "evals" / "document_extractors" / "corpora" / "pdf-pdfjs.json",
     ROOT / "evals" / "document_extractors" / "corpora" / "pdf-verapdf.json",
@@ -71,6 +72,36 @@ def load_docx_public_corpus(directory: Path | None = None) -> tuple[CorpusMetada
             if directory is not None:
                 raise ValueError(f"corpus file missing or checksum mismatch: {name}")
             _download(f"{payload['base_url']}/{name}", path)
+        actual_sha256 = _sha256(path)
+        if actual_sha256 != expected_sha256:
+            raise ValueError(f"SHA-256 mismatch for {name}: {actual_sha256}")
+        documents.append(CorpusDocument(sample_id=f"public-{index:03d}", path=path, source="public"))
+    metadata = CorpusMetadata(
+        name=str(payload["corpus"]),
+        revision=str(payload["revision"]),
+        license=str(payload["license"]),
+        license_url=str(payload["license_url"]),
+        source_url=str(payload["source_url"]),
+    )
+    return metadata, documents
+
+
+def load_doc_public_corpus(directory: Path | None = None) -> tuple[CorpusMetadata, list[CorpusDocument]]:
+    """Download or verify the pinned synthetic legacy DOC corpus."""
+    payload = _read_manifest(DOC_MANIFEST)
+    target = directory or ROOT / ".ai" / "cache" / "document-extractors" / "rwml-doc"
+    target.mkdir(parents=True, exist_ok=True)
+    documents: list[CorpusDocument] = []
+    for index, item in enumerate(payload["files"], start=1):
+        name = str(item["name"])
+        url_path = str(item.get("url_path", name))
+        expected_sha256 = str(item["sha256"])
+        path = target / name
+        if not path.exists() or _sha256(path) != expected_sha256:
+            if directory is not None:
+                raise ValueError(f"corpus file missing or checksum mismatch: {name}")
+            encoded_path = quote(url_path, safe="/")
+            _download(f"{payload['base_url']}/{encoded_path}", path)
         actual_sha256 = _sha256(path)
         if actual_sha256 != expected_sha256:
             raise ValueError(f"SHA-256 mismatch for {name}: {actual_sha256}")

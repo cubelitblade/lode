@@ -36,6 +36,53 @@ class Fixture:
     table_rows: tuple[str, ...] = ()
     expected_segments: tuple[ExpectedSegment, ...] = ()
     expected_markdown_headings: tuple[tuple[int, str], ...] = ()
+    expected_markdown_table_count: int = 0
+
+
+_DOC_SMOKE_EXPECTATIONS: dict[str, tuple[str, tuple[str, ...]]] = {
+    "floating_text_bearing.doc": (
+        "Containing block before.  Containing block after.",
+        ("Containing block before.", "Containing block after."),
+    ),
+    "floating_wrap_policy.doc": (
+        "Wrap before.  Wrap after.",
+        ("Wrap before.", "Wrap after."),
+    ),
+    "nested_tables.doc": (
+        "Outer cell text\nInner cell text",
+        ("Outer cell text", "Inner cell text"),
+    ),
+}
+
+
+def make_doc_public_fixture(path: Path, *, fixture_id: str) -> Fixture:
+    """Create Smoke truth for one manifest-backed public legacy DOC sample."""
+    try:
+        expected_text, anchors = _DOC_SMOKE_EXPECTATIONS[path.name]
+    except KeyError as exc:
+        raise ValueError(f"no DOC Smoke truth for {path.name}") from exc
+    return Fixture(
+        fixture_id=fixture_id,
+        path=path,
+        valid=True,
+        expected_text=expected_text,
+        anchors=anchors,
+        expected_segments=(ExpectedSegment(expected_text),),
+        expected_markdown_table_count=int(path.name == "nested_tables.doc"),
+    )
+
+
+def create_doc_invalid_fixtures(directory: Path, valid_path: Path) -> list[Fixture]:
+    """Create deterministic malformed legacy DOC inputs in ``directory``."""
+    directory.mkdir(parents=True, exist_ok=True)
+    corrupt_path = directory / "corrupt.doc"
+    corrupt_path.write_bytes(b"this is not an OLE2 compound file")
+    truncated_path = directory / "truncated.doc"
+    truncated_path.write_bytes(valid_path.read_bytes()[:512])
+    return [
+        Fixture(fixture_id="corrupt", path=corrupt_path, valid=False),
+        Fixture(fixture_id="truncated", path=truncated_path, valid=False),
+    ]
 
 
 def create_docx_smoke_fixtures(directory: Path) -> list[Fixture]:

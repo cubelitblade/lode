@@ -103,6 +103,18 @@ def markdown_delimiters_balanced(markdown: str) -> bool:
     )
 
 
+def markdown_table_count(markdown: str) -> int:
+    """Count GFM table blocks using their separator rows."""
+    lines = strict_view(markdown).splitlines()
+    return sum(
+        index > 0
+        and line.startswith("|")
+        and bool(_MARKDOWN_TABLE_SEPARATOR_RE.match(line))
+        and lines[index - 1].lstrip().startswith("|")
+        for index, line in enumerate(lines)
+    )
+
+
 def markdown_plain_text(markdown: str) -> str:
     """Remove generated block syntax while retaining literal inline tokens."""
     lines: list[str] = []

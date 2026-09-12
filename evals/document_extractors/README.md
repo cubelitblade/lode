@@ -7,6 +7,36 @@ rounds invoke the selected production `lode-core` adapter through the minimal
 
 ## Implemented rounds
 
+### Legacy DOC Smoke
+
+```bash
+uv run python -m evals.document_extractors.run --format doc --round smoke
+```
+
+This is the first gate for Word 97–2003 binary `.doc` support. It runs the
+independent `office_oxide` and `rwml` adapters against the pinned, license-clean
+synthetic corpus in `corpora/doc-rwml.json`, plus corrupt and truncated inputs.
+The gate checks build and license eligibility, valid-file parsing, anchor order,
+and explicit malformed-input rejection. It does not change or invoke the
+production `lode-core` extractor.
+
+The frozen boundary is recorded in
+[`reports/doc-smoke-contract.md`](reports/doc-smoke-contract.md).
+
+The Quality comparison is:
+
+```bash
+uv run python -m evals.document_extractors.run --format doc --round quality
+```
+
+It applies stricter text, anchor, segment-boundary, malformed-input, and table
+presence checks to the same pinned corpus. Markdown remains a structural
+diagnostic only.
+
+The first result is summarized in
+[`reports/doc-quality-round-1.md`](reports/doc-quality-round-1.md). `rwml`
+passed this gate; `office_oxide` did not meet the table-structure threshold.
+
 ### DOCX smoke and quality
 
 ```bash
@@ -93,6 +123,8 @@ extraction, and best-effort peak RSS measurement on POSIX hosts:
 ```bash
 uv run python -m evals.document_extractors.operational --format docx
 uv run python -m evals.document_extractors.operational --format pdf
+uv run python -m evals.document_extractors.operational --format doc \
+  --public-corpus-dir /path/to/rwml/corpus/public/benchmark/sample
 ```
 
 The report records the exact compiler version, p50/p95 latency (three
@@ -101,3 +133,8 @@ release binary size, and invalid-input behavior. Valid layout samples outside th
 selected PDF scope (for example, two-column pages) remain visible as
 diagnostics but do not affect the gate. Reports are written to
 `.ai/process/extractor-evals/`.
+
+The first production `.doc` run is summarized in
+[`reports/doc-operational.md`](reports/doc-operational.md). It passed with
+`rwml 0.1.4`; cross-platform release CI is still required before final
+cutover.

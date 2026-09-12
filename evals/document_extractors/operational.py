@@ -19,10 +19,13 @@ from pathlib import Path
 from statistics import median
 from typing import Any
 
+from evals.document_extractors.corpus import load_doc_public_corpus
 from evals.document_extractors.fixtures import (
     Fixture,
+    create_doc_invalid_fixtures,
     create_docx_quality_fixtures,
     create_pdf_quality_fixtures,
+    make_doc_public_fixture,
 )
 from evals.document_extractors.metrics import content_view, markdown_content_projection
 from evals.document_extractors.run import (
@@ -125,10 +128,10 @@ def _build_production_runner() -> tuple[Path, float]:
         env=environment,
         check=True,
     )
-    executable = PRODUCTION_TARGET_DIR / "release" / (
-        "document-extractor-production-runner.exe"
-        if os.name == "nt"
-        else "document-extractor-production-runner"
+    executable = (
+        PRODUCTION_TARGET_DIR
+        / "release"
+        / ("document-extractor-production-runner.exe" if os.name == "nt" else "document-extractor-production-runner")
     )
     return executable, time.perf_counter() - started
 
@@ -146,10 +149,10 @@ def _metadata() -> tuple[int, int]:
     payload = json.loads(completed.stdout)
     packages = payload.get("packages", [])
     dependency_count = sum(1 for package in packages if package.get("source"))
-    executable = PRODUCTION_TARGET_DIR / "release" / (
-        "document-extractor-production-runner.exe"
-        if os.name == "nt"
-        else "document-extractor-production-runner"
+    executable = (
+        PRODUCTION_TARGET_DIR
+        / "release"
+        / ("document-extractor-production-runner.exe" if os.name == "nt" else "document-extractor-production-runner")
     )
     return dependency_count, executable.stat().st_size
 
@@ -194,24 +197,32 @@ def _production_metadata() -> int:
     return dependency_count
 
 
-def _fixtures(format_name: str, directory: Path) -> list[Fixture]:
+def _fixtures(format_name: str, directory: Path, public_corpus_dir: Path | None = None) -> list[Fixture]:
+    if format_name == "doc":
+        _, documents = load_doc_public_corpus(public_corpus_dir)
+        fixtures = [make_doc_public_fixture(document.path, fixture_id=document.sample_id) for document in documents]
+        fixtures.extend(create_doc_invalid_fixtures(directory, documents[0].path))
+        return fixtures
     fixtures = (
-        create_docx_quality_fixtures(directory)
-        if format_name == "docx"
-        else create_pdf_quality_fixtures(directory)
+        create_docx_quality_fixtures(directory) if format_name == "docx" else create_pdf_quality_fixtures(directory)
     )
     # Two-column and other layout-reconstruction samples stay visible in the
     # report, while their valid/invalid status is excluded from the gate.
     return fixtures
 
 
-def run_operational(format_name: str, *, iterations: int = ITERATIONS) -> Path:
+def run_operational(
+    format_name: str,
+    *,
+    iterations: int = ITERATIONS,
+    public_corpus_dir: Path | None = None,
+) -> Path:
     executable, build_seconds = _build_production_runner()
     # Use the production lode-core adapter rather than a standalone copy of
     # the selected library implementation.
     candidate = "lode_core"
     with tempfile.TemporaryDirectory(prefix=f"lode-{format_name}-operational-") as temporary:
-        fixtures = _fixtures(format_name, Path(temporary))
+        fixtures = _fixtures(format_name, Path(temporary), public_corpus_dir)
         cases: list[dict[str, Any]] = []
         for fixture in fixtures:
             samples = [_timed_extract(executable, fixture) for _ in range(iterations)]
@@ -333,12 +344,13 @@ def run_operational(format_name: str, *, iterations: int = ITERATIONS) -> Path:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run selected extractor operational measurements")
-    parser.add_argument("--format", choices=("docx", "pdf"), required=True)
+    parser.add_argument("--format", choices=("doc", "docx", "pdf"), required=True)
     parser.add_argument("--iterations", type=int, default=ITERATIONS)
+    parser.add_argument("--public-corpus-dir", type=Path)
     args = parser.parse_args()
     if args.iterations < 1:
         parser.error("--iterations must be positive")
-    run_operational(args.format, iterations=args.iterations)
+    run_operational(args.format, iterations=args.iterations, public_corpus_dir=args.public_corpus_dir)
 
 
 if __name__ == "__main__":
