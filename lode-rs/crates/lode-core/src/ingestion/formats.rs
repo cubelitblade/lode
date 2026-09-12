@@ -15,8 +15,11 @@
 
 use std::path::Path;
 
-/// Extensions of plain-text formats (decoded directly, no structural parsing).
-pub const PLAIN_EXTENSIONS: &[&str] = &[".txt", ".md", ".markdown"];
+/// Extensions of text files (decoded directly, without structural parsing).
+pub const TEXT_EXTENSIONS: &[&str] = &[".txt"];
+
+/// Extensions of Markdown files (decoded, then structurally segmented).
+pub const MARKDOWN_EXTENSIONS: &[&str] = &[".md", ".markdown"];
 
 /// All extensions the ingestion pipeline can handle.
 pub const SUPPORTED_EXTENSIONS: &[&str] = &[
@@ -39,6 +42,29 @@ pub fn is_ingestable(path: &Path) -> bool {
             SUPPORTED_EXTENSIONS.iter().any(|&e| e == lower)
         }
         None => false,
+    }
+}
+
+/// Return the persisted extractor family for an ingestable path.
+#[must_use]
+pub fn extractor_family(path: &str) -> Option<&'static str> {
+    let suffix = path.rsplit('.').next()?.to_ascii_lowercase();
+    if TEXT_EXTENSIONS
+        .iter()
+        .any(|ext| *ext == format!(".{suffix}"))
+    {
+        Some("text")
+    } else if MARKDOWN_EXTENSIONS
+        .iter()
+        .any(|ext| *ext == format!(".{suffix}"))
+    {
+        Some("markdown")
+    } else {
+        match suffix.as_str() {
+            "docx" => Some("docx"),
+            "pdf" => Some("pdf"),
+            _ => None,
+        }
     }
 }
 
@@ -83,5 +109,14 @@ mod tests {
     fn deep_paths() {
         assert!(is_ingestable(Path::new("docs/guides/intro.md")));
         assert!(!is_ingestable(Path::new("src/main.rs")));
+    }
+
+    #[test]
+    fn extractor_families_are_format_specific() {
+        assert_eq!(extractor_family("notes.txt"), Some("text"));
+        assert_eq!(extractor_family("notes.md"), Some("markdown"));
+        assert_eq!(extractor_family("notes.markdown"), Some("markdown"));
+        assert_eq!(extractor_family("report.docx"), Some("docx"));
+        assert_eq!(extractor_family("paper.pdf"), Some("pdf"));
     }
 }

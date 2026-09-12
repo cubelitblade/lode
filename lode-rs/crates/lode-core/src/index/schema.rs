@@ -8,18 +8,19 @@
 //! requires an explicit rebuild.
 //!
 //! The schema separates *content* from *references*: `contents` holds each
-//! unique indexed document once, keyed by its `blake3:<hex>` digest (an
-//! inode), while `files` maps workspace paths onto that content. Identical
-//! files at several paths share one set of chunks/vectors/FTS rows; a content
-//! row lives until its last referencing path disappears.
+//! unique indexed document once, keyed by its `blake3:<hex>` digest and
+//! extractor family, while `files` maps workspace paths onto that content.
+//! Identical files handled by the same extractor family share one set of
+//! chunks/vectors/FTS rows; a content row lives until its last referencing
+//! path disappears.
 
 use rusqlite::Connection;
 
 /// Bump when the schema changes incompatibly; a mismatch makes the store
 /// refuse to open until an explicit rebuild.
-/// Version 2 also marks the DOCX chunk representation change from plain text
-/// to canonical Markdown, which must not be mixed in one index.
-pub const SCHEMA_VERSION: u32 = 2;
+/// Version 3 adds extractor family to content identity, which must not be
+/// mixed with a version 2 index.
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// FTS5 tokenizers the schema accepts. `tokenize_clause` is interpolated
 /// into DDL, so it must stay on this whitelist (mirrors the Python
@@ -72,7 +73,9 @@ pub fn create_schema(
         );
         CREATE TABLE contents (
             id     INTEGER PRIMARY KEY,
-            digest TEXT NOT NULL UNIQUE
+            digest TEXT NOT NULL,
+            extractor TEXT NOT NULL,
+            UNIQUE (digest, extractor)
         );
         CREATE TABLE files (
             id         INTEGER PRIMARY KEY,

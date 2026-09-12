@@ -67,6 +67,7 @@ fn fixture() -> Fixture {
     store
         .replace_file(
             &record_for(&guide, &workspace),
+            "text",
             &[
                 chunk("00000001", "before", 0, "Guide"),
                 chunk(TARGET_PREFIX, "center", 1, "Guide"),
@@ -78,6 +79,7 @@ fn fixture() -> Fixture {
     store
         .replace_file(
             &record_for(&other, &workspace),
+            "text",
             &[chunk(OTHER_PREFIX, "other", 0, "Other")],
             None,
         )

@@ -250,19 +250,24 @@ impl Store {
     /// Point `path` at already-indexed content; report whether it existed.
     ///
     /// Unlike [`replace_file`], no chunks are written — the caller claims
-    /// the content addressed by `record.digest` is already indexed. When it
-    /// is not, nothing changes and `false` is returned.
+    /// the content addressed by `(record.digest, extractor)` is already
+    /// indexed. When it is not, nothing changes and `false` is returned.
     ///
     /// # Errors
     ///
     /// Fails when the lookup, upsert, or GC statements fail.
-    pub fn reference_file(&mut self, record: &FileRecord) -> crate::Result<bool> {
+    pub fn reference_file(&mut self, record: &FileRecord, extractor: &str) -> crate::Result<bool> {
+        if !matches!(extractor, "text" | "markdown" | "docx" | "pdf") {
+            return Err(crate::Error::Store(format!(
+                "unknown extractor family {extractor:?}"
+            )));
+        }
         let tx = self.conn.transaction()?;
 
         let content_id: Option<i64> = tx
             .query_row(
-                "SELECT id FROM contents WHERE digest = ?1",
-                rusqlite::params![record.digest],
+                "SELECT id FROM contents WHERE digest = ?1 AND extractor = ?2",
+                rusqlite::params![record.digest, extractor],
                 |row| row.get(0),
             )
             .optional()?;
@@ -312,9 +317,10 @@ impl Store {
     /// Atomically replace `record.path`'s content, writing chunks and vectors.
     ///
     /// Creates the content row when this is its first reference; reuses
-    /// existing content when another path already indexed the same digest.
-    /// When the path moves away from a previous content, that content is
-    /// dropped once its last reference disappears.
+    /// existing content when another path already indexed the same digest
+    /// with the same extractor family. When the path moves away from a
+    /// previous content, that content is dropped once its last reference
+    /// disappears.
     ///
     /// `vectors` is `None` for text-only writes (no embedding layer wired
     /// yet); when present it must be one per chunk and match the index
@@ -330,6 +336,7 @@ impl Store {
     pub fn replace_file(
         &mut self,
         record: &FileRecord,
+        extractor: &str,
         chunks: &[Chunk],
         vectors: Option<&[Vec<f32>]>,
     ) -> crate::Result<bool> {
@@ -344,8 +351,7 @@ impl Store {
         }
 
         let tx = self.conn.transaction()?;
-
-        let (content_id, created) = ensure_content(&tx, &record.digest)?;
+        let (content_id, created) = ensure_content(&tx, &record.digest, extractor)?;
 
         let previous: Option<i64> = tx
             .query_row(
@@ -505,6 +511,24 @@ mod tests {
     }
 
     #[test]
+    fn schema_v2_requires_explicit_rebuild() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("index.db");
+        let store = Store::open(&db, "test-model", 128, "unicode61").unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE meta SET value = '2' WHERE key = 'schema_version'",
+                [],
+            )
+            .unwrap();
+        drop(store);
+
+        let err = Store::open_existing(&db).unwrap_err();
+        assert!(err.to_string().contains("run an explicit rebuild"));
+    }
+
+    #[test]
     fn open_existing_registers_vec_module() {
         // Regression: `no such module: vec0` when reopening an existing
         // index and writing vectors — the auto-extension must be registered
@@ -518,6 +542,7 @@ mod tests {
         store
             .replace_file(
                 &rec,
+                "text",
                 &make_chunks("blake3:seed", 1),
                 Some(&make_vectors(1, 128)),
             )
@@ -529,6 +554,7 @@ mod tests {
         let wrote = reopened
             .replace_file(
                 &rec,
+                "text",
                 &make_chunks("blake3:other", 1),
                 Some(&make_vectors(1, 128)),
             )
@@ -551,7 +577,7 @@ mod tests {
                 size: 777,
                 status: FileStatus::Fresh,
             };
-            store.reference_file(&rec).unwrap();
+            store.reference_file(&rec, "markdown").unwrap();
         }
 
         // Archiving happened and cleared the primary path.
@@ -667,7 +693,7 @@ mod tests {
         let mut store = Store::open(&db, "test-model", 128, "unicode61").unwrap();
 
         let rec = make_record("a.txt", "blake3:aaa", 1.0, 100);
-        assert!(!store.reference_file(&rec).unwrap());
+        assert!(!store.reference_file(&rec, "text").unwrap());
         // Nothing was written — the content was not indexed yet.
         assert!(store.list_files().unwrap().is_empty());
     }
@@ -683,6 +709,7 @@ mod tests {
         store
             .replace_file(
                 &r1,
+                "text",
                 &make_chunks("blake3:same", 1),
                 Some(&make_vectors(1, 128)),
             )
@@ -690,7 +717,7 @@ mod tests {
 
         // Second path references the existing content.
         let r2 = make_record("b.txt", "blake3:same", 2.0, 200);
-        assert!(store.reference_file(&r2).unwrap());
+        assert!(store.reference_file(&r2, "text").unwrap());
 
         // Both paths point at the same content.
         let files = store.list_files().unwrap();
@@ -707,7 +734,7 @@ mod tests {
         let rec = make_record("doc.txt", "blake3:bbb", 1.0, 50);
         let chunks = make_chunks("blake3:bbb", 3);
         let created = store
-            .replace_file(&rec, &chunks, Some(&make_vectors(3, 128)))
+            .replace_file(&rec, "text", &chunks, Some(&make_vectors(3, 128)))
             .unwrap();
         assert!(created);
 
@@ -736,13 +763,13 @@ mod tests {
         let r1 = make_record("a.txt", "blake3:shared", 1.0, 100);
         let chunks = make_chunks("blake3:shared", 2);
         store
-            .replace_file(&r1, &chunks, Some(&make_vectors(2, 128)))
+            .replace_file(&r1, "text", &chunks, Some(&make_vectors(2, 128)))
             .unwrap();
 
         // Second file with same digest reuses content; no extra chunks.
         let r2 = make_record("b.txt", "blake3:shared", 2.0, 100);
         let created = store
-            .replace_file(&r2, &chunks, Some(&make_vectors(2, 128)))
+            .replace_file(&r2, "text", &chunks, Some(&make_vectors(2, 128)))
             .unwrap();
         assert!(!created);
 
@@ -760,6 +787,87 @@ mod tests {
     }
 
     #[test]
+    fn same_digest_isolated_by_extractor_family() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("index.db");
+        let mut store = Store::open(&db, "test-model", 128, "unicode61").unwrap();
+        let digest = "blake3:shared-family";
+        let text_chunks = vec![Chunk {
+            digest: crate::ingestion::digest::chunk_digest("plain text"),
+            text: "plain text".into(),
+            seq: 0,
+            heading: String::new(),
+            page: None,
+        }];
+        let markdown_chunks = vec![Chunk {
+            digest: crate::ingestion::digest::chunk_digest("# Markdown"),
+            text: "# Markdown".into(),
+            seq: 0,
+            heading: "Markdown".into(),
+            page: None,
+        }];
+
+        assert!(
+            store
+                .replace_file(
+                    &make_record("a.txt", digest, 1.0, 10),
+                    "text",
+                    &text_chunks,
+                    None
+                )
+                .unwrap()
+        );
+        assert!(
+            store
+                .replace_file(
+                    &make_record("a.md", digest, 1.0, 10),
+                    "markdown",
+                    &markdown_chunks,
+                    None
+                )
+                .unwrap()
+        );
+        assert!(
+            !store
+                .replace_file(
+                    &make_record("b.markdown", digest, 2.0, 10),
+                    "markdown",
+                    &markdown_chunks,
+                    None,
+                )
+                .unwrap()
+        );
+
+        let contents: i64 = store
+            .conn
+            .query_row("SELECT COUNT(*) FROM contents", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(contents, 2);
+        let families: Vec<String> = store
+            .conn
+            .prepare("SELECT extractor FROM contents ORDER BY extractor")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(families, ["markdown", "text"]);
+        let text = store
+            .find_chunks_by_digest(text_chunks[0].digest.strip_prefix("blake3:").unwrap())
+            .unwrap();
+        assert_eq!(text.len(), 1);
+        assert_eq!(text[0].text, "plain text");
+        assert!(text[0].heading.is_empty());
+
+        let markdown = store
+            .find_chunks_by_digest(markdown_chunks[0].digest.strip_prefix("blake3:").unwrap())
+            .unwrap();
+        assert_eq!(markdown.len(), 1);
+        assert_eq!(markdown[0].text, "# Markdown");
+        assert_eq!(markdown[0].heading, "Markdown");
+    }
+
+    #[test]
     fn remove_file_drops_path_and_orphans_content() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("index.db");
@@ -768,7 +876,7 @@ mod tests {
         let rec = make_record("only.txt", "blake3:ccc", 1.0, 10);
         let chunks = make_chunks("blake3:ccc", 1);
         store
-            .replace_file(&rec, &chunks, Some(&make_vectors(1, 128)))
+            .replace_file(&rec, "text", &chunks, Some(&make_vectors(1, 128)))
             .unwrap();
 
         store
@@ -799,6 +907,7 @@ mod tests {
         store
             .replace_file(
                 &make_record("a.txt", "blake3:ddd", 1.0, 10),
+                "text",
                 &chunks,
                 Some(&make_vectors(1, 128)),
             )
@@ -806,6 +915,7 @@ mod tests {
         store
             .replace_file(
                 &make_record("b.txt", "blake3:ddd", 2.0, 10),
+                "text",
                 &chunks,
                 Some(&make_vectors(1, 128)),
             )
@@ -834,6 +944,7 @@ mod tests {
         store
             .replace_file(
                 &r1,
+                "text",
                 &make_chunks("blake3:v1", 2),
                 Some(&make_vectors(2, 128)),
             )
@@ -844,6 +955,7 @@ mod tests {
         store
             .replace_file(
                 &r2,
+                "text",
                 &make_chunks("blake3:v2", 3),
                 Some(&make_vectors(3, 128)),
             )
@@ -871,7 +983,7 @@ mod tests {
         let rec = make_record("doc.txt", "blake3:mmm", 1.0, 50);
         let chunks = make_chunks("blake3:mmm", 3);
         let err = store
-            .replace_file(&rec, &chunks, Some(&make_vectors(2, 128)))
+            .replace_file(&rec, "text", &chunks, Some(&make_vectors(2, 128)))
             .unwrap_err();
         assert!(err.to_string().contains("3 chunks but 2 vectors"));
     }
@@ -885,7 +997,7 @@ mod tests {
         let rec = make_record("doc.txt", "blake3:mmm", 1.0, 50);
         let chunks = make_chunks("blake3:mmm", 1);
         let err = store
-            .replace_file(&rec, &chunks, Some(&make_vectors(1, 64)))
+            .replace_file(&rec, "text", &chunks, Some(&make_vectors(1, 64)))
             .unwrap_err();
         assert!(err.to_string().contains("dimension mismatch"));
         assert!(err.to_string().contains("stored 128"));
@@ -908,7 +1020,9 @@ mod tests {
         let rec = make_record("doc.txt", "blake3:vvv", 1.0, 50);
         let chunks = make_chunks("blake3:vvv", 2);
         let vectors = make_vectors(2, 128);
-        store.replace_file(&rec, &chunks, Some(&vectors)).unwrap();
+        store
+            .replace_file(&rec, "text", &chunks, Some(&vectors))
+            .unwrap();
 
         // Each chunk rowid has a matching vector row with the same width.
         // sqlite-vec stores the embedding as a BLOB of raw little-endian
@@ -976,7 +1090,9 @@ mod tests {
             })
             .collect();
         let rec = make_record("doc.txt", digest, 1.0, 10);
-        store.replace_file(&rec, &chunks, Some(&vectors)).unwrap();
+        store
+            .replace_file(&rec, "text", &chunks, Some(&vectors))
+            .unwrap();
         (dir, store)
     }
 
@@ -1012,10 +1128,10 @@ mod tests {
         // First file creates the content; second path shares it.
         let rec1 = make_record("a.txt", "blake3:shared", 1.0, 10);
         store
-            .replace_file(&rec1, &make_chunks("blake3:shared", 1), None)
+            .replace_file(&rec1, "text", &make_chunks("blake3:shared", 1), None)
             .unwrap();
         let rec2 = make_record("b.txt", "blake3:shared", 2.0, 10);
-        store.reference_file(&rec2).unwrap();
+        store.reference_file(&rec2, "text").unwrap();
 
         let chunks = store.get_chunks(&[1]).unwrap();
         let chunk = &chunks[&1];
@@ -1034,10 +1150,10 @@ mod tests {
         let rec1 = make_record("z.txt", "blake3:dead0001", 1.0, 10);
         let rec2 = make_record("a.txt", "blake3:dead0002", 1.0, 10);
         store
-            .replace_file(&rec1, &make_chunks("blake3:dead0001", 2), None)
+            .replace_file(&rec1, "text", &make_chunks("blake3:dead0001", 2), None)
             .unwrap();
         store
-            .replace_file(&rec2, &make_chunks("blake3:dead0002", 2), None)
+            .replace_file(&rec2, "text", &make_chunks("blake3:dead0002", 2), None)
             .unwrap();
 
         let chunks = store.find_chunks_by_digest("dead").unwrap();
@@ -1064,10 +1180,10 @@ mod tests {
         let first = make_record("a.txt", "blake3:dead0001", 1.0, 10);
         let second = make_record("b.txt", "blake3:dead0002", 1.0, 10);
         store
-            .replace_file(&first, &make_chunks("blake3:dead0001", 2), None)
+            .replace_file(&first, "text", &make_chunks("blake3:dead0001", 2), None)
             .unwrap();
         store
-            .replace_file(&second, &make_chunks("blake3:dead0002", 1), None)
+            .replace_file(&second, "text", &make_chunks("blake3:dead0002", 1), None)
             .unwrap();
 
         assert_eq!(store.find_chunk_rowids("dead0001").unwrap(), vec![1, 2]);
@@ -1111,7 +1227,7 @@ mod tests {
             },
         ];
         let record = make_record("doc.txt", "blake3:section", 1.0, 10);
-        store.replace_file(&record, &chunks, None).unwrap();
+        store.replace_file(&record, "text", &chunks, None).unwrap();
 
         let neighbors = store.get_chunk_neighbors(2, 1).unwrap();
         assert_eq!(

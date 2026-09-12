@@ -416,6 +416,7 @@ mod tests {
         store
             .replace_file(
                 &file_record("a.txt", "blake3:aa", 1),
+                "text",
                 &chunks,
                 Some(&vectors),
             )
@@ -424,6 +425,7 @@ mod tests {
         store
             .replace_file(
                 &file_record("b.md", "blake3:bb", 2),
+                "markdown",
                 &chunks,
                 Some(&vectors),
             )
@@ -458,6 +460,7 @@ mod tests {
         store
             .replace_file(
                 &file_record("report.pdf", "blake3:cc", 3),
+                "pdf",
                 &chunks,
                 Some(&vectors),
             )

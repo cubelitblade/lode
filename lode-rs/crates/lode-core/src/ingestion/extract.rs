@@ -13,7 +13,7 @@ use office_oxide::{Document, DocumentFormat};
 use pdf_oxide::converters::{ConversionOptions, ReadingOrderMode};
 use pdf_oxide::outline::{Destination, OutlineItem};
 
-use crate::ingestion::formats::PLAIN_EXTENSIONS;
+use crate::ingestion::formats::{MARKDOWN_EXTENSIONS, TEXT_EXTENSIONS};
 use crate::ingestion::markdown::into_segments;
 use crate::ingestion::types::{HEADING_SEP, Segment};
 
@@ -42,12 +42,15 @@ pub fn extract_document(
     suffix: &str,
 ) -> Result<Option<Vec<Segment>>, ExtractionError> {
     let suffix = suffix.to_ascii_lowercase();
-    if PLAIN_EXTENSIONS.contains(&suffix.as_str()) {
+    if TEXT_EXTENSIONS.contains(&suffix.as_str()) {
         return Ok(Some(vec![Segment {
             text: decode_text(data),
             heading: String::new(),
             page: None,
         }]));
+    }
+    if MARKDOWN_EXTENSIONS.contains(&suffix.as_str()) {
+        return Ok(Some(into_segments(&decode_text(data))));
     }
     match suffix.as_str() {
         ".docx" => extract_docx(data).map(Some),
@@ -466,6 +469,42 @@ mod tests {
     #[test]
     fn unsupported_formats_are_none() {
         assert!(extract_document(b"x", ".png").unwrap().is_none());
+    }
+
+    #[test]
+    fn extracts_markdown_with_raw_source_and_heading() {
+        let source = "\n# **标题**\r\n\r\n正文";
+        let segments = extract_document(source.as_bytes(), ".md").unwrap().unwrap();
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].heading, "标题");
+        assert_eq!(segments[0].text, source);
+        assert!(segments[0].page.is_none());
+
+        let mut utf8_bom = vec![0xef, 0xbb, 0xbf];
+        utf8_bom.extend_from_slice(source.as_bytes());
+        let segments = extract_document(&utf8_bom, ".md").unwrap().unwrap();
+        assert_eq!(segments[0].text, source);
+        assert_eq!(segments[0].heading, "标题");
+
+        let mut utf16 = vec![0xff, 0xfe];
+        for unit in source.encode_utf16() {
+            utf16.extend_from_slice(&unit.to_le_bytes());
+        }
+        let segments = extract_document(&utf16, ".markdown").unwrap().unwrap();
+        assert_eq!(segments[0].text, source);
+        assert!(segments[0].page.is_none());
+    }
+
+    #[test]
+    fn extracts_txt_as_one_unstructured_segment() {
+        let source = "# This stays plain text\n\nbody";
+        let segments = extract_document(source.as_bytes(), ".txt")
+            .unwrap()
+            .unwrap();
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].text, source);
+        assert!(segments[0].heading.is_empty());
+        assert!(segments[0].page.is_none());
     }
 
     #[test]

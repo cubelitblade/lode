@@ -33,11 +33,20 @@ pub(super) fn size_to_i64(size: u64) -> i64 {
 }
 
 /// Return `(content_id, created)` for the content with this digest.
-pub(super) fn ensure_content(conn: &Connection, digest: &str) -> crate::Result<(i64, bool)> {
+pub(super) fn ensure_content(
+    conn: &Connection,
+    digest: &str,
+    extractor: &str,
+) -> crate::Result<(i64, bool)> {
+    if !matches!(extractor, "text" | "markdown" | "docx" | "pdf") {
+        return Err(crate::Error::Store(format!(
+            "unknown extractor family {extractor:?}"
+        )));
+    }
     let existing: Option<i64> = conn
         .query_row(
-            "SELECT id FROM contents WHERE digest = ?1",
-            rusqlite::params![digest],
+            "SELECT id FROM contents WHERE digest = ?1 AND extractor = ?2",
+            rusqlite::params![digest, extractor],
             |row| row.get(0),
         )
         .optional()?;
@@ -46,8 +55,8 @@ pub(super) fn ensure_content(conn: &Connection, digest: &str) -> crate::Result<(
         return Ok((id, false));
     }
     conn.execute(
-        "INSERT INTO contents (digest) VALUES (?1)",
-        rusqlite::params![digest],
+        "INSERT INTO contents (digest, extractor) VALUES (?1, ?2)",
+        rusqlite::params![digest, extractor],
     )?;
     Ok((conn.last_insert_rowid(), true))
 }

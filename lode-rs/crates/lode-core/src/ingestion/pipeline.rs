@@ -16,7 +16,7 @@ use crate::embeddings::base::Embedder;
 use crate::index::records::{FileRecord, FileStatus};
 use crate::index::store::Store;
 use crate::ingestion::digest::file_digest;
-use crate::ingestion::formats::{PLAIN_EXTENSIONS, is_ingestable};
+use crate::ingestion::formats::{extractor_family, is_ingestable};
 use crate::relpath::WorkspacePath;
 
 /// Disk state of a file (no status — status belongs to the index side).
@@ -343,7 +343,11 @@ pub fn sync(
                 size: stat.len(),
                 status: FileStatus::Fresh,
             };
-            if can_reuse_content(&reusable_families, &record) && store.reference_file(&record)? {
+            let extractor = extractor_family(record.path.as_str())
+                .expect("ingestable path has extractor family");
+            if can_reuse_content(&reusable_families, &record)
+                && store.reference_file(&record, extractor)?
+            {
                 if let Some(family) = extractor_family(record.path.as_str()) {
                     reusable_families
                         .entry(record.digest.clone())
@@ -426,7 +430,11 @@ pub fn sync(
         // Content-reuse check. The digest alone is insufficient because the
         // same bytes can be valid text but malformed DOCX/PDF under another
         // extension; only reuse content produced by the same extractor family.
-        if can_reuse_content(&reusable_families, &record) && store.reference_file(&record)? {
+        let extractor =
+            extractor_family(record.path.as_str()).expect("ingestable path has extractor family");
+        if can_reuse_content(&reusable_families, &record)
+            && store.reference_file(&record, extractor)?
+        {
             if added_set.contains(rel) {
                 summary.added.push(rel.clone());
             } else {
@@ -469,7 +477,7 @@ pub fn sync(
                 }
                 None => None,
             };
-            store.replace_file(&record, &chunks, vectors.as_deref())?;
+            store.replace_file(&record, extractor, &chunks, vectors.as_deref())?;
             if let Some(vectors) = vectors.as_deref() {
                 summary.embedded_chunks += vectors.len();
             }
@@ -546,22 +554,6 @@ fn can_reuse_content(
     reusable_families
         .get(&record.digest)
         .is_some_and(|families| families.contains(target_family))
-}
-
-fn extractor_family(path: &str) -> Option<&'static str> {
-    let suffix = path
-        .rsplit('.')
-        .next()
-        .map(|extension| format!(".{extension}").to_ascii_lowercase())?;
-    if PLAIN_EXTENSIONS.contains(&suffix.as_str()) {
-        Some("plain")
-    } else {
-        match suffix.as_str() {
-            ".docx" => Some("docx"),
-            ".pdf" => Some("pdf"),
-            _ => None,
-        }
-    }
 }
 
 /// Fold exact-content moves out of Added/Removed into Renamed pairs.
@@ -1135,6 +1127,72 @@ mod tests {
         assert_eq!(recorded.len(), 1);
         assert!(!recorded[0].is_empty());
         assert_eq!(recorded[0][0], "hello world");
+    }
+
+    #[test]
+    fn markdown_rename_reuses_content_without_embedding() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("a.md"), "# Title\n\nbody").unwrap();
+        let db = root.join("index.db");
+        let mut store = Store::open(&db, "test-model", 4, "unicode61").unwrap();
+        let splitter = crate::ingestion::split::RecursiveSegmentSplitter::new(200, 50).unwrap();
+        let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let embedder = RecordingEmbedder {
+            dim: 4,
+            calls: calls.clone(),
+        };
+
+        let detect = detect_changes(&mut store, root, &[]).unwrap();
+        sync(&mut store, root, &splitter, &detect, Some(&embedder), None).unwrap();
+        fs::rename(root.join("a.md"), root.join("b.markdown")).unwrap();
+        let detect = detect_changes(&mut store, root, &[]).unwrap();
+        let summary = sync(&mut store, root, &splitter, &detect, Some(&embedder), None).unwrap();
+
+        assert_eq!(calls.borrow().len(), 1);
+        assert_eq!(
+            summary.renamed,
+            vec![(
+                WorkspacePath::from_posix("a.md"),
+                WorkspacePath::from_posix("b.markdown")
+            )]
+        );
+        assert!(summary.added.is_empty());
+    }
+
+    #[test]
+    fn cross_family_rename_reextracts_markdown() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let source = "# Title\n\nbody";
+        fs::write(root.join("a.txt"), source).unwrap();
+        let db = root.join("index.db");
+        let mut store = Store::open(&db, "test-model", 4, "unicode61").unwrap();
+        let splitter = crate::ingestion::split::RecursiveSegmentSplitter::new(200, 50).unwrap();
+        let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let embedder = RecordingEmbedder {
+            dim: 4,
+            calls: calls.clone(),
+        };
+        let detect = detect_changes(&mut store, root, &[]).unwrap();
+        sync(&mut store, root, &splitter, &detect, Some(&embedder), None).unwrap();
+
+        fs::rename(root.join("a.txt"), root.join("b.md")).unwrap();
+        let detect = detect_changes(&mut store, root, &[]).unwrap();
+        assert_eq!(detect.renamed_count(), 1);
+        let summary = sync(&mut store, root, &splitter, &detect, Some(&embedder), None).unwrap();
+
+        assert_eq!(calls.borrow().len(), 2);
+        assert!(summary.renamed.is_empty());
+        assert_eq!(summary.added, vec![WorkspacePath::from_posix("b.md")]);
+        assert_eq!(summary.removed, vec![WorkspacePath::from_posix("a.txt")]);
+        let digest = crate::ingestion::digest::chunk_digest(source);
+        let chunks = store
+            .find_chunks_by_digest(digest.strip_prefix("blake3:").unwrap())
+            .unwrap();
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].heading, "Title");
+        assert_eq!(chunks[0].text, source);
     }
 
     #[test]

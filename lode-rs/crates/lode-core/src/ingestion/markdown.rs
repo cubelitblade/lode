@@ -5,7 +5,7 @@
 //! it does not serialize events back into Markdown.
 #![warn(clippy::pedantic)]
 
-use pulldown_cmark::{Event, HeadingLevel, Parser, Tag, TagEnd};
+use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 use crate::ingestion::types::{HEADING_SEP, Segment};
 
@@ -37,16 +37,19 @@ pub(crate) fn into_segments(markdown: &str) -> Vec<Segment> {
 
     for (index, heading) in headings.iter().enumerate() {
         if heading.start > cursor {
-            push_segment(
-                &mut segments,
-                &markdown[cursor..heading.start],
-                &heading_stack,
-            );
+            let prefix = &markdown[cursor..heading.start];
+            // Pure separators stay attached to the heading they introduce so
+            // reconstruction preserves the decoded source byte-for-byte.
+            if !prefix.trim().is_empty() {
+                push_segment(&mut segments, prefix, &heading_stack);
+                cursor = heading.start;
+            }
         }
 
-        heading_stack.retain(|(level, _)| *level < heading.level);
-        heading_stack.push((heading.level, heading.text.clone()));
-        cursor = heading.start;
+        heading_stack.retain(|(level, text)| *level < heading.level && !text.is_empty());
+        if !heading.text.is_empty() {
+            heading_stack.push((heading.level, heading.text.clone()));
+        }
 
         if index + 1 == headings.len() {
             push_segment(&mut segments, &markdown[cursor..], &heading_stack);
@@ -75,14 +78,26 @@ fn push_segment(segments: &mut Vec<Segment>, text: &str, heading_stack: &[(usize
 fn collect_headings(markdown: &str) -> Vec<Heading> {
     let mut headings = Vec::new();
     let mut current: Option<(usize, usize, String)> = None;
+    let mut nested_depth = 0usize;
 
-    for (event, range) in Parser::new(markdown).into_offset_iter() {
+    let options = Options::ENABLE_YAML_STYLE_METADATA_BLOCKS | Options::ENABLE_FOOTNOTES;
+    for (event, range) in Parser::new_ext(markdown, options).into_offset_iter() {
         match event {
+            Event::Start(
+                Tag::BlockQuote(_) | Tag::List(_) | Tag::Item | Tag::FootnoteDefinition(_),
+            ) => nested_depth += 1,
+            Event::End(
+                TagEnd::BlockQuote(_) | TagEnd::List(_) | TagEnd::Item | TagEnd::FootnoteDefinition,
+            ) => nested_depth = nested_depth.saturating_sub(1),
             Event::Start(Tag::Heading { level, .. }) => {
-                current = Some((range.start, heading_level(level), String::new()));
+                if nested_depth == 0 {
+                    current = Some((range.start, heading_level(level), String::new()));
+                }
             }
             Event::End(TagEnd::Heading(_)) => {
-                if let Some((start, level, text)) = current.take() {
+                if nested_depth == 0
+                    && let Some((start, level, text)) = current.take()
+                {
                     headings.push(Heading { start, level, text });
                 }
             }
@@ -159,5 +174,79 @@ mod tests {
     #[test]
     fn empty_input_has_no_segments() {
         assert!(into_segments("\n  \n").is_empty());
+    }
+
+    #[test]
+    fn preserves_whitespace_before_first_heading() {
+        let source = "\n\n# Title\n\nbody";
+        let segments = into_segments(source);
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].text, source);
+        assert_eq!(segments[0].heading, "Title");
+    }
+
+    #[test]
+    fn ignores_nested_container_headings() {
+        let source = "# Top\n\n> # Quoted\n\n- # Listed\n\nbody";
+        let segments = into_segments(source);
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].heading, "Top");
+        assert_eq!(segments[0].text, source);
+    }
+
+    #[test]
+    fn preserves_yaml_and_ignores_footnote_heading() {
+        let source =
+            "---\ntitle: Example\n---\n\n# Top\n\n[^note]:\n    # Footnote heading\n\nbody";
+        let segments = into_segments(source);
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].heading, "");
+        assert_eq!(segments[0].text, "---\ntitle: Example\n---\n\n");
+        assert_eq!(segments[1].heading, "Top");
+        assert_eq!(
+            segments
+                .iter()
+                .map(|segment| segment.text.as_str())
+                .collect::<String>(),
+            source
+        );
+    }
+
+    #[test]
+    fn empty_heading_does_not_create_empty_provenance() {
+        let segments = into_segments("#\n\n## Child\n\nbody");
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].heading, "");
+        assert_eq!(segments[1].heading, "Child");
+    }
+
+    #[test]
+    fn quality_cases_preserve_source_and_provenance() {
+        let cases = [
+            ("# A\n\n### C\n\n## B\n\ntext", vec!["A", "A / C", "A / B"]),
+            (
+                "Title\n===\n\nNext\n---\n\ntext",
+                vec!["Title", "Title / Next"],
+            ),
+            ("plain text without headings", vec![""]),
+            (
+                "```md\n# code\n```\n\n\\# escaped\n\n    # indented",
+                vec![""],
+            ),
+            ("# One\r\n\r\n# Two\r\n", vec!["One", "Two"]),
+        ];
+        for (source, expected) in cases {
+            let segments = into_segments(source);
+            let reconstructed: String = segments
+                .iter()
+                .map(|segment| segment.text.as_str())
+                .collect();
+            assert_eq!(reconstructed, source);
+            let headings: Vec<&str> = segments
+                .iter()
+                .map(|segment| segment.heading.as_str())
+                .collect();
+            assert_eq!(headings, expected);
+        }
     }
 }
