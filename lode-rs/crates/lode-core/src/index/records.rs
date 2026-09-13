@@ -132,6 +132,8 @@ impl std::str::FromStr for Source {
 pub struct ChunkWithRefs {
     /// Content digest: `blake3:<hex>`.
     pub digest: String,
+    /// Extractor family that produced this content (`markdown`, `docx`, etc.).
+    pub extractor: String,
     /// Chunk body text.
     pub text: String,
     /// Heading chain the chunk belongs to (empty when top-level).

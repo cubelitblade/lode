@@ -16,6 +16,11 @@ use lode_core::ingestion::pipeline::{
 use lode_core::ingestion::split::RecursiveSegmentSplitter;
 use lode_core::relpath::WorkspacePath;
 
+mod markdown_render;
+mod render;
+
+use render::{Intent, RenderOptions};
+
 const HELP_TEMPLATE: &str = "\
 Lode {version}
 
@@ -200,13 +205,22 @@ fn todo_command(name: &str) -> u8 {
 /// Kept deliberately narrow — only shapes the current commands need. Expand
 /// it (rather than scattering ad-hoc `eprintln!`) when a new shape arises.
 mod ui_msg {
+    use super::{Intent, RenderOptions};
+
     /// Write a fatal error to stderr and return a failing exit code.
     ///
     /// Prints `<prefix>: <error>` followed by an indented hint when present.
     pub fn die(command: &str, error: &str, hint: Option<&str>) -> u8 {
-        eprintln!("[{command}] {error}");
+        let options = RenderOptions::stderr();
+        eprintln!(
+            "{}",
+            options.paint(Intent::Error, &format!("[{command}] {error}"))
+        );
         if let Some(hint) = hint {
-            eprintln!("       Hint: {hint}");
+            eprintln!(
+                "{}",
+                options.paint(Intent::Info, &format!("       Hint: {hint}"))
+            );
         }
         1
     }
@@ -443,17 +457,22 @@ fn emit_dig_json(target: &ChunkWithRefs, window: &[ChunkWithRefs], radius: u32) 
     println!("{}", serde_json::to_string_pretty(&payload).unwrap());
 }
 
-fn render_dig_header(digest: &str, radius: u32) {
+fn render_dig_header(digest: &str, radius: u32, options: RenderOptions) {
     let label = short_id(digest);
     if radius == 0 {
-        println!("Dug {label}");
+        render::print_line(options, Intent::Info, &format!("Dug {label}"));
     } else {
-        println!("Dug {label} with radius {radius}.");
+        render::print_line(
+            options,
+            Intent::Info,
+            &format!("Dug {label} with radius {radius}."),
+        );
     }
 }
 
 fn render_dig(_input: &str, target: &ChunkWithRefs, window: &[ChunkWithRefs], radius: u32) {
-    render_dig_header(&target.digest, radius);
+    let options = RenderOptions::stdout();
+    render_dig_header(&target.digest, radius, options);
     for chunk in window {
         let center = chunk.seq == target.seq;
         let title = match chunk.seq {
@@ -461,10 +480,44 @@ fn render_dig(_input: &str, target: &ChunkWithRefs, window: &[ChunkWithRefs], ra
             None => short_id(&chunk.digest).to_string(),
         };
         println!();
-        println!("{}{}", title, if center { " · center" } else { "" });
-        println!("  {}", dig_source_line(chunk));
-        println!("  {}", chunk.text);
-        println!("  {}", short_id(&chunk.digest));
+        render::print_line(
+            options,
+            Intent::Info,
+            &format!("{}{}", title, if center { " · center" } else { "" }),
+        );
+        render::print_line(
+            options,
+            Intent::Muted,
+            &format!("  {}", dig_source_line(chunk)),
+        );
+        let rendered = markdown_render::render_fragment(
+            &chunk.text,
+            is_markdown_content(&chunk.extractor),
+            options,
+        );
+        print_indented("  ", &rendered);
+        render::print_line(
+            options,
+            Intent::Muted,
+            &format!("  {}", short_id(&chunk.digest)),
+        );
+    }
+}
+
+/// DOCX extraction is intentionally canonical Markdown, so it shares the
+/// terminal renderer with native Markdown. Other extractors produce plain
+/// text even when their content happens to contain Markdown-like characters.
+fn is_markdown_content(extractor: &str) -> bool {
+    matches!(extractor, "markdown" | "docx")
+}
+
+/// Preserve the card indentation on every rendered line.
+fn print_indented(indent: &str, text: &str) {
+    for line in text.lines() {
+        println!("{indent}{line}");
+    }
+    if text.ends_with('\n') {
+        println!();
     }
 }
 
@@ -1125,11 +1178,20 @@ fn print_grouped(result: &SyncSummary) {
 /// nothing to do, a single "Nothing to do." line is shown instead.
 fn render_mine(_workspace: &std::path::Path, result: &SyncSummary) {
     if nothing_done(result) {
-        println!("Nothing to do.");
+        render::print_line(RenderOptions::stdout(), Intent::Info, "Nothing to do.");
         return;
     }
     let failed = !result.failed.is_empty();
-    println!("{}", mine_header(result));
+    let options = RenderOptions::stdout();
+    render::print_line(
+        options,
+        if failed {
+            Intent::Warning
+        } else {
+            Intent::Success
+        },
+        mine_header(result),
+    );
     println!();
     print_mine_entries(result, MAX_LISTED);
     println!();
@@ -1326,14 +1388,23 @@ fn render_prospect(hits: &[lode_core::index::search::SearchHit]) {
         println!("Dry hole: nothing matched.");
         return;
     }
+    let options = RenderOptions::stdout();
     let preview_w = terminal_preview_width();
     for (index, hit) in hits.iter().enumerate() {
         let rank = index + 1;
         let width = hits.len().to_string().len();
         println!();
-        println!("{rank:>width$}  {}", hit_source_line(hit), width = width);
+        render::print_line(
+            options,
+            Intent::Info,
+            &format!("{rank:>width$}  {}", hit_source_line(hit), width = width),
+        );
         println!("     {}", truncate_tail(&preview(&hit.text), preview_w));
-        println!("     {:.3} · {}", hit.score, short_id(&hit.digest));
+        render::print_line(
+            options,
+            Intent::Muted,
+            &format!("     {:.3} · {}", hit.score, short_id(&hit.digest)),
+        );
     }
     print_prospect_epilogue(hits);
 }
@@ -1455,8 +1526,10 @@ fn emit_prospect_json(query: &str, top_k: u32, hits: &[lode_core::index::search:
 fn print_prospect_epilogue(hits: &[lode_core::index::search::SearchHit]) {
     if !hits.is_empty() && hits.iter().any(|h| h.stale()) {
         println!();
-        println!(
-            "Warning: results include stale files; verify them before relying on them. Run `lode mine` to update."
+        render::print_line(
+            RenderOptions::stdout(),
+            Intent::Warning,
+            "Warning: results include stale files; verify them before relying on them. Run `lode mine` to update.",
         );
     }
 }
@@ -1901,6 +1974,7 @@ mod dig_tests {
     fn dig_chunk_json_contains_text_only_for_full_chunks() {
         let chunk = ChunkWithRefs {
             digest: "blake3:abc".into(),
+            extractor: "markdown".into(),
             text: "ore".into(),
             heading: "A".into(),
             seq: Some(2),

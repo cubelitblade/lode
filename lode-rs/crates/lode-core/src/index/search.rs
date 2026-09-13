@@ -33,6 +33,8 @@ const CANDIDATE_MULTIPLIER: usize = 4;
 pub struct SearchHit {
     /// Content digest: `blake3:<hex>`.
     pub digest: String,
+    /// Extractor family that produced this content (`markdown`, `docx`, etc.).
+    pub extractor: String,
     /// Chunk body text.
     pub text: String,
     /// Heading chain the chunk belongs to.
@@ -149,6 +151,7 @@ pub fn search(
         if let Some(chunk) = chunks.get(&rowid) {
             hits.push(SearchHit {
                 digest: chunk.digest.clone(),
+                extractor: chunk.extractor.clone(),
                 text: chunk.text.clone(),
                 heading: chunk.heading.clone(),
                 score,

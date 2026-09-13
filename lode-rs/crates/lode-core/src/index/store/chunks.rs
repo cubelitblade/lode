@@ -17,7 +17,8 @@ use std::str::FromStr;
 
 /// Shared column list for chunk-with-path queries; positional access in
 /// [`chunk_from_row`].
-const CHUNK_COLUMNS: &str = "c.id, c.digest, c.text, c.heading, f.path, f.status, c.page, c.seq";
+const CHUNK_COLUMNS: &str =
+    "c.id, c.digest, c.text, c.heading, f.path, f.status, c.page, c.seq, co.extractor";
 
 /// Convert file sizes for SQLite storage.
 ///
@@ -180,7 +181,9 @@ impl super::Store {
             .collect::<Vec<_>>()
             .join(",");
         let sql = format!(
-            "SELECT {CHUNK_COLUMNS} FROM chunks c JOIN files f ON f.content_id = c.content_id \
+            "SELECT {CHUNK_COLUMNS} FROM chunks c \
+         JOIN contents co ON co.id = c.content_id \
+         JOIN files f ON f.content_id = c.content_id \
          WHERE c.id IN ({placeholders})"
         );
         let mut stmt = conn.prepare(&sql)?;
@@ -238,7 +241,9 @@ impl super::Store {
         let lower = seq.saturating_sub(radius);
         let upper = seq.saturating_add(radius);
         let sql = format!(
-            "SELECT {CHUNK_COLUMNS} FROM chunks c JOIN files f ON f.content_id = c.content_id \
+            "SELECT {CHUNK_COLUMNS} FROM chunks c \
+             JOIN contents co ON co.id = c.content_id \
+             JOIN files f ON f.content_id = c.content_id \
              WHERE c.content_id = ?1 AND c.id != ?2 AND c.seq BETWEEN ?3 AND ?4 \
              AND c.heading = ?5 ORDER BY c.seq"
         );
@@ -297,7 +302,9 @@ impl super::Store {
     pub fn find_chunks_by_digest(&self, prefix: &str) -> crate::Result<Vec<ChunkWithRefs>> {
         let conn = &self.conn;
         let sql = format!(
-            "SELECT {CHUNK_COLUMNS} FROM chunks c JOIN files f ON f.content_id = c.content_id \
+            "SELECT {CHUNK_COLUMNS} FROM chunks c \
+         JOIN contents co ON co.id = c.content_id \
+         JOIN files f ON f.content_id = c.content_id \
          WHERE c.digest LIKE ?"
         );
         let mut stmt = conn.prepare(&sql)?;
@@ -336,6 +343,7 @@ fn chunk_from_row(row: &rusqlite::Row<'_>) -> Result<ChunkWithRefs, rusqlite::Er
     )]
     Ok(ChunkWithRefs {
         digest: row.get(1)?,
+        extractor: row.get(8)?,
         text: row.get(2)?,
         heading: row.get(3)?,
         seq: row.get::<_, Option<i64>>(7)?.map(|s| s as u32),
