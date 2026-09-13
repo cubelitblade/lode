@@ -6,7 +6,7 @@ use std::time::UNIX_EPOCH;
 use lode_core::index::records::{FileRecord, FileStatus};
 use lode_core::index::store::Store;
 use lode_core::ingestion::digest::file_digest;
-use lode_core::ingestion::types::Chunk;
+use lode_core::ingestion::types::{Chunk, ChunkSpan};
 use lode_core::relpath::WorkspacePath;
 use serde_json::Value;
 use tempfile::TempDir;
@@ -53,6 +53,22 @@ fn chunk(prefix: &str, text: &str, seq: u32, heading: &str) -> Chunk {
         seq,
         heading: heading.to_string(),
         page: None,
+        span: None,
+    }
+}
+
+fn spanned_chunk(prefix: &str, text: &str, seq: u32, heading: &str, start: u64, end: u64) -> Chunk {
+    Chunk {
+        digest: full_digest(prefix),
+        text: text.to_string(),
+        seq,
+        heading: heading.to_string(),
+        page: None,
+        span: Some(ChunkSpan {
+            segment: 0,
+            start,
+            end,
+        }),
     }
 }
 
@@ -139,6 +155,39 @@ fn dig_compact_accepts_full_digest_and_radius() {
 }
 
 #[test]
+fn dig_compact_deduplicates_verified_overlap() {
+    let directory = tempfile::tempdir().unwrap();
+    let workspace = directory.path();
+    let source = write_file(workspace, "guide.txt", "abcdefghij");
+    let index = workspace.join(".lode/index.db");
+    let mut store = Store::open(&index, "test-model", 4, "unicode61").unwrap();
+    store
+        .replace_file(
+            &record_for(&source, workspace),
+            "text",
+            &[
+                spanned_chunk("00000001", "abcdef", 0, "Guide", 0, 6),
+                spanned_chunk("dead0001", "efghij", 1, "Guide", 4, 10),
+                spanned_chunk("00000002", "ij", 2, "Guide", 8, 10),
+            ],
+            None,
+        )
+        .unwrap();
+    drop(store);
+
+    let output = run_lode(
+        workspace,
+        &["dig", &full_digest(TARGET_PREFIX), "--radius", "1"],
+    );
+    assert_success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("1 · center"));
+    assert!(stdout.contains("abcd"));
+    assert!(stdout.contains("efghij"));
+    assert!(!stdout.contains("abcdef"));
+}
+
+#[test]
 fn get_alias_accepts_bare_digest_and_returns_json_window() {
     let fixture = fixture();
     let bare_digest = fixture.target_digest.strip_prefix("blake3:").unwrap();
@@ -166,7 +215,11 @@ fn dig_json_reports_invalid_not_found_and_ambiguous_inputs() {
 
     let invalid = run_lode(&fixture.workspace, &["--view", "json", "dig", "not-hex"]);
     assert!(!invalid.status.success());
-    assert_eq!(json_output(&invalid)["code"], "invalid_digest");
+    let invalid_payload = json_output(&invalid);
+    assert_eq!(invalid_payload["code"], "invalid_digest");
+    let invalid_message = invalid_payload["message"].as_str().unwrap();
+    assert!(invalid_message.contains('\n'));
+    assert!(!invalid_message.contains(r"\n"));
     assert!(invalid.stderr.is_empty());
 
     let missing_digest = full_digest("beef");

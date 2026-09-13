@@ -18,9 +18,9 @@ use rusqlite::Connection;
 
 /// Bump when the schema changes incompatibly; a mismatch makes the store
 /// refuse to open until an explicit rebuild.
-/// Version 4 invalidates indexes built with the previous legacy-DOC
-/// projection, which must not be silently reused after the extractor switch.
-pub const SCHEMA_VERSION: u32 = 4;
+/// Version 5 adds optional character spans for overlap-aware context output.
+/// Older indexes must be rebuilt explicitly rather than silently reused.
+pub const SCHEMA_VERSION: u32 = 5;
 
 /// FTS5 tokenizers the schema accepts. `tokenize_clause` is interpolated
 /// into DDL, so it must stay on this whitelist (mirrors the Python
@@ -95,6 +95,15 @@ pub fn create_schema(
             heading    TEXT NOT NULL DEFAULT '',
             page       INTEGER,
             UNIQUE (content_id, seq)
+        );
+        CREATE TABLE chunk_spans (
+            chunk_id INTEGER PRIMARY KEY REFERENCES chunks(id) ON DELETE CASCADE,
+            segment  INTEGER NOT NULL,
+            start    INTEGER NOT NULL,
+            end      INTEGER NOT NULL,
+            CHECK (segment >= 0),
+            CHECK (start >= 0),
+            CHECK (end >= start)
         );
         CREATE INDEX idx_chunks_digest ON chunks(digest);",
     )?;

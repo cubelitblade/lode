@@ -199,6 +199,7 @@ pub fn make_chunks(texts: &[&str], pages: Option<&[u32]>) -> (Vec<Chunk>, Vec<Ve
                 seq,
                 heading: String::new(),
                 page: pages.and_then(|p| p.get(seq as usize).copied()),
+                span: None,
             }
         })
         .collect();

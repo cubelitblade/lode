@@ -25,6 +25,21 @@ pub struct Segment {
     pub page: Option<u32>,
 }
 
+/// Character span of a chunk within its originating segment.
+///
+/// Offsets count Unicode scalar values, matching the splitter's character
+/// budget. The interval is half-open: `[start, end)`. Spans are optional on
+/// stored chunks so indexes can safely fall back to chunk-wise rendering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChunkSpan {
+    /// Zero-based segment ordinal within the extracted content.
+    pub segment: u64,
+    /// Inclusive start offset in Unicode scalar values.
+    pub start: u64,
+    /// Exclusive end offset in Unicode scalar values.
+    pub end: u64,
+}
+
 /// A unit of retrievable text after splitting.
 ///
 /// Attributes mirror the Python `Chunk` dataclass for schema compatibility:
@@ -48,6 +63,9 @@ pub struct Chunk {
     /// Source page number (PDFs), or `None`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub page: Option<u32>,
+    /// Optional source span used for overlap-aware context rendering.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub span: Option<ChunkSpan>,
 }
 
 #[cfg(test)]
@@ -74,6 +92,7 @@ mod tests {
             seq: 0,
             heading: String::new(),
             page: None,
+            span: None,
         };
         assert_eq!(c.seq, 0);
     }

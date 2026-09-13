@@ -9,16 +9,15 @@ use std::collections::BTreeMap;
 use rusqlite::Connection;
 use rusqlite::OptionalExtension;
 
-use crate::index::records::{ChunkWithRefs, FileStatus, PathRef};
-use crate::ingestion::types::Chunk;
+use crate::index::records::{ChunkLookup, ChunkWindow, ChunkWithRefs, FileStatus, PathRef};
+use crate::ingestion::types::{Chunk, ChunkSpan};
 use crate::relpath::WorkspacePath;
 
 use std::str::FromStr;
 
 /// Shared column list for chunk-with-path queries; positional access in
 /// [`chunk_from_row`].
-const CHUNK_COLUMNS: &str =
-    "c.id, c.digest, c.text, c.heading, f.path, f.status, c.page, c.seq, co.extractor";
+const CHUNK_COLUMNS: &str = "c.id, c.digest, c.text, c.heading, f.path, f.status, c.page, c.seq, co.extractor, cs.segment, cs.start, cs.end";
 
 /// Convert file sizes for SQLite storage.
 ///
@@ -119,6 +118,10 @@ pub(super) fn insert_chunks(
         "INSERT INTO chunks (digest, content_id, seq, text, heading, page)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
     )?;
+    let mut span_stmt = conn.prepare(
+        "INSERT INTO chunk_spans (chunk_id, segment, start, end)
+         VALUES (?1, ?2, ?3, ?4)",
+    )?;
     let mut vec_stmt =
         conn.prepare("INSERT INTO chunk_vectors (rowid, embedding) VALUES (?1, ?2)")?;
 
@@ -133,6 +136,19 @@ pub(super) fn insert_chunks(
             chunk.heading,
             page,
         ])?;
+        let rowid = conn.last_insert_rowid();
+        if let Some(span) = chunk.span {
+            let segment = i64::try_from(span.segment).map_err(|_| {
+                crate::Error::Store(format!("chunk span segment is too large: {}", span.segment))
+            })?;
+            let start = i64::try_from(span.start).map_err(|_| {
+                crate::Error::Store(format!("chunk span start is too large: {}", span.start))
+            })?;
+            let end = i64::try_from(span.end).map_err(|_| {
+                crate::Error::Store(format!("chunk span end is too large: {}", span.end))
+            })?;
+            span_stmt.execute(rusqlite::params![rowid, segment, start, end])?;
+        }
         if let Some(vectors) = vectors {
             let vector = &vectors[i];
             if vector.len() != usize::try_from(dimension).unwrap_or(usize::MAX) {
@@ -146,7 +162,6 @@ pub(super) fn insert_chunks(
                     current,
                 });
             }
-            let rowid = conn.last_insert_rowid();
             let embedding = serde_json::to_string(vector)
                 .map_err(|e| crate::Error::Store(format!("could not serialize embedding: {e}")))?;
             vec_stmt.execute(rusqlite::params![rowid, embedding])?;
@@ -157,6 +172,35 @@ pub(super) fn insert_chunks(
 }
 
 impl super::Store {
+    /// Resolve a normalized digest prefix and load its same-section window.
+    ///
+    /// The prefix is the hex portion of a content address; callers own input
+    /// validation and `blake3:` stripping. A repeated chunk digest is
+    /// intentionally ambiguous because the digest addresses text, not an
+    /// occurrence within a document.
+    ///
+    /// # Errors
+    ///
+    /// Fails when any lookup or chunk query fails.
+    pub fn get_chunk_window(&self, prefix: &str, radius: u32) -> crate::Result<ChunkLookup> {
+        let rowids = self.find_chunk_rowids(prefix)?;
+        if rowids.is_empty() {
+            return Ok(ChunkLookup::NotFound);
+        }
+        if rowids.len() > 1 {
+            return Ok(ChunkLookup::Ambiguous(self.find_chunks_by_digest(prefix)?));
+        }
+
+        let rowid = rowids[0];
+        let Some(target) = self.get_chunks(&[rowid])?.remove(&rowid) else {
+            return Ok(ChunkLookup::NotFound);
+        };
+        let mut chunks = vec![target.clone()];
+        chunks.extend(self.get_chunk_neighbors(rowid, radius)?);
+        chunks.sort_by_key(|chunk| chunk.seq.unwrap_or_default());
+        Ok(ChunkLookup::Found(ChunkWindow { target, chunks }))
+    }
+
     /// Chunk contents for the given rowids, keyed by rowid.
     ///
     /// Each chunk carries every path referencing its content; the map
@@ -184,6 +228,7 @@ impl super::Store {
             "SELECT {CHUNK_COLUMNS} FROM chunks c \
          JOIN contents co ON co.id = c.content_id \
          JOIN files f ON f.content_id = c.content_id \
+         LEFT JOIN chunk_spans cs ON cs.chunk_id = c.id \
          WHERE c.id IN ({placeholders})"
         );
         let mut stmt = conn.prepare(&sql)?;
@@ -244,6 +289,7 @@ impl super::Store {
             "SELECT {CHUNK_COLUMNS} FROM chunks c \
              JOIN contents co ON co.id = c.content_id \
              JOIN files f ON f.content_id = c.content_id \
+             LEFT JOIN chunk_spans cs ON cs.chunk_id = c.id \
              WHERE c.content_id = ?1 AND c.id != ?2 AND c.seq BETWEEN ?3 AND ?4 \
              AND c.heading = ?5 ORDER BY c.seq"
         );
@@ -305,6 +351,7 @@ impl super::Store {
             "SELECT {CHUNK_COLUMNS} FROM chunks c \
          JOIN contents co ON co.id = c.content_id \
          JOIN files f ON f.content_id = c.content_id \
+         LEFT JOIN chunk_spans cs ON cs.chunk_id = c.id \
          WHERE c.digest LIKE ?"
         );
         let mut stmt = conn.prepare(&sql)?;
@@ -336,18 +383,33 @@ impl super::Store {
 /// Never: the `expect` below is unreachable — every caller starts a new
 /// group with this function before pushing refs, so the row always parses.
 fn chunk_from_row(row: &rusqlite::Row<'_>) -> Result<ChunkWithRefs, rusqlite::Error> {
-    #[expect(
-        clippy::cast_sign_loss,
-        clippy::cast_possible_truncation,
-        reason = "page/seq are small non-negative integers"
-    )]
+    let span = match (
+        row.get::<_, Option<i64>>(9)?,
+        row.get::<_, Option<i64>>(10)?,
+        row.get::<_, Option<i64>>(11)?,
+    ) {
+        (Some(segment), Some(start), Some(end)) if segment >= 0 && start >= 0 && end >= start => {
+            Some(ChunkSpan {
+                segment: u64::try_from(segment).expect("non-negative SQLite integer fits u64"),
+                start: u64::try_from(start).expect("non-negative SQLite integer fits u64"),
+                end: u64::try_from(end).expect("non-negative SQLite integer fits u64"),
+            })
+        }
+        _ => None,
+    };
+
     Ok(ChunkWithRefs {
         digest: row.get(1)?,
         extractor: row.get(8)?,
         text: row.get(2)?,
         heading: row.get(3)?,
-        seq: row.get::<_, Option<i64>>(7)?.map(|s| s as u32),
-        page: row.get::<_, Option<i64>>(6)?.map(|p| p as u32),
+        seq: row
+            .get::<_, Option<i64>>(7)?
+            .map(|s| u32::try_from(s).expect("seq is a small non-negative integer")),
+        page: row
+            .get::<_, Option<i64>>(6)?
+            .map(|p| u32::try_from(p).expect("page is a small non-negative integer")),
+        span,
         refs: Vec::new(),
     })
 }

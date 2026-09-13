@@ -2,6 +2,7 @@
 //!
 //! Mirrors `src/lode/index/store/records.py` for schema compatibility.
 
+use crate::ingestion::types::ChunkSpan;
 use crate::relpath::WorkspacePath;
 use serde::{Deserialize, Serialize};
 
@@ -143,6 +144,8 @@ pub struct ChunkWithRefs {
     pub seq: Option<u32>,
     /// 1-based page number for PDF chunks, `None` for other formats.
     pub page: Option<u32>,
+    /// Optional source span for overlap-aware context rendering.
+    pub span: Option<ChunkSpan>,
     /// Every workspace path referencing this content, with freshness.
     pub refs: Vec<PathRef>,
 }
@@ -166,6 +169,26 @@ impl ChunkWithRefs {
             .expect("refs is never empty for a join-derived chunk")
             .clone()
     }
+}
+
+/// A resolved chunk together with its optional same-section context window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChunkWindow {
+    /// The chunk addressed by the caller's digest or prefix.
+    pub target: ChunkWithRefs,
+    /// Target plus any selected neighbors, ordered by sequence.
+    pub chunks: Vec<ChunkWithRefs>,
+}
+
+/// Result of resolving a digest prefix without conflating ambiguity and miss.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChunkLookup {
+    /// No indexed chunk matched the prefix.
+    NotFound,
+    /// More than one chunk matched; bodies are omitted by the CLI renderer.
+    Ambiguous(Vec<ChunkWithRefs>),
+    /// Exactly one chunk matched and its context window was loaded.
+    Found(ChunkWindow),
 }
 
 /// One kNN hit: chunk rowid with its L2 distance, ordered nearest first.

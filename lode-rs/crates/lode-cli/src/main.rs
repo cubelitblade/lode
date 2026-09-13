@@ -8,7 +8,7 @@ use terminal_size::{Width, terminal_size};
 
 use lode_core::config::build_embedder;
 use lode_core::config::layered::load_settings_for;
-use lode_core::index::records::{ChunkWithRefs, FileRecord};
+use lode_core::index::records::{ChunkLookup, ChunkWithRefs, FileRecord};
 use lode_core::index::store::Store;
 use lode_core::ingestion::pipeline::{
     Change, DetectResult, SyncSummary, classify, detect_changes, sync,
@@ -288,8 +288,8 @@ fn dig(workspace: &std::path::Path, input: String, radius: u32, view: View) -> u
         None => return dig_error(view, "invalid_digest", &input, &[]),
     };
 
-    let rowids = match store.find_chunk_rowids(&token) {
-        Ok(rowids) => rowids,
+    let lookup = match store.get_chunk_window(&token, radius) {
+        Ok(lookup) => lookup,
         Err(e) => {
             return ui_msg::die(
                 "dig",
@@ -298,51 +298,13 @@ fn dig(workspace: &std::path::Path, input: String, radius: u32, view: View) -> u
             );
         }
     };
-    if rowids.is_empty() {
-        return dig_error(view, "not_found", &input, &[]);
-    }
-    if rowids.len() > 1 {
-        let candidates = match store.find_chunks_by_digest(&token) {
-            Ok(chunks) => chunks,
-            Err(e) => {
-                return ui_msg::die(
-                    "dig",
-                    &format!("Could not read the lode index: {e}"),
-                    Some("Ensure `.lode/index.db` is intact, or delete it and remine."),
-                );
-            }
-        };
-        return dig_error(view, "ambiguous", &input, &candidates);
-    }
-
-    let rowid = rowids[0];
-    let chunks = match store.get_chunks(&[rowid]) {
-        Ok(chunks) => chunks,
-        Err(e) => {
-            return ui_msg::die(
-                "dig",
-                &format!("Could not read the lode index: {e}"),
-                Some("Ensure `.lode/index.db` is intact, or delete it and remine."),
-            );
+    let (target, window) = match lookup {
+        ChunkLookup::NotFound => return dig_error(view, "not_found", &input, &[]),
+        ChunkLookup::Ambiguous(candidates) => {
+            return dig_error(view, "ambiguous", &input, &candidates);
         }
+        ChunkLookup::Found(window) => (window.target, window.chunks),
     };
-    let Some(target) = chunks.get(&rowid).cloned() else {
-        return dig_error(view, "not_found", &input, &[]);
-    };
-    let mut window = vec![target.clone()];
-    if radius > 0 {
-        match store.get_chunk_neighbors(rowid, radius) {
-            Ok(neighbors) => window.extend(neighbors),
-            Err(e) => {
-                return ui_msg::die(
-                    "dig",
-                    &format!("Could not read the lode index: {e}"),
-                    Some("Ensure `.lode/index.db` is intact, or delete it and remine."),
-                );
-            }
-        }
-    }
-    window.sort_by_key(|chunk| chunk.seq.unwrap_or_default());
 
     match view {
         View::Compact => render_dig(&input, &target, &window, radius),
@@ -385,7 +347,7 @@ fn dig_error_with_text(
     if view == View::Json {
         let mut payload = serde_json::json!({
             "code": code,
-            "message": format!("{}\\n{}", error, hint.unwrap_or_default()),
+            "message": format!("{}\n{}", error, hint.unwrap_or_default()),
         });
         if code == "ambiguous" {
             payload["candidates"] = serde_json::Value::Array(
@@ -473,6 +435,14 @@ fn render_dig_header(digest: &str, radius: u32, options: RenderOptions) {
 fn render_dig(_input: &str, target: &ChunkWithRefs, window: &[ChunkWithRefs], radius: u32) {
     let options = RenderOptions::stdout();
     render_dig_header(&target.digest, radius, options);
+    if radius > 0 && render_dig_compact_body(target, window, options) {
+        return;
+    }
+    render_dig_cards_body(target, window, options);
+}
+
+/// Render the legacy one-card-per-chunk layout.
+fn render_dig_cards_body(target: &ChunkWithRefs, window: &[ChunkWithRefs], options: RenderOptions) {
     for chunk in window {
         let center = chunk.seq == target.seq;
         let title = match chunk.seq {
@@ -504,6 +474,116 @@ fn render_dig(_input: &str, target: &ChunkWithRefs, window: &[ChunkWithRefs], ra
     }
 }
 
+/// Render one overlap-deduplicated context block when every chunk has a
+/// valid span in the same segment. Returning `false` keeps the old card
+/// layout as the safe fallback for synthetic or legacy rows.
+fn render_dig_compact_body(
+    target: &ChunkWithRefs,
+    window: &[ChunkWithRefs],
+    options: RenderOptions,
+) -> bool {
+    // Span boundaries are character offsets in the source, not Markdown
+    // token boundaries. Rendering the three pieces independently can change
+    // the meaning of inline markers or fenced blocks, so preserve the
+    // existing fragment/card rendering for Markdown-derived content.
+    if is_markdown_content(&target.extractor) {
+        return false;
+    }
+    let Some((merged, center_start, center_end)) = merge_dig_window(target, window) else {
+        return false;
+    };
+    let Some(center_seq) = target.seq else {
+        return false;
+    };
+
+    println!();
+    render::print_line(options, Intent::Info, &format!("{center_seq} · center"));
+    render::print_line(
+        options,
+        Intent::Muted,
+        &format!("  {}", dig_source_line(target)),
+    );
+
+    let prefix = char_slice(&merged, 0, center_start);
+    let center = char_slice(&merged, center_start, center_end);
+    let suffix = char_slice(&merged, center_end, merged.chars().count());
+    print_compact_part(&prefix, Intent::Muted, options);
+    print_compact_part(&center, Intent::Info, options);
+    print_compact_part(&suffix, Intent::Muted, options);
+    render::print_line(
+        options,
+        Intent::Muted,
+        &format!("  {}", short_id(&target.digest)),
+    );
+    true
+}
+
+/// Merge adjacent chunk text using character spans, removing only verified
+/// overlap. Gaps or inconsistent metadata deliberately force fallback.
+fn merge_dig_window(
+    target: &ChunkWithRefs,
+    window: &[ChunkWithRefs],
+) -> Option<(String, usize, usize)> {
+    let target_span = target.span?;
+    let first_span = window.first()?.span?;
+    let mut merged = String::new();
+    let range_start = first_span.start;
+    let mut range_end = first_span.start;
+
+    for chunk in window {
+        let span = chunk.span?;
+        let text_len = chunk.text.chars().count();
+        if span.segment != target_span.segment
+            || span.start > span.end
+            || span.end - span.start != u64::try_from(text_len).ok()?
+            || span.start < range_start
+            || span.start > range_end
+        {
+            return None;
+        }
+
+        let overlap = range_end.saturating_sub(span.start);
+        let skip = usize::try_from(overlap).ok()?;
+        if skip > text_len {
+            return None;
+        }
+        if skip > 0 {
+            let merged_len = merged.chars().count();
+            let existing = char_slice(&merged, merged_len.checked_sub(skip)?, merged_len);
+            let incoming = char_slice(&chunk.text, 0, skip);
+            if existing != incoming {
+                return None;
+            }
+        }
+        merged.extend(chunk.text.chars().skip(skip));
+        range_end = range_end.max(span.end);
+    }
+
+    let center_start = usize::try_from(target_span.start.checked_sub(range_start)?).ok()?;
+    let center_end = usize::try_from(target_span.end.checked_sub(range_start)?).ok()?;
+    if center_end > merged.chars().count() || center_start > center_end {
+        return None;
+    }
+    Some((merged, center_start, center_end))
+}
+
+fn char_slice(text: &str, start: usize, end: usize) -> String {
+    text.chars().skip(start).take(end - start).collect()
+}
+
+fn print_compact_part(text: &str, intent: Intent, options: RenderOptions) {
+    if text.is_empty() {
+        return;
+    }
+    let rendered = markdown_render::render_fragment(text, false, options);
+    for line in rendered.lines() {
+        render::print_line(options, intent, &format!("  {line}"));
+    }
+    if rendered.ends_with('\n') {
+        println!();
+    }
+}
+
 /// DOCX extraction is intentionally canonical Markdown, so it shares the
 /// terminal renderer with native Markdown. Other extractors produce plain
 /// text even when their content happens to contain Markdown-like characters.
@@ -521,8 +601,15 @@ fn print_indented(indent: &str, text: &str) {
     }
 }
 
-fn render_dig_extended(input: &str, target: &ChunkWithRefs, window: &[ChunkWithRefs], radius: u32) {
-    render_dig(input, target, window, radius);
+fn render_dig_extended(
+    _input: &str,
+    target: &ChunkWithRefs,
+    window: &[ChunkWithRefs],
+    radius: u32,
+) {
+    let options = RenderOptions::stdout();
+    render_dig_header(&target.digest, radius, options);
+    render_dig_cards_body(target, window, options);
     println!();
     println!("Window: center_seq={:?}, radius={radius}", target.seq);
     for chunk in window {
@@ -1979,9 +2066,149 @@ mod dig_tests {
             heading: "A".into(),
             seq: Some(2),
             page: None,
+            span: None,
             refs: vec![],
         };
         assert!(dig_chunk_json(&chunk).get("text").is_some());
         assert!(dig_chunk_json_without_text(&chunk).get("text").is_none());
+    }
+
+    #[test]
+    fn merge_dig_window_removes_verified_overlap() {
+        use lode_core::index::records::ChunkWithRefs;
+        use lode_core::ingestion::types::ChunkSpan;
+
+        let make_chunk = |text: &str, seq: u32, start: u64, end: u64| ChunkWithRefs {
+            digest: format!("blake3:{seq}"),
+            extractor: "text".into(),
+            text: text.into(),
+            heading: "A".into(),
+            seq: Some(seq),
+            page: None,
+            span: Some(ChunkSpan {
+                segment: 0,
+                start,
+                end,
+            }),
+            refs: vec![],
+        };
+        let before = make_chunk("abcdef", 0, 0, 6);
+        let target = make_chunk("efghij", 1, 4, 10);
+        let after = make_chunk("ij", 2, 8, 10);
+        let window = vec![before, target.clone(), after];
+
+        let (merged, center_start, center_end) = merge_dig_window(&target, &window).unwrap();
+        assert_eq!(merged, "abcdefghij");
+        assert_eq!(&char_slice(&merged, center_start, center_end), "efghij");
+
+        let repeated_before = make_chunk("aaa", 0, 0, 3);
+        let repeated_target = make_chunk("aaa", 1, 2, 5);
+        let (repeated, _, _) = merge_dig_window(
+            &repeated_target,
+            &[repeated_before, repeated_target.clone()],
+        )
+        .unwrap();
+        assert_eq!(repeated, "aaaaa");
+    }
+
+    #[test]
+    fn merge_dig_window_falls_back_on_gaps_or_missing_spans() {
+        use lode_core::index::records::ChunkWithRefs;
+        use lode_core::ingestion::types::ChunkSpan;
+
+        let chunk = ChunkWithRefs {
+            digest: "blake3:abc".into(),
+            extractor: "text".into(),
+            text: "abc".into(),
+            heading: "A".into(),
+            seq: Some(0),
+            page: None,
+            span: Some(ChunkSpan {
+                segment: 0,
+                start: 0,
+                end: 3,
+            }),
+            refs: vec![],
+        };
+        let missing = ChunkWithRefs {
+            span: None,
+            ..chunk.clone()
+        };
+        assert!(merge_dig_window(&chunk, &[missing]).is_none());
+
+        let gap = ChunkWithRefs {
+            digest: "blake3:def".into(),
+            text: "def".into(),
+            seq: Some(1),
+            span: Some(ChunkSpan {
+                segment: 0,
+                start: 5,
+                end: 8,
+            }),
+            ..chunk.clone()
+        };
+        let window = vec![chunk.clone(), gap];
+        assert!(merge_dig_window(&chunk, &window).is_none());
+
+        let wrong_length = ChunkWithRefs {
+            text: "abcd".into(),
+            span: Some(ChunkSpan {
+                segment: 0,
+                start: 0,
+                end: 3,
+            }),
+            ..chunk.clone()
+        };
+        let window = vec![wrong_length.clone()];
+        assert!(merge_dig_window(&wrong_length, &window).is_none());
+
+        let other_segment = ChunkWithRefs {
+            span: Some(ChunkSpan {
+                segment: 1,
+                start: 3,
+                end: 6,
+            }),
+            ..chunk.clone()
+        };
+        let window = vec![chunk.clone(), other_segment];
+        assert!(merge_dig_window(&chunk, &window).is_none());
+
+        let conflicting_overlap = ChunkWithRefs {
+            text: "ZZdef".into(),
+            span: Some(ChunkSpan {
+                segment: 0,
+                start: 1,
+                end: 6,
+            }),
+            ..chunk.clone()
+        };
+        let window = vec![chunk.clone(), conflicting_overlap];
+        assert!(merge_dig_window(&chunk, &window).is_none());
+    }
+
+    #[test]
+    fn markdown_compact_falls_back_to_cards() {
+        use lode_core::index::records::ChunkWithRefs;
+        use lode_core::ingestion::types::ChunkSpan;
+
+        let chunk = ChunkWithRefs {
+            digest: "blake3:markdown".into(),
+            extractor: "markdown".into(),
+            text: "**bold**".into(),
+            heading: "A".into(),
+            seq: Some(0),
+            page: None,
+            span: Some(ChunkSpan {
+                segment: 0,
+                start: 0,
+                end: 8,
+            }),
+            refs: vec![],
+        };
+        assert!(!render_dig_compact_body(
+            &chunk,
+            std::slice::from_ref(&chunk),
+            RenderOptions::plain()
+        ));
     }
 }

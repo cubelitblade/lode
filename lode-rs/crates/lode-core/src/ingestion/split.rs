@@ -20,12 +20,22 @@
 use std::collections::VecDeque;
 
 use crate::ingestion::digest::chunk_digest;
-use crate::ingestion::types::{Chunk, Segment};
+use crate::ingestion::types::{Chunk, ChunkSpan, Segment};
 
 /// Character budget for measuring chunk length. Counts scalar values, which
 /// matches CPython's `len(str)` used by the vendored splitter.
 fn measure(text: &str) -> usize {
     text.chars().count()
+}
+
+/// A text piece plus its half-open character range in the originating
+/// segment. The splitter keeps this alongside the text so repeated content
+/// is never resolved by a second, ambiguous substring search.
+#[derive(Clone, Debug)]
+struct SpannedPiece {
+    text: String,
+    start: usize,
+    end: usize,
 }
 
 /// Separator priority for recursive splitting: paragraph breaks first, then
@@ -93,11 +103,22 @@ impl Default for RecursiveTextSplitter {
 
 impl Splitter for RecursiveTextSplitter {
     fn split(&self, text: &str) -> Vec<String> {
+        self.split_spanned(text)
+            .into_iter()
+            .map(|piece| piece.text)
+            .collect()
+    }
+}
+
+impl RecursiveTextSplitter {
+    /// Split text while retaining source-relative character spans.
+    fn split_spanned(&self, text: &str) -> Vec<SpannedPiece> {
         split_recursive(
             text,
             SEPARATOR_PRIORITY,
             self.chunk_size,
             self.chunk_overlap,
+            0,
         )
     }
 }
@@ -109,7 +130,8 @@ fn split_recursive(
     separators: &[&str],
     chunk_size: usize,
     chunk_overlap: usize,
-) -> Vec<String> {
+    base: usize,
+) -> Vec<SpannedPiece> {
     // Choose the finest applicable separator: the first in priority order
     // that occurs in the text, or the coarsest (usually "") if none do.
     let mut separator = separators[separators.len() - 1];
@@ -126,13 +148,13 @@ fn split_recursive(
         }
     }
 
-    let splits = split_keeping_at_end(text, separator);
+    let splits = split_keeping_at_end(text, separator, base);
 
     let mut final_chunks = Vec::new();
-    let mut good: Vec<String> = Vec::new();
+    let mut good: Vec<SpannedPiece> = Vec::new();
 
     for s in splits {
-        if measure(&s) < chunk_size {
+        if measure(&s.text) < chunk_size {
             good.push(s);
         } else {
             if !good.is_empty() {
@@ -146,10 +168,11 @@ fn split_recursive(
                 final_chunks.push(s);
             } else {
                 final_chunks.extend(split_recursive(
-                    &s,
+                    &s.text,
                     new_separators,
                     chunk_size,
                     chunk_overlap,
+                    s.start,
                 ));
             }
         }
@@ -166,9 +189,16 @@ fn split_recursive(
 /// Equivalent to the vendored `_split_text_with_regex` specialised to a
 /// literal (non-regex) separator with `keep_separator="end"`. An empty
 /// separator degrades to a character-level split.
-fn split_keeping_at_end(text: &str, separator: &str) -> Vec<String> {
+fn split_keeping_at_end(text: &str, separator: &str, base: usize) -> Vec<SpannedPiece> {
     if separator.is_empty() {
-        return text.chars().map(|c| c.to_string()).collect();
+        return text
+            .char_indices()
+            .map(|(byte, ch)| SpannedPiece {
+                text: ch.to_string(),
+                start: base + text[..byte].chars().count(),
+                end: base + text[..byte].chars().count() + 1,
+            })
+            .collect();
     }
 
     // Retained-delimiter decomposition, mirroring `re.split(f"({sep})", text)`:
@@ -176,23 +206,46 @@ fn split_keeping_at_end(text: &str, separator: &str) -> Vec<String> {
     // `before + delim` and appending the trailing `after` reproduces the
     // keep-separator-"end" transformation. Capture-group `re.split` always
     // yields an odd-length list, so the trailing element is emitted once.
-    let mut parts: Vec<String> = Vec::new();
+    let mut parts: Vec<SpannedPiece> = Vec::new();
     let mut remaining = text;
+    let mut remaining_base = base;
     while let Some(at) = remaining.find(separator) {
-        parts.push(remaining[..at].to_string());
-        parts.push(separator.to_string());
+        let before_len = remaining[..at].chars().count();
+        let separator_len = separator.chars().count();
+        parts.push(SpannedPiece {
+            text: remaining[..at].to_string(),
+            start: remaining_base,
+            end: remaining_base + before_len,
+        });
+        parts.push(SpannedPiece {
+            text: separator.to_string(),
+            start: remaining_base + before_len,
+            end: remaining_base + before_len + separator_len,
+        });
         remaining = &remaining[at + separator.len()..];
+        remaining_base += before_len + separator_len;
     }
-    parts.push(remaining.to_string());
+    let remaining_len = remaining.chars().count();
+    parts.push(SpannedPiece {
+        text: remaining.to_string(),
+        start: remaining_base,
+        end: remaining_base + remaining_len,
+    });
 
     let mut splits = Vec::new();
     let mut i = 0;
     while i + 1 < parts.len() {
-        splits.push(format!("{}{}", parts[i], parts[i + 1]));
+        let first = &parts[i];
+        let second = &parts[i + 1];
+        splits.push(SpannedPiece {
+            text: format!("{}{}", first.text, second.text),
+            start: first.start,
+            end: second.end,
+        });
         i += 2;
     }
     splits.push(parts[parts.len() - 1].clone());
-    splits.retain(|s| !s.is_empty());
+    splits.retain(|s| !s.text.is_empty());
     splits
 }
 
@@ -203,20 +256,24 @@ fn split_keeping_at_end(text: &str, separator: &str) -> Vec<String> {
 /// "end"` (hence a `""` merge separator and no trimming). With
 /// `chunk_overlap == 0` the packed chunks tile the input losslessly, so
 /// concatenating them reproduces the original text.
-fn merge_splits(splits: Vec<String>, chunk_size: usize, chunk_overlap: usize) -> Vec<String> {
-    let mut docs: Vec<String> = Vec::new();
-    let mut window: VecDeque<String> = VecDeque::new();
+fn merge_splits(
+    splits: Vec<SpannedPiece>,
+    chunk_size: usize,
+    chunk_overlap: usize,
+) -> Vec<SpannedPiece> {
+    let mut docs: Vec<SpannedPiece> = Vec::new();
+    let mut window: VecDeque<SpannedPiece> = VecDeque::new();
     let mut total = 0_usize;
 
     for d in splits {
-        let len = measure(&d);
+        let len = measure(&d.text);
         if total + len > chunk_size && !window.is_empty() {
             docs.push(make_consecutive(&window));
             // Evict from the front until the window shrinks to the
             // overlap allowance and gains room for the incoming piece.
             while total > chunk_overlap || (total + len > chunk_size && total > 0) {
                 if let Some(oldest) = window.pop_front() {
-                    total -= measure(&oldest);
+                    total -= measure(&oldest.text);
                 } else {
                     break;
                 }
@@ -232,8 +289,16 @@ fn merge_splits(splits: Vec<String>, chunk_size: usize, chunk_overlap: usize) ->
 }
 
 /// Concatenate the deque's buffers in logical order.
-fn make_consecutive(window: &VecDeque<String>) -> String {
-    window.iter().fold(String::new(), |acc, part| acc + part)
+fn make_consecutive(window: &VecDeque<SpannedPiece>) -> SpannedPiece {
+    let first = window.front().expect("window is not empty");
+    let last = window.back().expect("window is not empty");
+    SpannedPiece {
+        text: window
+            .iter()
+            .fold(String::new(), |acc, part| acc + &part.text),
+        start: first.start,
+        end: last.end,
+    }
 }
 
 /// Interface for chunking structured extracted content.
@@ -273,14 +338,19 @@ impl SegmentSplitter for RecursiveSegmentSplitter {
     fn split_segments(&self, segments: &[Segment]) -> Vec<Chunk> {
         let mut chunks = Vec::new();
         let mut seq = 0_u32;
-        for segment in segments {
-            for piece in self.splitter.split(&segment.text) {
+        for (segment_id, segment) in segments.iter().enumerate() {
+            for piece in self.splitter.split_spanned(&segment.text) {
                 chunks.push(Chunk {
-                    digest: chunk_digest(&piece),
-                    text: piece,
+                    digest: chunk_digest(&piece.text),
+                    text: piece.text,
                     seq,
                     heading: segment.heading.clone(),
                     page: segment.page,
+                    span: Some(ChunkSpan {
+                        segment: segment_id as u64,
+                        start: piece.start as u64,
+                        end: piece.end as u64,
+                    }),
                 });
                 seq += 1;
             }
@@ -409,6 +479,29 @@ mod tests {
         // Digests carry the algorithmic prefix and distinguish content.
         assert!(chunks.iter().all(|c| c.digest.starts_with("blake3:")));
         assert_eq!(chunks.first().unwrap().heading, "Overview");
+    }
+
+    #[test]
+    fn segment_splitter_records_unicode_scalar_spans() {
+        let segments = [Segment {
+            text: "甲乙丙丁戊己庚辛".into(),
+            heading: "CJK".into(),
+            page: None,
+        }];
+        let chunks = RecursiveSegmentSplitter::new(5, 2)
+            .unwrap()
+            .split_segments(&segments);
+
+        assert_eq!(
+            chunks
+                .iter()
+                .map(|chunk| {
+                    let span = chunk.span.expect("split chunks carry spans");
+                    (span.segment, span.start, span.end, chunk.text.as_str())
+                })
+                .collect::<Vec<_>>(),
+            vec![(0, 0, 5, "甲乙丙丁戊"), (0, 3, 8, "丁戊己庚辛"),]
+        );
     }
 
     #[test]

@@ -455,6 +455,7 @@ mod tests {
         "chunks",
         "chunks_fts",
         "chunk_vectors",
+        "chunk_spans",
         "contents",
         "files",
         "meta",
@@ -511,14 +512,14 @@ mod tests {
     }
 
     #[test]
-    fn schema_v3_requires_explicit_rebuild() {
+    fn schema_v4_requires_explicit_rebuild() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("index.db");
         let store = Store::open(&db, "test-model", 128, "unicode61").unwrap();
         store
             .conn
             .execute(
-                "UPDATE meta SET value = '3' WHERE key = 'schema_version'",
+                "UPDATE meta SET value = '4' WHERE key = 'schema_version'",
                 [],
             )
             .unwrap();
@@ -641,7 +642,7 @@ mod tests {
 
     // -- reference_file / replace_file / remove_file tests --
 
-    use crate::ingestion::types::Chunk;
+    use crate::ingestion::types::{Chunk, ChunkSpan};
 
     fn make_record(path: &str, digest: &str, mtime: f64, size: u64) -> FileRecord {
         FileRecord {
@@ -667,6 +668,7 @@ mod tests {
                     seq,
                     heading: String::new(),
                     page: None,
+                    span: None,
                 }
             })
             .collect()
@@ -818,6 +820,7 @@ mod tests {
             seq: 0,
             heading: String::new(),
             page: None,
+            span: None,
         }];
         let markdown_chunks = vec![Chunk {
             digest: crate::ingestion::digest::chunk_digest("# Markdown"),
@@ -825,6 +828,7 @@ mod tests {
             seq: 0,
             heading: "Markdown".into(),
             page: None,
+            span: None,
         }];
 
         assert!(
@@ -894,7 +898,12 @@ mod tests {
         let mut store = Store::open(&db, "test-model", 128, "unicode61").unwrap();
 
         let rec = make_record("only.txt", "blake3:ccc", 1.0, 10);
-        let chunks = make_chunks("blake3:ccc", 1);
+        let mut chunks = make_chunks("blake3:ccc", 1);
+        chunks[0].span = Some(ChunkSpan {
+            segment: 0,
+            start: 0,
+            end: 5,
+        });
         store
             .replace_file(&rec, "text", &chunks, Some(&make_vectors(1, 128)))
             .unwrap();
@@ -915,6 +924,11 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM chunk_vectors", [], |row| row.get(0))
             .unwrap();
         assert_eq!(vec_count, 0);
+        let span_count: i64 = store
+            .conn
+            .query_row("SELECT COUNT(*) FROM chunk_spans", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(span_count, 0);
     }
 
     #[test]
@@ -1090,6 +1104,7 @@ mod tests {
                 seq: i as u32,
                 heading: String::new(),
                 page: None,
+                span: None,
             })
             .collect();
         let vectors: Vec<Vec<f32>> = texts
@@ -1131,6 +1146,37 @@ mod tests {
         assert_eq!(chunk.refs[0].path.as_str(), "doc.txt");
         assert_eq!(chunk.refs[0].status, FileStatus::Fresh);
         assert_eq!(chunk.seq, Some(0));
+    }
+
+    #[test]
+    fn get_chunks_roundtrips_optional_chunk_spans() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("index.db");
+        let mut store = Store::open(&db, "test-model", 4, "unicode61").unwrap();
+        let record = make_record("doc.txt", "blake3:spanned", 1.0, 10);
+        let chunks = vec![Chunk {
+            digest: "blake3:chunk".into(),
+            text: "甲乙丙".into(),
+            seq: 0,
+            heading: "A".into(),
+            page: None,
+            span: Some(ChunkSpan {
+                segment: 2,
+                start: 4,
+                end: 7,
+            }),
+        }];
+        store.replace_file(&record, "text", &chunks, None).unwrap();
+
+        let stored = store.get_chunks(&[1]).unwrap();
+        assert_eq!(
+            stored[&1].span,
+            Some(ChunkSpan {
+                segment: 2,
+                start: 4,
+                end: 7,
+            })
+        );
     }
 
     #[test]
@@ -1223,6 +1269,7 @@ mod tests {
                 seq: 0,
                 heading: "A".into(),
                 page: None,
+                span: None,
             },
             Chunk {
                 digest: "blake3:section".into(),
@@ -1230,6 +1277,7 @@ mod tests {
                 seq: 1,
                 heading: "A".into(),
                 page: None,
+                span: None,
             },
             Chunk {
                 digest: "blake3:section".into(),
@@ -1237,6 +1285,7 @@ mod tests {
                 seq: 2,
                 heading: "A".into(),
                 page: None,
+                span: None,
             },
             Chunk {
                 digest: "blake3:section".into(),
@@ -1244,6 +1293,7 @@ mod tests {
                 seq: 3,
                 heading: "B".into(),
                 page: None,
+                span: None,
             },
         ];
         let record = make_record("doc.txt", "blake3:section", 1.0, 10);
@@ -1259,6 +1309,99 @@ mod tests {
         );
         assert!(store.get_chunk_neighbors(2, 0).unwrap().is_empty());
         assert!(store.get_chunk_neighbors(999, 2).unwrap().is_empty());
+    }
+
+    #[test]
+    fn get_chunk_window_resolves_target_and_neighbors_in_core() {
+        use crate::index::records::ChunkLookup;
+
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("index.db");
+        let mut store = Store::open(&db, "test-model", 4, "unicode61").unwrap();
+        let chunks = vec![
+            Chunk {
+                digest: "blake3:window0".into(),
+                text: "abcdef".into(),
+                seq: 0,
+                heading: "A".into(),
+                page: None,
+                span: Some(ChunkSpan {
+                    segment: 0,
+                    start: 0,
+                    end: 6,
+                }),
+            },
+            Chunk {
+                digest: "blake3:window1".into(),
+                text: "efghij".into(),
+                seq: 1,
+                heading: "A".into(),
+                page: None,
+                span: Some(ChunkSpan {
+                    segment: 0,
+                    start: 4,
+                    end: 10,
+                }),
+            },
+            Chunk {
+                digest: "blake3:window2".into(),
+                text: "ij".into(),
+                seq: 2,
+                heading: "A".into(),
+                page: None,
+                span: Some(ChunkSpan {
+                    segment: 0,
+                    start: 8,
+                    end: 10,
+                }),
+            },
+        ];
+        let record = make_record("doc.txt", "blake3:window-file", 1.0, 10);
+        store.replace_file(&record, "text", &chunks, None).unwrap();
+
+        let lookup = store.get_chunk_window("window1", 1).unwrap();
+        let ChunkLookup::Found(window) = lookup else {
+            panic!("expected one resolved chunk");
+        };
+        assert_eq!(window.target.seq, Some(1));
+        assert_eq!(
+            window
+                .chunks
+                .iter()
+                .map(|chunk| chunk.seq)
+                .collect::<Vec<_>>(),
+            vec![Some(0), Some(1), Some(2)]
+        );
+
+        let ChunkLookup::Found(zero_radius) = store.get_chunk_window("window1", 0).unwrap() else {
+            panic!("expected one resolved chunk");
+        };
+        assert_eq!(zero_radius.chunks.len(), 1);
+        assert!(matches!(
+            store.get_chunk_window("missing", 1).unwrap(),
+            ChunkLookup::NotFound
+        ));
+
+        let other_record = make_record("other.txt", "blake3:window-file-2", 2.0, 10);
+        store
+            .replace_file(
+                &other_record,
+                "text",
+                &[Chunk {
+                    digest: "blake3:window1".into(),
+                    text: "other".into(),
+                    seq: 0,
+                    heading: "A".into(),
+                    page: None,
+                    span: None,
+                }],
+                None,
+            )
+            .unwrap();
+        assert!(matches!(
+            store.get_chunk_window("window1", 1).unwrap(),
+            ChunkLookup::Ambiguous(_)
+        ));
     }
 
     #[test]
