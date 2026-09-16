@@ -1,13 +1,16 @@
 use std::collections::HashMap;
+use std::fmt::Arguments;
+use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use terminal_size::{Width, terminal_size};
 
-use lode_core::config::build_embedder;
 use lode_core::config::layered::load_settings_for;
+use lode_core::config::{OutputPalette, Settings, build_embedder};
 use lode_core::index::records::{ChunkLookup, ChunkWithRefs, FileRecord};
 use lode_core::index::store::Store;
 use lode_core::ingestion::pipeline::{
@@ -31,6 +34,86 @@ Lode {version}
 {all-args}
 ";
 
+/// Process exit status contract for commands that get past clap parsing.
+const EXIT_OK: u8 = 0;
+const EXIT_ERROR: u8 = 1;
+const EXIT_PARTIAL_FAILURE: u8 = 3;
+
+/// Stable machine-readable error identifiers. Keep these independent from
+/// infrastructure error text so JSON consumers can branch safely.
+mod error_code {
+    pub const NOT_IMPLEMENTED: &str = "not_implemented";
+    pub const WORKSPACE_MISSING: &str = "workspace_missing";
+    pub const WORKSPACE_NOT_DIRECTORY: &str = "workspace_not_directory";
+    pub const CONFIG: &str = "config_error";
+    pub const EMBEDDING: &str = "embedding_error";
+    pub const CHUNKING: &str = "chunking_error";
+    pub const DIMENSION: &str = "dimension_error";
+    pub const MODEL: &str = "model_error";
+    pub const RESET: &str = "reset_error";
+    pub const MINING: &str = "mining_error";
+    pub const SCAN: &str = "scan_error";
+    pub const INDEX_OPEN: &str = "index_open_error";
+    pub const INDEX_CREATE: &str = "index_create_error";
+    pub const INDEX_READ: &str = "index_read_error";
+    pub const SEARCH: &str = "search_error";
+    pub const INVALID_TOP_K: &str = "invalid_top_k";
+    pub const INVALID_QUERY: &str = "invalid_query";
+    pub const NO_INDEX: &str = "no_index";
+    pub const INVALID_DIGEST: &str = "invalid_digest";
+    pub const NOT_FOUND: &str = "not_found";
+    pub const AMBIGUOUS: &str = "ambiguous";
+}
+
+static STDOUT_ERROR: OnceLock<Mutex<Option<io::ErrorKind>>> = OnceLock::new();
+static STDERR_ERROR: OnceLock<Mutex<Option<io::ErrorKind>>> = OnceLock::new();
+
+fn write_line(
+    stream: &mut impl Write,
+    state: &OnceLock<Mutex<Option<io::ErrorKind>>>,
+    args: Arguments<'_>,
+) {
+    let error = state.get_or_init(|| Mutex::new(None));
+    if error
+        .lock()
+        .expect("output error state is not poisoned")
+        .is_some()
+    {
+        return;
+    }
+    if let Err(write_error) = writeln!(stream, "{args}") {
+        *error.lock().expect("output error state is not poisoned") = Some(write_error.kind());
+    }
+}
+
+fn write_stdout(args: Arguments<'_>) {
+    write_line(&mut io::stdout().lock(), &STDOUT_ERROR, args);
+}
+
+fn write_stderr(args: Arguments<'_>) {
+    write_line(&mut io::stderr().lock(), &STDERR_ERROR, args);
+}
+
+macro_rules! println {
+    () => { $crate::write_stdout(format_args!("")) };
+    ($($arg:tt)*) => { $crate::write_stdout(format_args!($($arg)*)) };
+}
+
+macro_rules! eprintln {
+    () => { $crate::write_stderr(format_args!("")) };
+    ($($arg:tt)*) => { $crate::write_stderr(format_args!($($arg)*)) };
+}
+
+fn output_errors() -> (Option<io::ErrorKind>, Option<io::ErrorKind>) {
+    let stdout = STDOUT_ERROR
+        .get()
+        .and_then(|error| *error.lock().expect("output error state is not poisoned"));
+    let stderr = STDERR_ERROR
+        .get()
+        .and_then(|error| *error.lock().expect("output error state is not poisoned"));
+    (stdout, stderr)
+}
+
 /// Output view for command results (stdout).
 ///
 /// A global abstraction: every command declares which views it supports.
@@ -43,7 +126,7 @@ enum View {
     Compact,
     /// Detailed narrative with stats and full lists.
     Extended,
-    /// Aligned table, optimised for grepping.
+    /// Stable TSV records, suitable for scripts and line-oriented tools.
     Table,
     /// Machine-readable JSON.
     Json,
@@ -60,6 +143,26 @@ enum LogLevel {
     Warn,
     Info,
     Debug,
+}
+
+/// CLI spelling for the configured output palette.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum PaletteArg {
+    Ansi,
+    #[value(name = "accessible_tol")]
+    AccessibleTol,
+    #[value(name = "accessible_okabe_ito")]
+    AccessibleOkabeIto,
+}
+
+impl PaletteArg {
+    const fn into_core(self) -> OutputPalette {
+        match self {
+            Self::Ansi => OutputPalette::Ansi,
+            Self::AccessibleTol => OutputPalette::AccessibleTol,
+            Self::AccessibleOkabeIto => OutputPalette::AccessibleOkabeIto,
+        }
+    }
 }
 
 impl LogLevel {
@@ -80,6 +183,7 @@ impl LogLevel {
     version,
     about = "Local-first knowledge mining engine.",
     long_about = "Turn a workspace of documents into a searchable knowledge lode.",
+    color = clap::ColorChoice::Never,
     help_template = HELP_TEMPLATE
 )]
 struct Cli {
@@ -103,6 +207,18 @@ struct Cli {
         global = true
     )]
     verbose: u8,
+
+    /// Colour palette for human-readable output.
+    #[arg(long, value_enum, global = true)]
+    palette: Option<PaletteArg>,
+
+    /// Disable colour for this invocation.
+    #[arg(long, global = true)]
+    no_color: bool,
+
+    /// Disable progress indicators for this invocation.
+    #[arg(long, global = true)]
+    no_progress: bool,
 
     #[command(subcommand)]
     command: Command,
@@ -146,20 +262,90 @@ enum Command {
 
 fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
-    std::process::ExitCode::from(dispatch(cli))
+    let code = dispatch(cli);
+    let (stdout_error, stderr_error) = output_errors();
+    if stdout_error
+        .into_iter()
+        .chain(stderr_error)
+        .any(|kind| kind != io::ErrorKind::BrokenPipe)
+    {
+        return std::process::ExitCode::from(EXIT_ERROR);
+    }
+    if stdout_error.is_some() || stderr_error.is_some() {
+        // A closed consumer is a successful producer shutdown only when the
+        // command itself succeeded. Preserve command failures and partial
+        // failures so scripts can still act on their exit status.
+        return std::process::ExitCode::from(code);
+    }
+    std::process::ExitCode::from(code)
 }
 
 /// Route a parsed subcommand to its implementation.
 fn dispatch(cli: Cli) -> u8 {
     let log_level = resolve_log_level(cli.verbose, cli.log_level);
     init_logging(log_level);
+    let cli_palette = cli.palette.map(PaletteArg::into_core);
+    render::set_output(
+        cli_palette.unwrap_or(OutputPalette::Ansi),
+        cli.no_color.then_some(true),
+    );
     match cli.command {
-        Command::Survey => survey(&cli.workspace, cli.view),
-        Command::Mine { from_scratch } => mine(&cli.workspace, cli.view, from_scratch),
-        Command::Prospect { query, top_k } => prospect(&cli.workspace, query, top_k, cli.view),
-        Command::Dig { digest, radius } => dig(&cli.workspace, digest, radius, cli.view),
-        Command::Assay => todo_command("assay"),
-        Command::Config => todo_command("config"),
+        Command::Survey => survey(&cli.workspace, cli.view, cli.palette, cli.no_color),
+        Command::Mine { from_scratch } => mine(
+            &cli.workspace,
+            cli.view,
+            from_scratch,
+            cli.palette,
+            cli.no_color,
+            cli.no_progress,
+        ),
+        Command::Prospect { query, top_k } => prospect(
+            &cli.workspace,
+            query,
+            top_k,
+            cli.view,
+            cli.palette,
+            cli.no_color,
+        ),
+        Command::Dig { digest, radius } => dig(
+            &cli.workspace,
+            digest,
+            radius,
+            cli.view,
+            cli.palette,
+            cli.no_color,
+        ),
+        Command::Assay => todo_command("assay", cli.view),
+        Command::Config => todo_command("config", cli.view),
+    }
+}
+
+/// Load project settings after applying this invocation's output flags.
+fn configure_output(
+    workspace: &std::path::Path,
+    command: &str,
+    view: View,
+    palette: Option<PaletteArg>,
+    no_color: bool,
+) -> Result<Settings, u8> {
+    // TOML and environment-backed output settings are added in the follow-up
+    // configuration change. For now the effective renderer is determined only
+    // by this invocation's CLI flags (or the renderer defaults).
+    render::set_output(
+        palette
+            .map(PaletteArg::into_core)
+            .unwrap_or(OutputPalette::Ansi),
+        no_color.then_some(true),
+    );
+    match load_settings_for(workspace) {
+        Ok(settings) => Ok(settings),
+        Err(error) => Err(ui_msg::die(
+            view,
+            command,
+            error_code::CONFIG,
+            &format!("Could not load configuration: {error}"),
+            Some("Check your lode.toml and environment."),
+        )),
     }
 }
 
@@ -190,13 +376,19 @@ fn init_logging(level: LogLevel) {
         .filter_level(log::LevelFilter::Error)
         .filter_module("lode", level.to_level_filter())
         .format_timestamp(None)
+        .write_style(env_logger::fmt::WriteStyle::Never)
         .init();
 }
 
 /// Not-yet-implemented command: print a TODO on stderr and exit non-zero.
-fn todo_command(name: &str) -> u8 {
-    eprintln!("`{name}` is not implemented yet");
-    1
+fn todo_command(name: &str, view: View) -> u8 {
+    ui_msg::die(
+        view,
+        name,
+        error_code::NOT_IMPLEMENTED,
+        &format!("`{name}` is not implemented yet"),
+        None,
+    )
 }
 
 /// Centralised user-facing error text, mirroring the Python `messages.py`
@@ -205,12 +397,38 @@ fn todo_command(name: &str) -> u8 {
 /// Kept deliberately narrow — only shapes the current commands need. Expand
 /// it (rather than scattering ad-hoc `eprintln!`) when a new shape arises.
 mod ui_msg {
-    use super::{Intent, RenderOptions};
+    use super::{EXIT_ERROR, Intent, RenderOptions, View, error_code};
 
-    /// Write a fatal error to stderr and return a failing exit code.
-    ///
-    /// Prints `<prefix>: <error>` followed by an indented hint when present.
-    pub fn die(command: &str, error: &str, hint: Option<&str>) -> u8 {
+    /// Write one stable machine-readable error object, or its human form.
+    pub fn die(view: View, command: &str, code: &str, error: &str, hint: Option<&str>) -> u8 {
+        die_with_extra(view, command, code, error, hint, None)
+    }
+
+    /// Write an error while retaining command-specific structured fields.
+    pub fn die_with_extra(
+        view: View,
+        command: &str,
+        code: &str,
+        error: &str,
+        hint: Option<&str>,
+        extra: Option<serde_json::Value>,
+    ) -> u8 {
+        if view == View::Json {
+            let mut payload = serde_json::json!({
+                "code": code,
+                "message": error,
+                "hint": hint,
+            });
+            if let Some(extra) = extra
+                && let (Some(object), Some(extra_object)) =
+                    (payload.as_object_mut(), extra.as_object())
+            {
+                object.extend(extra_object.clone());
+            }
+            println!("{}", serde_json::to_string_pretty(&payload).unwrap());
+            return EXIT_ERROR;
+        }
+
         let options = RenderOptions::stderr();
         eprintln!(
             "{}",
@@ -222,24 +440,28 @@ mod ui_msg {
                 options.paint(Intent::Info, &format!("       Hint: {hint}"))
             );
         }
-        1
+        EXIT_ERROR
     }
 
     /// Validate the workspace path: it must exist and be a directory.
     ///
     /// Mirrors the Python app-level callback (`exists=True`,
     /// `file_okay=False`, `dir_okay=True`).
-    pub fn bad_workspace(command: &str, ws: &std::path::Path) -> Option<u8> {
+    pub fn bad_workspace(command: &str, ws: &std::path::Path, view: View) -> Option<u8> {
         if !ws.exists() {
             return Some(die(
+                view,
                 command,
+                error_code::WORKSPACE_MISSING,
                 &format!("Workspace '{}' does not exist.", ws.display()),
                 Some("Point `--workspace/-C` at an existing directory."),
             ));
         }
         if !ws.is_dir() {
             return Some(die(
+                view,
                 command,
+                error_code::WORKSPACE_NOT_DIRECTORY,
                 &format!("'{0}' is not a directory.", ws.display()),
                 Some("Provide a directory, not a regular file."),
             ));
@@ -252,8 +474,18 @@ mod ui_msg {
 const INDEX_DB_RELATIVE: &str = ".lode/index.db";
 
 /// Run the dig command: fetch one chunk and an optional same-section window.
-fn dig(workspace: &std::path::Path, input: String, radius: u32, view: View) -> u8 {
-    if let Some(code) = ui_msg::bad_workspace("dig", workspace) {
+fn dig(
+    workspace: &std::path::Path,
+    input: String,
+    radius: u32,
+    view: View,
+    palette: Option<PaletteArg>,
+    no_color: bool,
+) -> u8 {
+    if let Some(code) = ui_msg::bad_workspace("dig", workspace, view) {
+        return code;
+    }
+    if let Err(code) = configure_output(workspace, "dig", view, palette, no_color) {
         return code;
     }
 
@@ -262,14 +494,16 @@ fn dig(workspace: &std::path::Path, input: String, radius: u32, view: View) -> u
         let text = lode_core::messages::require("no_index");
         let index_path = db_path.display().to_string();
         let error = lode_core::messages::format(text.error, &[("index_path", index_path)]);
-        return dig_error_with_text(view, &error, text.hint, "no_index", &input, &[]);
+        return dig_error_with_text(view, &error, text.hint, error_code::NO_INDEX, &input, &[]);
     }
 
     let mut store = match Store::open_existing(&db_path) {
         Ok(store) => store,
         Err(e) => {
             return ui_msg::die(
+                view,
                 "dig",
+                error_code::INDEX_OPEN,
                 &format!("Cannot open the lode index: {e}"),
                 Some("Ensure `.lode/index.db` is intact, or delete it and remine."),
             );
@@ -277,7 +511,9 @@ fn dig(workspace: &std::path::Path, input: String, radius: u32, view: View) -> u
     };
     if let Err(e) = detect_changes(&mut store, workspace, &[]) {
         return ui_msg::die(
+            view,
             "dig",
+            error_code::SCAN,
             &format!("Could not finish scanning the workspace: {e}"),
             Some("Fix the underlying error and rerun `lode dig`."),
         );
@@ -285,31 +521,33 @@ fn dig(workspace: &std::path::Path, input: String, radius: u32, view: View) -> u
 
     let token = match normalize_digest(&input) {
         Some(token) => token,
-        None => return dig_error(view, "invalid_digest", &input, &[]),
+        None => return dig_error(view, error_code::INVALID_DIGEST, &input, &[]),
     };
 
     let lookup = match store.get_chunk_window(&token, radius) {
         Ok(lookup) => lookup,
         Err(e) => {
             return ui_msg::die(
+                view,
                 "dig",
+                error_code::INDEX_READ,
                 &format!("Could not read the lode index: {e}"),
                 Some("Ensure `.lode/index.db` is intact, or delete it and remine."),
             );
         }
     };
     let (target, window) = match lookup {
-        ChunkLookup::NotFound => return dig_error(view, "not_found", &input, &[]),
+        ChunkLookup::NotFound => return dig_error(view, error_code::NOT_FOUND, &input, &[]),
         ChunkLookup::Ambiguous(candidates) => {
-            return dig_error(view, "ambiguous", &input, &candidates);
+            return dig_error(view, error_code::AMBIGUOUS, &input, &candidates);
         }
         ChunkLookup::Found(window) => (window.target, window.chunks),
     };
 
     match view {
-        View::Compact => render_dig(&input, &target, &window, radius),
+        View::Compact => render_dig(&target, &window),
         View::Extended => render_dig_extended(&input, &target, &window, radius),
-        View::Table => render_dig_table(&window, target.seq),
+        View::Table => render_dig_table(&window, &target.digest, target.seq),
         View::Json => emit_dig_json(&target, &window, radius),
     }
     0
@@ -344,23 +582,17 @@ fn dig_error_with_text(
     _input: &str,
     candidates: &[ChunkWithRefs],
 ) -> u8 {
-    if view == View::Json {
-        let mut payload = serde_json::json!({
-            "code": code,
-            "message": format!("{}\n{}", error, hint.unwrap_or_default()),
-        });
-        if code == "ambiguous" {
-            payload["candidates"] = serde_json::Value::Array(
-                candidates.iter().map(dig_chunk_json_without_text).collect(),
-            );
-        }
-        println!("{}", serde_json::to_string_pretty(&payload).unwrap());
-        return 1;
-    }
-    let result = ui_msg::die("dig", error, hint);
-    if code == "ambiguous" {
+    let extra = if code == error_code::AMBIGUOUS {
+        Some(serde_json::json!({
+            "candidates": candidates.iter().map(dig_chunk_json_without_text).collect::<Vec<_>>(),
+        }))
+    } else {
+        None
+    };
+    let result = ui_msg::die_with_extra(view, "dig", code, error, hint, extra);
+    if view != View::Json && code == error_code::AMBIGUOUS {
         for candidate in candidates {
-            println!(
+            eprintln!(
                 "  #{} {}",
                 short_id(&candidate.digest),
                 dig_source_line(candidate)
@@ -432,13 +664,117 @@ fn render_dig_header(digest: &str, radius: u32, options: RenderOptions) {
     }
 }
 
-fn render_dig(_input: &str, target: &ChunkWithRefs, window: &[ChunkWithRefs], radius: u32) {
+fn render_dig(target: &ChunkWithRefs, window: &[ChunkWithRefs]) {
     let options = RenderOptions::stdout();
-    render_dig_header(&target.digest, radius, options);
-    if radius > 0 && render_dig_compact_body(target, window, options) {
+    if render_dig_compact_body(target, window, options) {
         return;
     }
-    render_dig_cards_body(target, window, options);
+    render_dig_compact_cards_body(target, window, options);
+}
+
+/// Render the compact metadata shared by the merged and card fallbacks.
+///
+/// Keeping the source and target marker above one divider makes the first
+/// line of the body unambiguous even when colour is disabled or output is
+/// being read from a narrow terminal.
+fn render_dig_compact_metadata(
+    target: &ChunkWithRefs,
+    window: &[ChunkWithRefs],
+    options: RenderOptions,
+) {
+    let source_intent = if chunk_stale(target) {
+        Intent::Warning
+    } else {
+        Intent::Info
+    };
+    render::print_line(options, source_intent, &dig_source_line(target));
+    let target_label = target.seq.map_or_else(
+        || short_id(&target.digest).to_string(),
+        |seq| format!("chunk {seq}"),
+    );
+    render::print_line(options, Intent::Muted, &format!("Target · {target_label}"));
+
+    let (before, after) = dig_context_counts(target, window);
+    if before + after > 0 {
+        let context = format!("Context · {} before, {} after", before, after);
+        render::print_line(options, Intent::Muted, &context);
+    }
+    render::print_line(options, Intent::Muted, &compact_divider());
+}
+
+fn compact_divider() -> String {
+    let terminal_width = terminal_size()
+        .map(|(Width(width), _)| width as usize)
+        .unwrap_or(80);
+    let divider_width = terminal_width.saturating_sub(2).clamp(1, 80);
+    "─".repeat(divider_width)
+}
+
+fn dig_context_counts(target: &ChunkWithRefs, window: &[ChunkWithRefs]) -> (usize, usize) {
+    let Some(target_index) = window
+        .iter()
+        .position(|chunk| chunk.digest == target.digest && chunk.seq == target.seq)
+    else {
+        return (0, 0);
+    };
+    (target_index, window.len().saturating_sub(target_index + 1))
+}
+
+/// Render a compact fallback when source spans are unavailable or the
+/// fragment must be rendered as Markdown. The target metadata is shown once;
+/// each chunk then gets a small positional label so the window remains easy
+/// to scan without relying on a card border or terminal colour.
+fn render_dig_compact_cards_body(
+    target: &ChunkWithRefs,
+    window: &[ChunkWithRefs],
+    options: RenderOptions,
+) {
+    render_dig_compact_metadata(target, window, options);
+    let target_source = dig_source_line(target);
+    let target_index = window
+        .iter()
+        .position(|chunk| chunk.digest == target.digest && chunk.seq == target.seq);
+    for (index, chunk) in window.iter().enumerate() {
+        let is_target = chunk.digest == target.digest && chunk.seq == target.seq;
+        let label = if is_target {
+            "Target"
+        } else if target_index.is_some_and(|target_index| index < target_index) {
+            "Before"
+        } else {
+            "After"
+        };
+        let chunk_label = chunk.seq.map_or_else(
+            || short_id(&chunk.digest).to_string(),
+            |seq| format!("chunk {seq}"),
+        );
+        println!();
+        render::print_line(
+            options,
+            if is_target {
+                Intent::Info
+            } else {
+                Intent::Muted
+            },
+            &format!("{label} · {chunk_label}"),
+        );
+        let source = dig_source_line(chunk);
+        if source != target_source {
+            let source_intent = if chunk_stale(chunk) {
+                Intent::Warning
+            } else {
+                Intent::Muted
+            };
+            render::print_line(options, source_intent, &format!("  {source}"));
+        }
+        let rendered = markdown_render::render_fragment(
+            &chunk.text,
+            is_markdown_content(&chunk.extractor),
+            options,
+        );
+        print_indented("  ", &rendered);
+    }
+    println!();
+    render::print_line(options, Intent::Muted, short_id(&target.digest));
 }
 
 /// Render the legacy one-card-per-chunk layout.
@@ -496,25 +832,30 @@ fn render_dig_compact_body(
         return false;
     };
 
-    println!();
-    render::print_line(options, Intent::Info, &format!("{center_seq} · center"));
-    render::print_line(
-        options,
-        Intent::Muted,
-        &format!("  {}", dig_source_line(target)),
-    );
+    render_dig_compact_metadata(target, window, options);
 
     let prefix = char_slice(&merged, 0, center_start);
     let center = char_slice(&merged, center_start, center_end);
     let suffix = char_slice(&merged, center_end, merged.chars().count());
-    print_compact_part(&prefix, Intent::Muted, options);
-    print_compact_part(&center, Intent::Info, options);
-    print_compact_part(&suffix, Intent::Muted, options);
+    if !prefix.is_empty() {
+        println!();
+        render::print_line(options, Intent::Muted, "Before");
+        print_compact_part(&prefix, Intent::Muted, options);
+    }
+    println!();
     render::print_line(
         options,
-        Intent::Muted,
-        &format!("  {}", short_id(&target.digest)),
+        Intent::Info,
+        &format!("Target · chunk {center_seq}"),
     );
+    print_compact_part(&center, Intent::Info, options);
+    if !suffix.is_empty() {
+        println!();
+        render::print_line(options, Intent::Muted, "After");
+        print_compact_part(&suffix, Intent::Muted, options);
+    }
+    println!();
+    render::print_line(options, Intent::Muted, short_id(&target.digest));
     true
 }
 
@@ -627,20 +968,65 @@ fn chunk_stale(chunk: &ChunkWithRefs) -> bool {
         .any(|reference| reference.status == lode_core::index::records::FileStatus::Stale)
 }
 
-fn render_dig_table(window: &[ChunkWithRefs], center_seq: Option<u32>) {
-    println!("SEQ  CENTER  STATE  DIGEST        PATH");
+/// Escape one field in the stable table format. A table row is always one
+/// physical line, while this representation keeps every field reversible.
+fn escape_tsv(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '\\' => escaped.push_str("\\\\"),
+            '\t' => escaped.push_str("\\t"),
+            '\r' => escaped.push_str("\\r"),
+            '\n' => escaped.push_str("\\n"),
+            character if character.is_control() => {
+                escaped.push_str(&format!(r"\u{{{:x}}}", character as u32));
+            }
+            character => escaped.push(character),
+        }
+    }
+    escaped
+}
+
+/// Write one table record. Table output deliberately has no terminal-width
+/// logic: stdout can be piped and every field remains complete.
+fn print_tsv(fields: &[&str]) {
+    let row = fields
+        .iter()
+        .map(|field| escape_tsv(field))
+        .collect::<Vec<_>>()
+        .join("\t");
+    println!("{row}");
+}
+
+fn render_dig_table(window: &[ChunkWithRefs], center_digest: &str, center_seq: Option<u32>) {
+    print_tsv(&[
+        "SEQ", "CENTER", "STATE", "DIGEST", "PATH", "HEADING", "PAGE", "TEXT",
+    ]);
     for chunk in window {
         let seq = chunk
             .seq
-            .map_or_else(|| "-".to_string(), |value| value.to_string());
-        let center = if chunk.seq == center_seq { "yes" } else { "no" };
+            .map_or_else(String::new, |value| value.to_string());
+        let center =
+            if chunk.digest == center_digest && (center_seq.is_none() || chunk.seq == center_seq) {
+                "yes"
+            } else {
+                "no"
+            };
         let state = if chunk_stale(chunk) { "stale" } else { "fresh" };
-        println!(
-            "{seq:<4} {center:<7} {state:<6} {:<12} {}",
-            short_id(&chunk.digest),
-            dig_source_line(chunk)
-        );
-        println!("     {}", chunk.text);
+        let path = chunk.primary().path.as_str().to_string();
+        let heading = chunk.heading.clone();
+        let page = chunk.page.map_or_else(String::new, |page| page.to_string());
+        let fields = [
+            seq.as_str(),
+            center,
+            state,
+            chunk.digest.as_str(),
+            path.as_str(),
+            heading.as_str(),
+            page.as_str(),
+            chunk.text.as_str(),
+        ];
+        print_tsv(&fields);
     }
 }
 
@@ -649,30 +1035,39 @@ fn render_dig_table(window: &[ChunkWithRefs], center_seq: Option<u32>) {
 /// reads them — this command writes `files.status` (it is not read-only).
 /// It needs an existing index: with none, it short-circuits with the
 /// `no_index` message.
-fn prospect(workspace: &std::path::Path, query: String, top_k: Option<u32>, view: View) -> u8 {
-    if let Some(code) = ui_msg::bad_workspace("prospect", workspace) {
+fn prospect(
+    workspace: &std::path::Path,
+    query: String,
+    top_k: Option<u32>,
+    view: View,
+    palette: Option<PaletteArg>,
+    no_color: bool,
+) -> u8 {
+    if let Some(code) = ui_msg::bad_workspace("prospect", workspace, view) {
         return code;
     }
     if query.trim().is_empty() {
         let text = lode_core::messages::require("invalid_query");
-        return ui_msg::die("prospect", text.error, text.hint);
+        return ui_msg::die(
+            view,
+            "prospect",
+            error_code::INVALID_QUERY,
+            text.error,
+            text.hint,
+        );
     }
 
-    let settings = match load_settings_for(workspace) {
-        Ok(s) => s,
-        Err(e) => {
-            return ui_msg::die(
-                "prospect",
-                &format!("Could not load configuration: {e}"),
-                Some("Check your lode.toml and environment."),
-            );
-        }
+    let settings = match configure_output(workspace, "prospect", view, palette, no_color) {
+        Ok(settings) => settings,
+        Err(code) => return code,
     };
     let embedder = match build_embedder(&settings.embedding) {
         Ok(e) => e,
         Err(e) => {
             return ui_msg::die(
+                view,
                 "prospect",
+                error_code::EMBEDDING,
                 &format!("Could not build the embedding client: {e}"),
                 Some("Check your embedding configuration in lode.toml."),
             );
@@ -684,13 +1079,15 @@ fn prospect(workspace: &std::path::Path, query: String, top_k: Option<u32>, view
         let text = lode_core::messages::require("no_index");
         let index_path = db_path.display().to_string();
         let error = lode_core::messages::format(text.error, &[("index_path", index_path)]);
-        return ui_msg::die("prospect", &error, text.hint);
+        return ui_msg::die(view, "prospect", error_code::NO_INDEX, &error, text.hint);
     }
     let mut store = match Store::open_existing(&db_path) {
         Ok(s) => s,
         Err(e) => {
             return ui_msg::die(
+                view,
                 "prospect",
+                error_code::INDEX_OPEN,
                 &format!("Cannot open the lode index: {e}"),
                 Some("Ensure `.lode/index.db` is intact, or delete it and remine."),
             );
@@ -701,7 +1098,9 @@ fn prospect(workspace: &std::path::Path, query: String, top_k: Option<u32>, view
     // the library-wide dirty signal reflect the current workspace.
     if let Err(e) = detect_changes(&mut store, workspace, &[]) {
         return ui_msg::die(
+            view,
             "prospect",
+            error_code::SCAN,
             &format!("Could not finish scanning the workspace: {e}"),
             Some("Fix the underlying error and rerun `lode prospect`."),
         );
@@ -710,7 +1109,9 @@ fn prospect(workspace: &std::path::Path, query: String, top_k: Option<u32>, view
     let top_k = top_k.unwrap_or(settings.retrieval.top_k);
     if top_k == 0 {
         return ui_msg::die(
+            view,
             "prospect",
+            error_code::INVALID_TOP_K,
             "--top-k must be at least 1.",
             Some("Set a positive result cap, or drop the flag to use retrieval.top_k."),
         );
@@ -725,7 +1126,9 @@ fn prospect(workspace: &std::path::Path, query: String, top_k: Option<u32>, view
                 Some("Fix the underlying error and rerun `lode prospect`.")
             };
             return ui_msg::die(
+                view,
                 "prospect",
+                error_code::SEARCH,
                 &format!("Could not finish prospecting: {e}"),
                 hint,
             );
@@ -808,8 +1211,16 @@ fn hit_source_line(hit: &lode_core::index::search::SearchHit) -> String {
 ///
 /// Supports all four views: `compact` (narrative), `extended` (detailed),
 /// `table` (grep-friendly), and `json` (machine-readable).
-fn survey(workspace: &std::path::Path, view: View) -> u8 {
-    if let Some(code) = ui_msg::bad_workspace("survey", workspace) {
+fn survey(
+    workspace: &std::path::Path,
+    view: View,
+    palette: Option<PaletteArg>,
+    no_color: bool,
+) -> u8 {
+    if let Some(code) = ui_msg::bad_workspace("survey", workspace, view) {
+        return code;
+    }
+    if let Err(code) = configure_output(workspace, "survey", view, palette, no_color) {
         return code;
     }
 
@@ -826,7 +1237,9 @@ fn survey(workspace: &std::path::Path, view: View) -> u8 {
                 }
                 Err(e) => {
                     return ui_msg::die(
+                        view,
                         "survey",
+                        error_code::SCAN,
                         &format!("Could not finish scanning the workspace: {e}"),
                         Some("Fix the underlying error and rerun `lode survey`."),
                     );
@@ -834,7 +1247,9 @@ fn survey(workspace: &std::path::Path, view: View) -> u8 {
             },
             Err(e) => {
                 return ui_msg::die(
+                    view,
                     "survey",
+                    error_code::INDEX_OPEN,
                     &format!("Cannot open the lode index: {e}"),
                     Some("Ensure `.lode/index.db` is intact, or delete it and remine."),
                 );
@@ -872,26 +1287,29 @@ fn survey(workspace: &std::path::Path, view: View) -> u8 {
 /// from the embedder: `embedding.model_dimension` wins when configured,
 /// otherwise the embedder probes the endpoint (a single "ping" embed) to
 /// infer it — mirroring Python's lazy `dimension` property.
-fn mine(workspace: &std::path::Path, view: View, from_scratch: bool) -> u8 {
-    if let Some(code) = ui_msg::bad_workspace("mine", workspace) {
+fn mine(
+    workspace: &std::path::Path,
+    view: View,
+    from_scratch: bool,
+    palette: Option<PaletteArg>,
+    no_color: bool,
+    no_progress: bool,
+) -> u8 {
+    if let Some(code) = ui_msg::bad_workspace("mine", workspace, view) {
         return code;
     }
 
-    let settings = match load_settings_for(workspace) {
-        Ok(s) => s,
-        Err(e) => {
-            return ui_msg::die(
-                "mine",
-                &format!("Could not load configuration: {e}"),
-                Some("Check your lode.toml and environment."),
-            );
-        }
+    let settings = match configure_output(workspace, "mine", view, palette, no_color) {
+        Ok(settings) => settings,
+        Err(code) => return code,
     };
     let embedder = match build_embedder(&settings.embedding) {
         Ok(e) => e,
         Err(e) => {
             return ui_msg::die(
+                view,
                 "mine",
+                error_code::EMBEDDING,
                 &format!("Could not build the embedding client: {e}"),
                 Some("Check your embedding configuration in lode.toml."),
             );
@@ -903,7 +1321,9 @@ fn mine(workspace: &std::path::Path, view: View, from_scratch: bool) -> u8 {
             Ok(s) => s,
             Err(e) => {
                 return ui_msg::die(
+                    view,
                     "mine",
+                    error_code::CHUNKING,
                     &format!("Invalid chunking configuration: {e}"),
                     Some("Ensure chunking.overlap < chunking.size and chunking.size > 0."),
                 );
@@ -921,7 +1341,9 @@ fn mine(workspace: &std::path::Path, view: View, from_scratch: bool) -> u8 {
     if from_scratch && has_index {
         if let Err(e) = embedder.dimension() {
             return ui_msg::die(
+                view,
                 "mine",
+                error_code::DIMENSION,
                 &format!("Could not determine the embedding dimension: {e}"),
                 Some(
                     "Check your embedding endpoint, or set `embedding.model_dimension` in lode.toml.",
@@ -930,7 +1352,9 @@ fn mine(workspace: &std::path::Path, view: View, from_scratch: bool) -> u8 {
         }
         if let Err(e) = embedder.model_id() {
             return ui_msg::die(
+                view,
                 "mine",
+                error_code::MODEL,
                 &format!("Could not determine the embedding model: {e}"),
                 Some("Check your embedding endpoint, or set `embedding.model` in lode.toml."),
             );
@@ -943,7 +1367,9 @@ fn mine(workspace: &std::path::Path, view: View, from_scratch: bool) -> u8 {
             }
             Err(e) => {
                 return ui_msg::die(
+                    view,
                     "mine",
+                    error_code::RESET,
                     &format!("Could not reset the lode index: {e}"),
                     Some("Ensure the workspace is writable."),
                 );
@@ -955,7 +1381,7 @@ fn mine(workspace: &std::path::Path, view: View, from_scratch: bool) -> u8 {
         match Store::open_existing(&db_path) {
             Ok(mut store) => match detect_changes(&mut store, workspace, &[]) {
                 Ok(detect) => {
-                    let bar = mine_progress_bar(view);
+                    let bar = mine_progress_bar(view, no_progress);
                     let report = mine_report(bar.as_ref());
                     let started = Instant::now();
                     let summary = match sync(
@@ -968,8 +1394,13 @@ fn mine(workspace: &std::path::Path, view: View, from_scratch: bool) -> u8 {
                     ) {
                         Ok(summary) => summary,
                         Err(e) => {
+                            if let Some(bar) = &bar {
+                                bar.finish_and_clear();
+                            }
                             return ui_msg::die(
+                                view,
                                 "mine",
+                                error_code::MINING,
                                 &format!("Could not finish mining: {e}"),
                                 Some("Fix the underlying error and rerun `lode mine`."),
                             );
@@ -982,7 +1413,9 @@ fn mine(workspace: &std::path::Path, view: View, from_scratch: bool) -> u8 {
                 }
                 Err(e) => {
                     return ui_msg::die(
+                        view,
                         "mine",
+                        error_code::SCAN,
                         &format!("Could not finish scanning the workspace: {e}"),
                         Some("Fix the underlying error and rerun `lode mine`."),
                     );
@@ -990,7 +1423,9 @@ fn mine(workspace: &std::path::Path, view: View, from_scratch: bool) -> u8 {
             },
             Err(e) => {
                 return ui_msg::die(
+                    view,
                     "mine",
+                    error_code::INDEX_OPEN,
                     &format!("Cannot open the lode index: {e}"),
                     Some("Ensure `.lode/index.db` is intact, or delete it and remine."),
                 );
@@ -1018,7 +1453,9 @@ fn mine(workspace: &std::path::Path, view: View, from_scratch: bool) -> u8 {
                 Ok(d) => d as u32,
                 Err(e) => {
                     return ui_msg::die(
+                        view,
                         "mine",
+                        error_code::DIMENSION,
                         &format!("Could not determine the embedding dimension: {e}"),
                         Some(
                             "Check your embedding endpoint, or set `embedding.model_dimension` in lode.toml.",
@@ -1030,7 +1467,9 @@ fn mine(workspace: &std::path::Path, view: View, from_scratch: bool) -> u8 {
                 Ok(m) => m,
                 Err(e) => {
                     return ui_msg::die(
+                        view,
                         "mine",
+                        error_code::MODEL,
                         &format!("Could not determine the embedding model: {e}"),
                         Some(
                             "Check your embedding endpoint, or set `embedding.model` in lode.toml.",
@@ -1040,7 +1479,7 @@ fn mine(workspace: &std::path::Path, view: View, from_scratch: bool) -> u8 {
             };
             match Store::open(&db_path, &model_id, dimension, &tokenizer) {
                 Ok(mut store) => {
-                    let bar = mine_progress_bar(view);
+                    let bar = mine_progress_bar(view, no_progress);
                     let report = mine_report(bar.as_ref());
                     let started = Instant::now();
                     let summary = match sync(
@@ -1053,8 +1492,13 @@ fn mine(workspace: &std::path::Path, view: View, from_scratch: bool) -> u8 {
                     ) {
                         Ok(summary) => summary,
                         Err(e) => {
+                            if let Some(bar) = &bar {
+                                bar.finish_and_clear();
+                            }
                             return ui_msg::die(
+                                view,
                                 "mine",
+                                error_code::MINING,
                                 &format!("Could not finish mining: {e}"),
                                 Some("Fix the underlying error and rerun `lode mine`."),
                             );
@@ -1067,7 +1511,9 @@ fn mine(workspace: &std::path::Path, view: View, from_scratch: bool) -> u8 {
                 }
                 Err(e) => {
                     return ui_msg::die(
+                        view,
                         "mine",
+                        error_code::INDEX_CREATE,
                         &format!("Cannot create the lode index: {e}"),
                         Some("Ensure the workspace is writable and the configuration is valid."),
                     );
@@ -1082,7 +1528,11 @@ fn mine(workspace: &std::path::Path, view: View, from_scratch: bool) -> u8 {
         View::Table => render_mine_table(workspace, &result),
         View::Json => emit_mine_json(&result),
     }
-    0
+    if result.failed.is_empty() {
+        EXIT_OK
+    } else {
+        EXIT_PARTIAL_FAILURE
+    }
 }
 
 /// Build the mine progress bar: an indicatif spinner bar on stderr.
@@ -1090,16 +1540,56 @@ fn mine(workspace: &std::path::Path, view: View, from_scratch: bool) -> u8 {
 /// Suppressed for `--view json` (JSON consumers want a clean stream) and
 /// hidden automatically when stderr is not a terminal (indicatif detects
 /// this), so `lode mine > log` stays unpolluted.
-fn mine_progress_bar(view: View) -> Option<ProgressBar> {
-    if view == View::Json {
+fn mine_progress_bar(view: View, no_progress: bool) -> Option<ProgressBar> {
+    if !should_show_progress(
+        view,
+        no_progress,
+        std::io::stderr().is_terminal(),
+        std::env::var("TERM").ok().as_deref(),
+    ) {
         return None;
     }
-    let style = ProgressStyle::with_template("{spinner:.green} mining {pos}/{len} {msg}")
-        .expect("template is static and valid")
+    let options = RenderOptions::stderr();
+    let template = progress_template(options.palette(), options.color());
+    let style = ProgressStyle::with_template(&template)
+        .expect("progress template is valid")
         .progress_chars("##-");
     let bar = ProgressBar::new_spinner().with_style(style);
     bar.set_draw_target(ProgressDrawTarget::stderr());
     Some(bar)
+}
+
+fn progress_template(palette: OutputPalette, color: bool) -> String {
+    if !color {
+        return "{spinner} mining {pos}/{len} {msg}".to_owned();
+    }
+    // Indicatif delegates styled placeholders to console, which applies its
+    // own process-global NO_COLOR check. Embed the already-resolved colour
+    // here so an explicit `no_color = false` is honoured consistently.
+    format!(
+        "{}{{spinner}}\x1b[0m mining {{pos}}/{{len}} {{msg}}",
+        progress_color(palette)
+    )
+}
+
+fn progress_color(palette: OutputPalette) -> &'static str {
+    match palette {
+        OutputPalette::Ansi => "\x1b[32m",
+        OutputPalette::AccessibleTol => "\x1b[38;2;0;153;136m",
+        OutputPalette::AccessibleOkabeIto => "\x1b[38;2;0;158;115m",
+    }
+}
+
+fn should_show_progress(
+    view: View,
+    no_progress: bool,
+    stderr_terminal: bool,
+    term: Option<&str>,
+) -> bool {
+    !no_progress
+        && !matches!(view, View::Json | View::Table)
+        && stderr_terminal
+        && !term.is_some_and(|term| term.eq_ignore_ascii_case("dumb"))
 }
 
 /// Build the sync progress reporter that drives the bar.
@@ -1168,39 +1658,6 @@ fn processed_entries(result: &SyncSummary) -> Vec<(&'static str, String)> {
     }
     for failure in &result.failed {
         rows.push(("failed", failure.path.as_str().to_string()));
-    }
-    rows
-}
-
-/// Table rows for the mine table: `(STATUS, PATH, DETAIL)`.
-/// Table rows for the mine table: `(STATUS, PATH, DETAIL)`.
-///
-/// A failed row's `DETAIL` is the reason (truncated by the column budget);
-/// every other row has nothing more to say than the status itself.
-fn mine_table_rows(result: &SyncSummary) -> Vec<(&'static str, String, String)> {
-    let mut rows: Vec<(&'static str, String, String)> = Vec::new();
-    for path in &result.added {
-        rows.push(("added", path.as_str().to_string(), String::new()));
-    }
-    for path in &result.updated {
-        rows.push(("updated", path.as_str().to_string(), String::new()));
-    }
-    for (from, to) in &result.renamed {
-        rows.push((
-            "renamed",
-            format!("{} -> {}", from.as_str(), to.as_str()),
-            String::new(),
-        ));
-    }
-    for path in &result.removed {
-        rows.push(("removed", path.as_str().to_string(), String::new()));
-    }
-    for failure in &result.failed {
-        rows.push((
-            "failed",
-            failure.path.as_str().to_string(),
-            failure.error.clone(),
-        ));
     }
     rows
 }
@@ -1372,67 +1829,23 @@ fn print_failures(result: &SyncSummary) {
     }
 }
 
-/// Render the mine report as an aligned table, optimised for grepping.
-///
-/// One row per processed file with `STATUS`/`PATH`/`DETAIL` columns. The
-/// table adapts to the terminal width (same budget as the survey table) and
-/// empty `DETAIL` renders as `-`.
+/// Render the mine result as stable TSV: one complete row per outcome.
 fn render_mine_table(_workspace: &std::path::Path, result: &SyncSummary) {
-    if nothing_done(result) {
-        println!("Nothing to do.");
-        return;
+    print_tsv(&["STATUS", "PATH", "FROM", "DETAIL"]);
+    for path in &result.added {
+        print_tsv(&["added", path.as_str(), "", ""]);
     }
-
-    println!("{}", mine_header(result));
-    println!();
-
-    let rows = mine_table_rows(result);
-
-    // Same column-width budget as the survey table.
-    const STATUS_W: usize = 8; // "renamed" is the longest status.
-    const COL_GAPS: usize = 4; // two-column gutters.
-    const MIN_PATH_W: usize = 28;
-    const MAX_PATH_W: usize = 48;
-    const MIN_DETAIL_W: usize = 22;
-    let term_w = terminal_size()
-        .map(|(Width(w), _)| w as usize)
-        .unwrap_or(80);
-
-    let widest_path = rows
-        .iter()
-        .map(|(_, p, _)| p.chars().count())
-        .max()
-        .unwrap_or(MIN_PATH_W);
-    let room_left_over = term_w.saturating_sub(STATUS_W + COL_GAPS + MIN_DETAIL_W);
-    let path_w = widest_path
-        .clamp(MIN_PATH_W, MAX_PATH_W)
-        .min(room_left_over.max(MIN_PATH_W));
-    let detail_w = term_w
-        .saturating_sub(STATUS_W + COL_GAPS + path_w)
-        .min(MIN_DETAIL_W);
-
-    println!(
-        "{:<status_w$}  {:<path_w$}  DETAIL",
-        "STATUS",
-        "PATH",
-        status_w = STATUS_W,
-        path_w = path_w,
-    );
-    for (status, path, detail) in &rows {
-        let path = truncate_middle(path, path_w);
-        let detail = if detail.is_empty() {
-            "-".to_string()
-        } else {
-            truncate_tail(detail, detail_w)
-        };
-        println!(
-            "{:<status_w$}  {:<path_w$}  {}",
-            status,
-            path,
-            detail,
-            status_w = STATUS_W,
-            path_w = path_w,
-        );
+    for path in &result.updated {
+        print_tsv(&["updated", path.as_str(), "", ""]);
+    }
+    for (from, to) in &result.renamed {
+        print_tsv(&["renamed", to.as_str(), from.as_str(), ""]);
+    }
+    for path in &result.removed {
+        print_tsv(&["removed", path.as_str(), "", ""]);
+    }
+    for failure in &result.failed {
+        print_tsv(&["failed", failure.path.as_str(), "", failure.error.as_str()]);
     }
 }
 
@@ -1537,46 +1950,40 @@ fn render_prospect_extended(hits: &[lode_core::index::search::SearchHit]) {
     print_prospect_epilogue(hits);
 }
 
-/// Render prospect hits as a table (table): RANK/SCORE/DIGEST/PATH.
-///
-/// heading/page/state stay out: numbers and paths are the grep anchors.
+/// Render prospect hits as stable TSV records.
 fn render_prospect_table(hits: &[lode_core::index::search::SearchHit]) {
-    if hits.is_empty() {
-        println!("Dry hole: nothing matched.");
-        return;
-    }
-    const RANK_W: usize = 4;
-    const SCORE_W: usize = 6;
-    let widest_digest = hits
-        .iter()
-        .map(|h| short_id(&h.digest).chars().count())
-        .max()
-        .unwrap_or(12);
-    let digest_w = widest_digest.max(6);
-
-    println!(
-        "{:<rank_w$}  {:<score_w$}  {:<digest_w$}  PATH",
-        "RANK",
-        "SCORE",
-        "DIGEST",
-        rank_w = RANK_W,
-        score_w = SCORE_W,
-        digest_w = digest_w,
-    );
+    print_tsv(&[
+        "RANK", "SCORE", "DIGEST", "PATH", "HEADING", "PAGE", "STATE",
+    ]);
     for (index, hit) in hits.iter().enumerate() {
         let rank = index + 1;
-        println!(
-            "{:<rank_w$}  {:<score_w$}  {:<digest_w$}  {}",
-            rank,
-            format!("{:.3}", hit.score),
-            short_id(&hit.digest),
-            hit_source_line(hit),
-            rank_w = RANK_W,
-            score_w = SCORE_W,
-            digest_w = digest_w,
-        );
+        let primary = hit.primary();
+        let state = if hit.stale() { "stale" } else { "fresh" };
+        let rank = rank.to_string();
+        let score = hit.score.to_string();
+        let path = primary.path.as_str().to_string();
+        let heading = hit.heading.clone();
+        let page = hit.page.map_or_else(String::new, |page| page.to_string());
+        let fields = [
+            rank.as_str(),
+            score.as_str(),
+            hit.digest.as_str(),
+            path.as_str(),
+            heading.as_str(),
+            page.as_str(),
+            state,
+        ];
+        print_tsv(&fields);
     }
-    print_prospect_epilogue(hits);
+    if hits.iter().any(|hit| hit.stale()) {
+        print_prospect_stale_warning();
+    }
+}
+
+fn print_prospect_stale_warning() {
+    eprintln!(
+        "Warning: results include stale files; verify them before relying on them. Run `lode mine` to update."
+    );
 }
 
 /// Emit a flat prospect JSON payload (query context + hits + dirty signal).
@@ -1653,126 +2060,31 @@ fn emit_json(result: &DetectResult) {
     println!("{}", serde_json::to_string_pretty(&payload).unwrap());
 }
 
-/// Render the survey as an aligned table, optimised for grepping.
-///
-/// One row per pending change with `STATUS`/`PATH`/`DETAIL` columns. The
-/// table adapts to the terminal width: `STATUS` is fixed, `PATH` grows with
-/// the longest path (within generous bounds, middles elided), and `DETAIL`
-/// gets whatever remains (floored so it never collapses). Empty `DETAIL`
-/// renders as `-`.
+/// Render the survey as stable TSV: one complete row per pending change.
 fn render_survey_table(result: &DetectResult, has_index: bool) {
-    let pending = result.pending();
-    if pending == 0 {
-        if has_index {
-            println!("No new findings in this lode.");
-        } else {
-            println!("The lode is empty — nothing to mine.");
-        }
-        return;
-    }
-
-    // Collect rows: (status, path, detail).
-    let mut rows: Vec<(&str, String, String)> = Vec::new();
+    let _ = has_index;
+    print_tsv(&["STATUS", "PATH", "FROM", "DETAIL"]);
     for change in &result.changes {
         match change {
             Change::Added(snap) => {
-                rows.push(("new", snap.path.as_str().to_string(), String::new()));
+                print_tsv(&["new", snap.path.as_str(), "", ""]);
             }
-            Change::Modified { old, new } => rows.push((
-                "modified",
-                old.path.as_str().to_string(),
-                format!(
+            Change::Modified { old, new } => {
+                let detail = format!(
                     "{} -> {} bytes, {} -> {}",
                     old.size,
                     new.size,
                     format_unix_ts(old.mtime),
                     format_unix_ts(new.mtime),
-                ),
-            )),
-            Change::Removed(record) => {
-                rows.push(("missing", record.path.as_str().to_string(), String::new()));
+                );
+                print_tsv(&["modified", new.path.as_str(), "", detail.as_str()]);
             }
-            Change::Renamed { from, to } => rows.push((
-                "renamed",
-                format!("{} -> {}", from.as_str(), to.as_str()),
-                String::new(),
-            )),
+            Change::Removed(record) => print_tsv(&["missing", record.path.as_str(), "", ""]),
+            Change::Renamed { from, to } => {
+                print_tsv(&["renamed", to.as_str(), from.as_str(), ""]);
+            }
         }
     }
-
-    // Column-width budget. STATUS is fixed; PATH scales with the longest
-    // path but respects floor/ceiling so neither extreme dominates; DETAIL
-    // targets a comfortable width but shrinks on narrow terminals so the
-    // table never overflows the available columns.
-    const STATUS_W: usize = 8; // "modified" is the longest status.
-    const COL_GAPS: usize = 4; // two-column gutters.
-    const MIN_PATH_W: usize = 28;
-    const MAX_PATH_W: usize = 48;
-    const MIN_DETAIL_W: usize = 22;
-    let term_w = terminal_size()
-        .map(|(Width(w), _)| w as usize)
-        .unwrap_or(80);
-
-    let widest_path = rows
-        .iter()
-        .map(|(_, p, _)| p.chars().count())
-        .max()
-        .unwrap_or(MIN_PATH_W);
-    let room_left_over = term_w.saturating_sub(STATUS_W + COL_GAPS + MIN_DETAIL_W);
-    let path_w = widest_path
-        .clamp(MIN_PATH_W, MAX_PATH_W)
-        .min(room_left_over.max(MIN_PATH_W));
-    let detail_w = term_w
-        .saturating_sub(STATUS_W + COL_GAPS + path_w)
-        .min(MIN_DETAIL_W);
-
-    println!(
-        "{:<status_w$}  {:<path_w$}  DETAIL",
-        "STATUS",
-        "PATH",
-        status_w = STATUS_W,
-        path_w = path_w,
-    );
-    for (status, path, detail) in &rows {
-        let path = truncate_middle(path, path_w);
-        let detail = if detail.is_empty() {
-            "-".to_string()
-        } else {
-            truncate_tail(detail, detail_w)
-        };
-        println!(
-            "{:<status_w$}  {:<path_w$}  {}",
-            status,
-            path,
-            detail,
-            status_w = STATUS_W,
-            path_w = path_w,
-        );
-    }
-}
-
-/// Elide the middle of a string beyond `max` characters, keeping both the
-/// head and the tail: `abc...xyz`.
-///
-/// Used for the `PATH` column: dropping the interior leaves the leading
-/// directories and the trailing filename recognisable, unlike a pure-tail
-/// crop which discards the interesting parts wholesale.
-///
-/// `max` counts Unicode scalar values, not display columns — CJK wide
-/// characters count as one. Paths are typically ASCII, so this is a
-/// reasonable approximation.
-fn truncate_middle(s: &str, max: usize) -> String {
-    let chars: Vec<char> = s.chars().collect();
-    if chars.len() <= max {
-        return s.to_string();
-    }
-    let avail = max.saturating_sub(3); // reserve space for "..."
-    let half = avail / 2;
-    let head_end = half;
-    let tail_start = chars.len() - (avail - half);
-    let head: String = chars[..head_end].iter().collect();
-    let tail: String = chars[tail_start..].iter().collect();
-    format!("{head}...{tail}")
 }
 
 /// Truncate a string to `max` characters, keeping the head.
@@ -2210,5 +2522,82 @@ mod dig_tests {
             std::slice::from_ref(&chunk),
             RenderOptions::plain()
         ));
+    }
+}
+
+#[cfg(test)]
+mod output_contract_tests {
+    use super::*;
+
+    #[test]
+    fn tsv_escaping_preserves_record_boundaries() {
+        assert_eq!(escape_tsv("a\\b\tc\rd\ne\u{0000}"), r"a\\b\tc\rd\ne\u{0}");
+    }
+
+    #[test]
+    fn tsv_line_has_one_physical_line_and_stable_columns() {
+        let line = ["status", "path", "", "detail\nwith tab\t"]
+            .iter()
+            .map(|field| escape_tsv(field))
+            .collect::<Vec<_>>()
+            .join("\t");
+        assert_eq!(line, "status\tpath\t\tdetail\\nwith tab\\t");
+        assert_eq!(line.lines().count(), 1);
+        assert_eq!(line.split('\t').count(), 4);
+    }
+
+    #[test]
+    fn progress_policy_is_limited_to_interactive_human_views() {
+        assert!(should_show_progress(
+            View::Compact,
+            false,
+            true,
+            Some("xterm-256color")
+        ));
+        assert!(should_show_progress(View::Extended, false, true, None));
+        assert!(!should_show_progress(
+            View::Compact,
+            true,
+            true,
+            Some("xterm")
+        ));
+        assert!(!should_show_progress(
+            View::Compact,
+            false,
+            false,
+            Some("xterm")
+        ));
+        assert!(!should_show_progress(
+            View::Compact,
+            false,
+            true,
+            Some("dumb")
+        ));
+        assert!(!should_show_progress(
+            View::Table,
+            false,
+            true,
+            Some("xterm")
+        ));
+        assert!(!should_show_progress(
+            View::Json,
+            false,
+            true,
+            Some("xterm")
+        ));
+    }
+
+    #[test]
+    fn progress_template_uses_resolved_palette_and_color_switch() {
+        let palette = OutputPalette::AccessibleOkabeIto;
+        assert_eq!(
+            progress_template(palette, true),
+            "\x1b[38;2;0;158;115m{spinner}\x1b[0m mining {pos}/{len} {msg}"
+        );
+
+        assert_eq!(
+            progress_template(palette, false),
+            "{spinner} mining {pos}/{len} {msg}"
+        );
     }
 }

@@ -12,6 +12,7 @@ use termimad::MadSkin;
 use termimad::crossterm::style::{Attribute, Color};
 
 use crate::render::RenderOptions;
+use lode_core::config::OutputPalette;
 
 /// Render one stored Markdown fragment for a human-facing terminal view.
 pub(crate) fn render_fragment(text: &str, markdown: bool, options: RenderOptions) -> String {
@@ -19,24 +20,71 @@ pub(crate) fn render_fragment(text: &str, markdown: bool, options: RenderOptions
         return text.to_owned();
     }
 
-    let skin = terminal_skin(options.ansi());
+    let skin = terminal_skin(options);
     skin.term_text(text).to_string()
 }
 
-fn terminal_skin(ansi: bool) -> MadSkin {
-    if !ansi {
+fn terminal_skin(options: RenderOptions) -> MadSkin {
+    if !options.ansi() {
         return MadSkin::no_style();
     }
 
     let mut skin = MadSkin::default();
-    skin.headers[0].set_fg(Color::Cyan);
+    let (info, muted, success, warning) = match options.palette() {
+        OutputPalette::Ansi => (Color::Cyan, Color::DarkGrey, Color::Green, Color::Yellow),
+        OutputPalette::AccessibleTol => (
+            Color::Rgb {
+                r: 0,
+                g: 119,
+                b: 187,
+            },
+            Color::Rgb {
+                r: 128,
+                g: 128,
+                b: 128,
+            },
+            Color::Rgb {
+                r: 0,
+                g: 153,
+                b: 136,
+            },
+            Color::Rgb {
+                r: 238,
+                g: 119,
+                b: 51,
+            },
+        ),
+        OutputPalette::AccessibleOkabeIto => (
+            Color::Rgb {
+                r: 86,
+                g: 180,
+                b: 233,
+            },
+            Color::Rgb {
+                r: 136,
+                g: 136,
+                b: 136,
+            },
+            Color::Rgb {
+                r: 0,
+                g: 158,
+                b: 115,
+            },
+            Color::Rgb {
+                r: 240,
+                g: 228,
+                b: 66,
+            },
+        ),
+    };
+    skin.headers[0].set_fg(info);
     skin.headers[0].add_attr(Attribute::Bold);
-    skin.headers[1].set_fg(Color::Blue);
+    skin.headers[1].set_fg(info);
     skin.headers[1].add_attr(Attribute::Bold);
-    skin.bold.set_fg(Color::Yellow);
-    skin.inline_code.set_fg(Color::Green);
-    skin.quote_mark.set_fg(Color::DarkGrey);
-    skin.horizontal_rule.set_fg(Color::DarkGrey);
+    skin.bold.set_fg(warning);
+    skin.inline_code.set_fg(success);
+    skin.quote_mark.set_fg(muted);
+    skin.horizontal_rule.set_fg(muted);
     skin
 }
 

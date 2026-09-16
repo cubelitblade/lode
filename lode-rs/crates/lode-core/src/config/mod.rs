@@ -28,7 +28,7 @@ pub struct Settings {
     /// version so legacy files without `version` keep loading.
     #[serde(default = "default_version")]
     pub version: u32,
-    /// Output / ignore switch configuration.
+    /// Application-level output configuration.
     #[serde(default)]
     pub app: AppConfig,
     /// Embedding provider configuration.
@@ -67,9 +67,37 @@ fn default_version() -> u32 {
     CONFIG_VERSION
 }
 
-/// App-level configuration (output, ignore).
+/// App-level configuration.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct AppConfig {}
+pub struct AppConfig {
+    /// Human-facing output settings.
+    #[serde(default)]
+    pub output: OutputConfig,
+}
+
+/// Colour palettes supported by the CLI renderer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputPalette {
+    /// Use the terminal's standard ANSI colours.
+    #[default]
+    Ansi,
+    /// Accessible fixed colours based on Paul Tol's vibrant palette.
+    AccessibleTol,
+    /// Accessible fixed colours based on the Okabe-Ito palette.
+    AccessibleOkabeIto,
+}
+
+/// Human-facing output configuration.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct OutputConfig {
+    /// Intent colour palette.
+    #[serde(default)]
+    pub palette: OutputPalette,
+    /// Explicit colour switch; `None` follows `NO_COLOR` and terminal state.
+    #[serde(default)]
+    pub no_color: Option<bool>,
+}
 
 /// Embedding backend provider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]

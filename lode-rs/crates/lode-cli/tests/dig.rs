@@ -145,12 +145,19 @@ fn dig_compact_accepts_full_digest_and_radius() {
 
     assert_success(&output);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Dug dead00010000"));
+    assert!(stdout.starts_with("guide.txt > Guide\n"));
+    assert!(stdout.contains("Target · chunk 1"));
+    assert!(stdout.contains("Context · 1 before, 1 after"));
+    assert!(
+        stdout
+            .lines()
+            .any(|line| !line.is_empty() && line.chars().all(|ch| ch == '─'))
+    );
     assert!(!stdout.contains("0 · center"));
-    assert!(stdout.contains("1 · center"));
     assert!(stdout.contains("before"));
     assert!(stdout.contains("center"));
     assert!(stdout.contains("after"));
+    assert_eq!(stdout.matches("dead00010000").count(), 1);
     assert!(output.stderr.is_empty());
 }
 
@@ -181,7 +188,7 @@ fn dig_compact_deduplicates_verified_overlap() {
     );
     assert_success(&output);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("1 · center"));
+    assert!(stdout.contains("Target · chunk 1"));
     assert!(stdout.contains("abcd"));
     assert!(stdout.contains("efghij"));
     assert!(!stdout.contains("abcdef"));
@@ -218,8 +225,8 @@ fn dig_json_reports_invalid_not_found_and_ambiguous_inputs() {
     let invalid_payload = json_output(&invalid);
     assert_eq!(invalid_payload["code"], "invalid_digest");
     let invalid_message = invalid_payload["message"].as_str().unwrap();
-    assert!(invalid_message.contains('\n'));
-    assert!(!invalid_message.contains(r"\n"));
+    assert!(!invalid_message.contains('\n'));
+    assert_eq!(invalid_payload["hint"], "Make sure the digest is valid.");
     assert!(invalid.stderr.is_empty());
 
     let missing_digest = full_digest("beef");
@@ -236,6 +243,7 @@ fn dig_json_reports_invalid_not_found_and_ambiguous_inputs() {
     assert_eq!(payload["code"], "ambiguous");
     let candidates = payload["candidates"].as_array().unwrap();
     assert_eq!(candidates.len(), 2);
+    assert!(ambiguous.stderr.is_empty());
     assert!(
         candidates
             .iter()
