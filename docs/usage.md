@@ -1,11 +1,10 @@
 # Usage
 
-## Supported document formats
-
-The Rust CLI indexes UTF-8/UTF-16/Latin-1 text files, Markdown, DOCX, and
-digital PDFs. DOCX extraction preserves paragraph order, built-in heading
-chains, and table rows as pipe-delimited text. PDF extraction preserves
-non-empty page numbers and outline headings for single-flow digital documents.
+The Rust `lode` binary indexes UTF-8, UTF-16, and Latin-1 text files,
+Markdown, DOCX, and digital PDFs. DOCX extraction preserves paragraph order,
+built-in heading chains, and table rows as pipe-delimited text. PDF extraction
+preserves non-empty page numbers and outline headings for single-flow digital
+documents.
 
 PDF table reconstruction, OCR/scanned pages, general multi-column or complex
 layout reading order, and general RTL PDFs are not supported. Image-only PDF
@@ -15,291 +14,86 @@ rest of a run.
 
 ## Global options
 
-Options that apply to every command and must appear before the command name:
+These options apply to every command and may appear before or after the
+command name.
 
-- `--workspace`, `-C`
-    - `<path>`
-    Workspace to operate on. Defaults to the current directory.
+- `--workspace`, `-C <path>`
+  Workspace to operate on. Defaults to the current directory.
+- `--view <compact|extended|table|json>`
+  Result view written to stdout. Defaults to `compact`.
+- `--log-level <error|warn|info|debug>`
+  Process log level written to stderr.
+- `-v`, `-vv`
+  Shorthand for `--log-level info` and `--log-level debug`.
+- `--palette <ansi|accessible_tol|accessible_okabe_ito>`
+  Colour palette for human-readable output.
+- `--no-color`
+  Disable colour for this invocation while retaining textual emphasis.
+- `--no-progress`
+  Disable the `mine` progress indicator.
 
-## lode survey
+`table` writes stable tab-separated records and `json` writes structured JSON.
+Neither view adds terminal styling. Human views use terminal capability
+detection and do not emit ANSI sequences when output is redirected or when
+`TERM=dumb`.
 
-Detect workspace changes and report stale files.
+## `lode survey`
+
+Detect workspace changes and report files that are new, changed, removed, or
+renamed.
 
 ```bash
-lode survey [OPTIONS]
+lode survey
+lode status
 ```
 
-Aliases: `lode status`
+`status` is an alias for `survey`. The command compares files without calling
+an embedding endpoint. With no index, supported files are classified as new.
 
-This command only compares files and does not require an embedding endpoint.
+## `lode mine`
 
-### Options
-
-- `--config`
-    - `<path>`
-    Path to a configuration file.
-
-- `--palette`
-    - `ansi|accessible_light|accessible_dark`
-    Color palette for this run.
-
-- `--no-color`
-   Disable color for this run.
-
-- `--json`
-   Emit JSON output.
-
-### Output
-
-Displays workspace status summary and affected files. Prefixes indicate file changes:
-`+` new, `~` changed, `-` missing. A file moved without content changes is
-reported as a rename (`old -> new`).
-
-## lode mine
-
-Embeds and indexes new or changed files. An embedding endpoint must be configured.
+Embed and index new or changed files.
 
 ```bash
-lode mine [OPTIONS]
+lode mine [--from-scratch]
+lode index [--from-scratch]
 ```
 
-Aliases: `lode index`
+`index` is an alias for `mine`. `--from-scratch` archives the existing index
+and rebuilds it using the current workspace settings. Progress is shown only
+for human views when stderr is an interactive, non-dumb terminal. A run with
+per-file failures returns status `3` and still reports successful and failed
+entries in its result.
 
-Use `--from-scratch` when changing the embedding model or when the index
-schema is incompatible.
+## `lode prospect`
 
-### Options
-
-- `--from-scratch`
-  Discard the existing index and create a new one from scratch.
-
-- `--config`
-    - `<path>`
-    Path to a configuration file.
-
-- `--palette`
-    - `ansi|accessible_light|accessible_dark`
-    Color palette for this run.
-
-- `--no-color`
-  Disable color for this run.
-
-- `--json`
-  Emit JSON output.
-
-### Output
-
-Displays indexing summary and affected paths. Prefixes indicate changes:
-`+` added, `~` updated, `-` removed. A file moved without content changes is
-re-pointed at zero embedding cost and reported as a rename (`old -> new`).
-
-## lode prospect
-
-Search the index and show results with source information.
+Search the index with hybrid dense and lexical retrieval.
 
 ```bash
-lode prospect QUERY [OPTIONS]
+lode prospect QUERY [--top-k <number>]
+lode search QUERY [--top-k <number>]
 ```
 
-Aliases: `lode search`
+`search` is an alias for `prospect`. Results include their score, source
+location, digest, and a text preview. `--top-k` limits the number of returned
+results.
 
-Performs hybrid retrieval: semantic similarity (vector) + BM25 lexical
-matching, combined by the configured `[retrieval.norm]` / `[retrieval.fusion]` plan (default:
-softmax normalization + linear weighted fusion).
+## `lode dig`
 
-### Options
-
-- `QUERY`
-    - `<query>`
-    Query to search for.
-
-- `--top-k`
-    - `<int>`
-    Maximum number of results to return.
-
-- `--config`
-    - `<path>`
-    Path to a configuration file.
-
-- `--palette`
-    - `ansi|accessible_light|accessible_dark`
-    Color palette for this run.
-
-- `--no-color`
-  Disable color for this run.
-
-- `--json`
-  Emit JSON output.
-
-### Output
-
-Displays ranked results with score, source location,
-optional stale marker, and chunk digest, followed by a preview snippet.
-
-## lode dig
-
-Fetch a chunk's full text by its digest (content address).
+Fetch a stored chunk and optional neighbouring chunks by digest.
 
 ```bash
-lode dig DIGEST [OPTIONS]
+lode dig DIGEST [--radius <number>]
+lode get DIGEST [--radius <number>]
 ```
 
-Aliases: `lode get`
+`get` is an alias for `dig`. The digest may be a full `blake3:<hex>` value, a
+bare hexadecimal value, or a printed short prefix. Ambiguous prefixes return
+the matching candidates. `--radius` controls how many chunks are included on
+each side of the target.
 
-The digest may be the full `blake3:<hex>`, a bare hex, or the short prefix
-printed by `prospect` (optionally with a leading `#`). Ambiguous prefixes
-return matching candidates.
+## Reserved commands
 
-### Options
-
-- `DIGEST`
-    - `<digest>`
-    Chunk digest or prefix.
-
-- `--radius`
-    - `<int>`
-    Number of adjacent chunks to include around the target chunk.
-
-- `--config`
-    - `<path>`
-    Path to a configuration file.
-
-- `--palette`
-    - `ansi|accessible_light|accessible_dark`
-    Color palette for this run.
-
-- `--no-color`
-  Disable color for this run.
-
-- `--json`
-  Emit JSON output.
-
-### Output
-
-Displays the target chunk and its surrounding context window.
-
-## lode assay
-
-Explain how one indexed chunk is processed and scored. Two views:
-
-- `lode assay why DIGEST QUERY` — why the chunk scored as it did for a query.
-- `lode assay how DIGEST` — how the configured lexical analyzer splits the
-  chunk's text at index time.
-
-```bash
-lode assay why DIGEST QUERY [OPTIONS]
-lode assay how DIGEST [OPTIONS]
-```
-
-Aliases: `lode analyze why|how`
-
-`why` reuses the same hybrid scoring as `prospect` (semantic + BM25, combined
-by the configured `[retrieval.norm]` / `[retrieval.fusion]` plan) and breaks down the chunk's
-score into its per-source raw and prepared values, the fusion, and its rank.
-A chunk that did not make the results is explained as ranked outside `top_k`
-or as having a zero combined score.
-
-The digest may be the full `blake3:<hex>`, a bare hex, or the short prefix
-printed by `prospect` (optionally with a leading `#`). Ambiguous prefixes
-return matching candidates.
-
-### Options (`why`)
-
-- `DIGEST`
-    - `<digest>`
-    Chunk digest or prefix to explain.
-
-- `QUERY`
-    - `<query>`
-    Query to explain the score for.
-
-- `--top-k`
-    - `<int>`
-    Maximum number of results to return.
-
-- `--config`
-    - `<path>`
-    Path to a configuration file.
-
-- `--palette`
-    - `ansi|accessible_light|accessible_dark`
-    Color palette for this run.
-
-- `--no-color`
-  Disable color for this run.
-
-- `--json`
-  Emit JSON output.
-
-### Output (`why`)
-
-Displays the query, a brief pipeline overview (per-source metric, candidate
-pool size and within-pool rank, the norm→fusion stage, and the final rank),
-the chunk's source location, per-source raw and prepared scores with their
-normalization, the fusion, the combined score, and the chunk's rank (or why
-it is not in the results).
-
-### Options (`how`)
-
-- `DIGEST`
-    - `<digest>`
-    Chunk digest or prefix to inspect.
-
-- `--config`, `--palette`, `--no-color`, `--json`
-    Same as `why`.
-
-### Output (`how`)
-
-Displays the chunk's provenance, the lexical layer as two roles —
-**Lexical analyzer** (the configured strategy, which decides query-side
-analysis) and **Storage tokenizer** (the FTS5 `tokenize=` clause, the index
-storage form) — a preview of the processed text, and the distinct indexed
-terms in their original order. The term line is truncated by rendered width
-(visual units), not by term count; `--json` always carries the complete raw
-token stream plus the structured `terms` list. The stream comes from SQLite
-itself — an in-memory FTS5 table with the same tokenizer read back through
-`fts5vocab` — so it always matches what indexing produced, including case
-folding and pinyin expansion for the native strategies.
-
-## lode config
-
-Inspect and modify configuration.
-
-```bash
-lode config [SUBCOMMAND] [OPTIONS]
-```
-
-A bare `lode config` defaults to `show`.
-
-### Subcommands
-
-- `show`
-  Show the merged effective configuration (TOML).
-
-- `get`
-    - `<key>`
-    Read a config value (merged effective value by default).
-
-- `set`
-    - `<key> <value>`
-    Set a config value.
-
-- `unset`
-    - `<key>`
-    Unset a config value from the target scope.
-
-- `path`
-  Show the target config file path.
-
-### Options
-
-- `--scope`
-    - `user|workspace`
-    Config scope.
-
-- `--palette`
-    - `ansi|accessible_light|accessible_dark`
-    Color palette for this run.
-
-- `--no-color`
-   Disable color for this run.
+`lode assay` and `lode config` are recognised command names but are not
+implemented in the Rust binary yet. They return an execution error until their
+command handlers are added.
