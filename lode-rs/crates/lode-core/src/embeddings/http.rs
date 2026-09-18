@@ -66,8 +66,11 @@ impl ReqwestHttpClient {
     /// Returns [`crate::Error::Embedding`] when `reqwest` declines to build a
     /// client (usually an unusable TLS/system configuration).
     pub fn new(timeout_secs: f64) -> crate::Result<Self> {
+        let timeout = std::time::Duration::try_from_secs_f64(timeout_secs).map_err(|_| {
+            crate::Error::Embedding("HTTP timeout is outside the supported duration range".into())
+        })?;
         let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs_f64(timeout_secs))
+            .timeout(timeout)
             .build()
             .map_err(|e| crate::Error::Embedding(format!("failed to build HTTP client: {e}")))?;
         Ok(Self { client })

@@ -1,9 +1,12 @@
 //! Layered configuration.
 //!
-//! Precedence: `defaults < TOML < environment variables < constructor kwargs`.
-//! The TOML source is treated as replaceable for future formats.
+//! Precedence: defaults < user config < `.lode.toml` < `lode.toml` <
+//! `.lode/config.toml` < environment variables. CLI-only overrides are
+//! applied by the CLI adapter after loading. The TOML source is treated as
+//! replaceable for future formats.
 
 pub mod layered;
+pub mod schema;
 
 use std::collections::BTreeMap;
 
@@ -43,9 +46,6 @@ pub struct Settings {
     /// FTS configuration.
     #[serde(default)]
     pub fts: FtsConfig,
-    /// Ignore rules.
-    #[serde(default)]
-    pub ignore: IgnoreConfig,
 }
 
 impl Default for Settings {
@@ -57,7 +57,6 @@ impl Default for Settings {
             retrieval: RetrievalConfig::default(),
             chunking: ChunkingConfig::default(),
             fts: FtsConfig::default(),
-            ignore: IgnoreConfig::default(),
         }
     }
 }
@@ -73,6 +72,9 @@ pub struct AppConfig {
     /// Human-facing output settings.
     #[serde(default)]
     pub output: OutputConfig,
+    /// Additional workspace ignore files.
+    #[serde(default)]
+    pub ignore: IgnoreConfig,
 }
 
 /// Colour palettes supported by the CLI renderer.
@@ -581,6 +583,10 @@ pub fn build_embedder(cfg: &EmbeddingConfig) -> crate::Result<Box<dyn Embedder>>
     }
 }
 
-/// Ignore rules.
+/// Additional workspace ignore files.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct IgnoreConfig {}
+pub struct IgnoreConfig {
+    /// Paths to gitignore-style files, relative to the workspace root.
+    #[serde(default)]
+    pub sources: Vec<String>,
+}
