@@ -9,7 +9,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use terminal_size::{Width, terminal_size};
 
-use lode_core::config::layered::load_settings_for;
+use lode_core::config::layered::{self, load_settings_for};
+use lode_core::config::schema;
 use lode_core::config::{OutputPalette, Settings, build_embedder};
 use lode_core::index::records::{ChunkLookup, ChunkWithRefs, FileRecord};
 use lode_core::index::store::Store;
@@ -257,7 +258,64 @@ enum Command {
     /// Analyze the store: why | how.
     Assay,
     /// Show or edit configuration.
-    Config,
+    Config {
+        #[command(subcommand)]
+        command: Option<ConfigCommand>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConfigCommand {
+    /// Show the merged effective configuration.
+    Show,
+    /// Read one configuration key.
+    Get {
+        /// Canonical dotted configuration key.
+        key: String,
+        /// Read only the explicit value from one layer.
+        #[arg(long, value_enum)]
+        scope: Option<ConfigScopeArg>,
+    },
+    /// Write one configuration key.
+    Set {
+        /// Canonical dotted configuration key.
+        key: String,
+        /// Value parsed according to the key's type.
+        #[arg(allow_negative_numbers = true)]
+        value: String,
+        /// Layer to edit.
+        #[arg(long, value_enum, default_value_t = ConfigScopeArg::Workspace)]
+        scope: ConfigScopeArg,
+    },
+    /// Remove one explicit configuration key.
+    Unset {
+        /// Canonical dotted configuration key.
+        key: String,
+        /// Layer to edit.
+        #[arg(long, value_enum, default_value_t = ConfigScopeArg::Workspace)]
+        scope: ConfigScopeArg,
+    },
+    /// Print the path of a configuration layer.
+    Path {
+        /// Layer whose write path should be shown.
+        #[arg(long, value_enum, default_value_t = ConfigScopeArg::Workspace)]
+        scope: ConfigScopeArg,
+    },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum ConfigScopeArg {
+    User,
+    Workspace,
+}
+
+impl ConfigScopeArg {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Workspace => "workspace",
+        }
+    }
 }
 
 fn main() -> std::process::ExitCode {
@@ -316,7 +374,13 @@ fn dispatch(cli: Cli) -> u8 {
             cli.no_color,
         ),
         Command::Assay => todo_command("assay", cli.view),
-        Command::Config => todo_command("config", cli.view),
+        Command::Config { command } => config_command(
+            &cli.workspace,
+            command.unwrap_or(ConfigCommand::Show),
+            cli.view,
+            cli.palette,
+            cli.no_color,
+        ),
     }
 }
 
@@ -328,17 +392,17 @@ fn configure_output(
     palette: Option<PaletteArg>,
     no_color: bool,
 ) -> Result<Settings, u8> {
-    // TOML and environment-backed output settings are added in the follow-up
-    // configuration change. For now the effective renderer is determined only
-    // by this invocation's CLI flags (or the renderer defaults).
-    render::set_output(
-        palette
-            .map(PaletteArg::into_core)
-            .unwrap_or(OutputPalette::Ansi),
-        no_color.then_some(true),
-    );
     match load_settings_for(workspace) {
-        Ok(settings) => Ok(settings),
+        Ok(mut settings) => {
+            if let Some(palette) = palette {
+                settings.app.output.palette = palette.into_core();
+            }
+            if no_color {
+                settings.app.output.no_color = Some(true);
+            }
+            render::set_output(settings.app.output.palette, settings.app.output.no_color);
+            Ok(settings)
+        }
         Err(error) => Err(ui_msg::die(
             view,
             command,
@@ -346,6 +410,309 @@ fn configure_output(
             &format!("Could not load configuration: {error}"),
             Some("Check your lode.toml and environment."),
         )),
+    }
+}
+
+fn configure_unloaded_output(palette: Option<PaletteArg>, no_color: bool) {
+    render::set_output(
+        palette
+            .map(PaletteArg::into_core)
+            .unwrap_or(OutputPalette::Ansi),
+        no_color.then_some(true),
+    );
+}
+
+fn config_command(
+    workspace: &std::path::Path,
+    command: ConfigCommand,
+    view: View,
+    palette: Option<PaletteArg>,
+    no_color: bool,
+) -> u8 {
+    if let Some(code) = ui_msg::bad_workspace("config", workspace, view) {
+        return code;
+    }
+    match command {
+        ConfigCommand::Show => {
+            let settings = match configure_output(workspace, "config", view, palette, no_color) {
+                Ok(settings) => settings,
+                Err(code) => return code,
+            };
+            let json = match schema::redacted_json(&settings) {
+                Ok(value) => value,
+                Err(error) => return config_error(view, &error),
+            };
+            match view {
+                View::Compact | View::Extended => match schema::redacted_toml(&settings) {
+                    Ok(value) => println!("{value}"),
+                    Err(error) => return config_error(view, &error),
+                },
+                View::Table => render_config_table(&json),
+                View::Json => println!("{}", serde_json::to_string_pretty(&json).unwrap()),
+            }
+            EXIT_OK
+        }
+        ConfigCommand::Get { key, scope } => {
+            config_get(workspace, &key, scope, view, palette, no_color)
+        }
+        ConfigCommand::Path { scope } => {
+            configure_unloaded_output(palette, no_color);
+            let path = match config_scope_path(workspace, scope) {
+                Ok(path) => path,
+                Err(error) => return config_error(view, &error),
+            };
+            match view {
+                View::Compact | View::Extended => println!("{}", path.display()),
+                View::Table => {
+                    print_tsv(&["KEY", "VALUE", "PATH"]);
+                    let path = path.display().to_string();
+                    print_tsv(&[scope.label(), "", &path]);
+                }
+                View::Json => println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({"path": path})).unwrap()
+                ),
+            }
+            EXIT_OK
+        }
+        ConfigCommand::Set { key, value, scope } => {
+            config_set(workspace, &key, &value, scope, view, palette, no_color)
+        }
+        ConfigCommand::Unset { key, scope } => {
+            config_unset(workspace, &key, scope, view, palette, no_color)
+        }
+    }
+}
+
+fn config_error(view: View, error: &impl std::fmt::Display) -> u8 {
+    ui_msg::die(
+        view,
+        "config",
+        error_code::CONFIG,
+        &error.to_string(),
+        Some("Check the configuration key, value, and target file."),
+    )
+}
+
+fn config_scope_path(
+    workspace: &std::path::Path,
+    scope: ConfigScopeArg,
+) -> lode_core::Result<PathBuf> {
+    match scope {
+        ConfigScopeArg::User => layered::user_config_path(),
+        ConfigScopeArg::Workspace => Ok(layered::workspace_config_path(workspace)),
+    }
+}
+
+fn editable_config_key(key: &str) -> lode_core::Result<&'static schema::ConfigKey> {
+    schema::find_key(key)
+        .filter(|key| key.editable)
+        .ok_or_else(|| schema::unknown_key(key))
+}
+
+fn config_get(
+    workspace: &std::path::Path,
+    key: &str,
+    scope: Option<ConfigScopeArg>,
+    view: View,
+    palette: Option<PaletteArg>,
+    no_color: bool,
+) -> u8 {
+    let spec = match schema::find_key(key) {
+        Some(spec) => spec,
+        None => return config_error(view, &schema::unknown_key(key)),
+    };
+    let (value, path) = match scope {
+        Some(scope) => {
+            configure_unloaded_output(palette, no_color);
+            let path = match config_scope_path(workspace, scope) {
+                Ok(path) => path,
+                Err(error) => return config_error(view, &error),
+            };
+            let value = match layered::get_explicit_value(&path, key) {
+                Ok(Some(value)) => serde_json::to_value(value).unwrap_or(serde_json::Value::Null),
+                Ok(None) => {
+                    return config_error(
+                        view,
+                        &lode_core::Error::Config(format!(
+                            "configuration key `{key}` is not set in the {} scope",
+                            scope.label()
+                        )),
+                    );
+                }
+                Err(error) => return config_error(view, &error),
+            };
+            (redact_config_value(spec, value), path.display().to_string())
+        }
+        None => {
+            let settings = match configure_output(workspace, "config", view, palette, no_color) {
+                Ok(settings) => settings,
+                Err(code) => return code,
+            };
+            let settings = match schema::redacted_json(&settings) {
+                Ok(value) => value,
+                Err(error) => return config_error(view, &error),
+            };
+            let Some(value) = schema::json_path(&settings, key).cloned() else {
+                return config_error(
+                    view,
+                    &lode_core::Error::Config(format!("configuration key `{key}` is unavailable")),
+                );
+            };
+            (value, "effective".to_string())
+        }
+    };
+    render_config_get(view, key, &value, &path)
+}
+
+fn redact_config_value(spec: &schema::ConfigKey, value: serde_json::Value) -> serde_json::Value {
+    if spec.sensitive && !value.is_null() {
+        serde_json::Value::String("[redacted]".to_string())
+    } else {
+        value
+    }
+}
+
+fn render_config_get(view: View, key: &str, value: &serde_json::Value, path: &str) -> u8 {
+    match view {
+        View::Compact => println!("{}", display_json_value(value)),
+        View::Extended => println!("{key} = {} ({path})", display_json_value(value)),
+        View::Table => {
+            print_tsv(&["KEY", "VALUE", "PATH"]);
+            let value = display_json_value(value);
+            print_tsv(&[key, &value, path]);
+        }
+        View::Json => println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "key": key,
+                "value": value,
+            }))
+            .unwrap()
+        ),
+    }
+    EXIT_OK
+}
+
+fn config_set(
+    workspace: &std::path::Path,
+    key: &str,
+    raw_value: &str,
+    scope: ConfigScopeArg,
+    view: View,
+    palette: Option<PaletteArg>,
+    no_color: bool,
+) -> u8 {
+    let spec = match editable_config_key(key) {
+        Ok(spec) => spec,
+        Err(error) => return config_error(view, &error),
+    };
+    let value = match schema::parse_value(key, raw_value) {
+        Ok(value) => value,
+        Err(error) => return config_error(view, &error),
+    };
+    configure_unloaded_output(palette, no_color);
+    let path = match config_scope_path(workspace, scope) {
+        Ok(path) => path,
+        Err(error) => return config_error(view, &error),
+    };
+    let changed = match layered::set_value(&path, key, value.clone()) {
+        Ok(changed) => changed,
+        Err(error) => return config_error(view, &error),
+    };
+    render_config_edit(view, "set", key, &value, &path, changed, spec)
+}
+
+fn config_unset(
+    workspace: &std::path::Path,
+    key: &str,
+    scope: ConfigScopeArg,
+    view: View,
+    palette: Option<PaletteArg>,
+    no_color: bool,
+) -> u8 {
+    let spec = match editable_config_key(key) {
+        Ok(spec) => spec,
+        Err(error) => return config_error(view, &error),
+    };
+    configure_unloaded_output(palette, no_color);
+    let path = match config_scope_path(workspace, scope) {
+        Ok(path) => path,
+        Err(error) => return config_error(view, &error),
+    };
+    let changed = match layered::unset_value(&path, key) {
+        Ok(changed) => changed,
+        Err(error) => return config_error(view, &error),
+    };
+    render_config_edit(
+        view,
+        "unset",
+        key,
+        &toml::Value::String(String::new()),
+        &path,
+        changed,
+        spec,
+    )
+}
+
+fn render_config_edit(
+    view: View,
+    operation: &str,
+    key: &str,
+    value: &toml::Value,
+    path: &std::path::Path,
+    changed: bool,
+    spec: &schema::ConfigKey,
+) -> u8 {
+    let json_value = if operation == "unset" {
+        serde_json::Value::Null
+    } else {
+        redact_config_value(
+            spec,
+            serde_json::to_value(value).unwrap_or(serde_json::Value::Null),
+        )
+    };
+    match view {
+        View::Compact => println!("{operation} {key}"),
+        View::Extended => println!(
+            "{operation} {key} = {} in {}",
+            display_json_value(&json_value),
+            path.display()
+        ),
+        View::Table => {
+            print_tsv(&["KEY", "VALUE", "PATH"]);
+            let value = display_json_value(&json_value);
+            let path = path.display().to_string();
+            print_tsv(&[key, &value, &path]);
+        }
+        View::Json => println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "key": key,
+                "path": path,
+                "changed": changed,
+            }))
+            .unwrap()
+        ),
+    }
+    EXIT_OK
+}
+
+fn render_config_table(config: &serde_json::Value) {
+    print_tsv(&["KEY", "VALUE", "PATH"]);
+    for spec in schema::CONFIG_KEYS {
+        if let Some(value) = schema::json_path(config, spec.path) {
+            let value = display_json_value(value);
+            print_tsv(&[spec.path, &value, "effective"]);
+        }
+    }
+}
+
+fn display_json_value(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(value) => value.clone(),
+        serde_json::Value::Null => "null".to_string(),
+        _ => serde_json::to_string(value).unwrap_or_else(|_| "null".to_string()),
     }
 }
 
@@ -485,9 +852,10 @@ fn dig(
     if let Some(code) = ui_msg::bad_workspace("dig", workspace, view) {
         return code;
     }
-    if let Err(code) = configure_output(workspace, "dig", view, palette, no_color) {
-        return code;
-    }
+    let settings = match configure_output(workspace, "dig", view, palette, no_color) {
+        Ok(settings) => settings,
+        Err(code) => return code,
+    };
 
     let db_path = workspace.join(INDEX_DB_RELATIVE);
     if !db_path.is_file() {
@@ -509,7 +877,14 @@ fn dig(
             );
         }
     };
-    if let Err(e) = detect_changes(&mut store, workspace, &[]) {
+    let ignore_files = settings
+        .app
+        .ignore
+        .sources
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    if let Err(e) = detect_changes(&mut store, workspace, &ignore_files) {
         return ui_msg::die(
             view,
             "dig",
@@ -1096,7 +1471,14 @@ fn prospect(
 
     // Refresh the stale bits before searching so per-chunk annotation and
     // the library-wide dirty signal reflect the current workspace.
-    if let Err(e) = detect_changes(&mut store, workspace, &[]) {
+    let ignore_files = settings
+        .app
+        .ignore
+        .sources
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    if let Err(e) = detect_changes(&mut store, workspace, &ignore_files) {
         return ui_msg::die(
             view,
             "prospect",
@@ -1220,9 +1602,17 @@ fn survey(
     if let Some(code) = ui_msg::bad_workspace("survey", workspace, view) {
         return code;
     }
-    if let Err(code) = configure_output(workspace, "survey", view, palette, no_color) {
-        return code;
-    }
+    let settings = match configure_output(workspace, "survey", view, palette, no_color) {
+        Ok(settings) => settings,
+        Err(code) => return code,
+    };
+    let ignore_files = settings
+        .app
+        .ignore
+        .sources
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
 
     let db_path = workspace.join(INDEX_DB_RELATIVE);
     let has_index = db_path.is_file();
@@ -1230,7 +1620,7 @@ fn survey(
 
     let result = if has_index {
         match Store::open_existing(&db_path) {
-            Ok(mut store) => match detect_changes(&mut store, workspace, &[]) {
+            Ok(mut store) => match detect_changes(&mut store, workspace, &ignore_files) {
                 Ok(result) => {
                     log::info!("detected {} pending changes", result.pending());
                     result
@@ -1259,7 +1649,7 @@ fn survey(
         // No index yet: classify against an empty snapshot (all new).
         log::info!("no index found; classifying against an empty snapshot");
         let indexed: HashMap<WorkspacePath, FileRecord> = HashMap::new();
-        classify(&indexed, workspace, &[])
+        classify(&indexed, workspace, &ignore_files)
     };
 
     match view {
@@ -1303,6 +1693,13 @@ fn mine(
         Ok(settings) => settings,
         Err(code) => return code,
     };
+    let ignore_files = settings
+        .app
+        .ignore
+        .sources
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
     let embedder = match build_embedder(&settings.embedding) {
         Ok(e) => e,
         Err(e) => {
@@ -1379,7 +1776,7 @@ fn mine(
 
     let result = if has_index {
         match Store::open_existing(&db_path) {
-            Ok(mut store) => match detect_changes(&mut store, workspace, &[]) {
+            Ok(mut store) => match detect_changes(&mut store, workspace, &ignore_files) {
                 Ok(detect) => {
                     let bar = mine_progress_bar(view, no_progress);
                     let report = mine_report(bar.as_ref());
@@ -1435,7 +1832,7 @@ fn mine(
         // No index yet: classify against an empty snapshot.
         log::info!("no index found; classifying against an empty snapshot");
         let indexed: HashMap<WorkspacePath, FileRecord> = HashMap::new();
-        let detect = classify(&indexed, workspace, &[]);
+        let detect = classify(&indexed, workspace, &ignore_files);
         if detect.pending() == 0 {
             // Nothing to do — do not create a database.
             SyncSummary {

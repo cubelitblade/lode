@@ -1603,6 +1603,7 @@ dependencies = [
  "tempfile",
  "termimad",
  "terminal_size",
+ "toml",
 ]
 
 [[package]]
