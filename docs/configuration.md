@@ -4,12 +4,16 @@ This document describes lode's configuration options.
 
 ## Loading
 
-Lode loads configuration from the following sources, in order of priority:
+Lode loads configuration in the following order, from lowest to highest
+priority:
 
-1. CLI arguments
-2. Environment variables
-3. Workspace configuration files
-4. User configuration file
+1. Built-in defaults
+2. User configuration file
+3. `./.lode.toml`
+4. `./lode.toml`
+5. `./.lode/config.toml`
+6. Environment variables
+7. CLI arguments supplied for the current invocation
 
 All available configuration sources are loaded. When the same option is defined in multiple sources,
 the value from the higher-priority source overrides the value from the lower-priority source.
@@ -47,11 +51,11 @@ NO_COLOR=1 lode survey
 ### Workspace configuration files
 
 Lode loads all of the following workspace configuration files when they exist.
-They are listed from highest to lowest priority:
+They are listed from lowest to highest priority:
 
-1. `./.lode/config.toml`
+1. `./.lode.toml`
 2. `./lode.toml`
-3. `./.lode.toml`
+3. `./.lode/config.toml`
 
 When the same option is defined in multiple workspace configuration files,
 the value from the higher-priority file overrides the value from the lower-priority file.
@@ -64,6 +68,34 @@ Workspace configuration, environment variables, and CLI arguments can override i
 * **Linux:** `~/.config/lode/config.toml`
 * **macOS:** `~/Library/Application Support/lode/config.toml`
 * **Windows:** `%APPDATA%\lode\config.toml`
+
+## Rust configuration commands
+
+The Rust CLI uses `config` to inspect and edit the two persistent TOML scopes.
+The default edit scope is `workspace`; `config get` reads the effective merged
+value unless a scope is supplied.
+
+```sh
+lode config show
+lode config get embedding.model
+lode config get embedding.model --scope user
+lode config path --scope workspace
+lode config set fts.strategy unicode61 --scope workspace
+lode config unset embedding.model --scope user
+```
+
+`config show` renders effective TOML by default. `--view table` emits stable
+`KEY<TAB>VALUE<TAB>PATH` records and `--view json` emits a configuration object
+or the operation object described by the command. Provider API keys are always
+shown as `[redacted]`; an unset optional key is `null` in JSON or omitted from
+TOML. `version` is visible but cannot be edited.
+
+The Rust CLI accepts `true`, `false`, `1`, `0`, `yes`, `no`, `y`, `n`, `on`,
+and `off` for booleans. String lists accept either a JSON array or
+comma-separated values. `LODE_` variables with unknown paths are ignored. The
+removed `embedding.l2_normalize` TOML field and
+`LODE_EMBEDDING__L2_NORMALIZE` variable are also ignored; Rust always applies
+L2 normalization to embedding vectors.
 
 ## Options
 
@@ -133,6 +165,10 @@ Options:
 >
 > For most typical workspaces, `simple` is recommended as a balanced default, providing good CJK support while retaining general-purpose full-text retrieval capabilities.
 
+For the Rust CLI, `simple` and `jieba` remain accepted configuration values
+for forward compatibility, but the native tokenizer is not available yet.
+Rust indexing examples therefore set `fts.strategy = "unicode61"` explicitly.
+
 ### `embedding`
 
 Controls how embeddings are generated for semantic retrieval.
@@ -183,16 +219,6 @@ For example, some OpenAI-compatible APIs and TEI deployments may expose this thr
 If omitted, lode uses the model's full native output dimension.
 
 **Changing the effective output dimension requires re-mining the index.**
-
-#### `l2_normalize`
-
-Whether to apply L2 normalization to embedding vectors.
-
-When enabled, cosine similarity can be computed using a dot product.
-
-**Default:** `true`
-
-**Usually recommended for retrieval tasks.**
 
 #### `batch_size`
 
@@ -477,8 +503,8 @@ The color palette used for terminal output.
 Options:
 
 - `ansi`: Uses the terminal's standard ANSI color palette.
-- `accessible_light`: A color-distinguishable palette optimized for light terminal backgrounds, based on Paul Tol’s vibrant color scheme.
-- `accessible_dark`: A color-distinguishable palette optimized for dark terminal backgrounds, based on Okabe-Ito color scheme.
+- `accessible_tol`: A color-distinguishable palette based on Paul Tol’s vibrant color scheme.
+- `accessible_okabe_ito`: A color-distinguishable palette based on the Okabe-Ito color scheme.
 
 **Default:** `ansi`
 
@@ -497,13 +523,13 @@ Options:
 > The appearance of colors depends on terminal capabilities:
 >
 > - The `ansi` palette relies on colors defined by the terminal emulator. Different terminals and themes may render the same ANSI color differently.
-> - The `accessible_light` and `accessible_dark` palettes use explicit RGB colors. They require true color (24-bit color) terminal support to preserve the intended appearance. On terminals without true color support, colors may be approximated and appear differently.
+> - The Rust CLI's `accessible_tol` and `accessible_okabe_ito` palettes use explicit RGB colors. They require true color (24-bit color) terminal support to preserve the intended appearance. On terminals without true color support, colors may be approximated and appear differently.
 >
 > The following table shows representative color values for each palette:
 >
-> | Intent | `ansi`                                                                       | `accessible_light`                                                                              | `accessible_dark`                                                                                         |
+> | Intent | `ansi`                                                                       | `accessible_tol`                                                                              | `accessible_okabe_ito`                                                                                         |
 > | -------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-> | `success`       | ![ansi_success_green](https://img.shields.io/badge/ansi_green-00ff00)   | ![accessible_light_success_teal](https://img.shields.io/badge/teal-009988)     | ![accessible_dark_success_bluish_green](https://img.shields.io/badge/bluish_green-009e73) |
-> | `warning`       | ![ansi_warning_yellow](https://img.shields.io/badge/ansi_yellow-ffff00) | ![accessible_light_warning_orange](https://img.shields.io/badge/orange-ee7733) | ![accessible_dark_warning_yellow](https://img.shields.io/badge/yellow-f0e442)             |
-> | `error`       | ![ansi_error_red](https://img.shields.io/badge/ansi_red-ff0000)         | ![accessible_light_error_red](https://img.shields.io/badge/red-cc3311)         | ![accessible_dark_error_vermilion](https://img.shields.io/badge/vermilion-d55e00)         |
-> | `info`       | ![ansi_info_cyan](https://img.shields.io/badge/ansi_cyan-00ffff)        | ![accessible_light_info_blue](https://img.shields.io/badge/blue-0077bb)        | ![accessible_dark_info_sky_blue](https://img.shields.io/badge/sky_blue-56b4e9)            |
+> | `success`       | ![ansi_success_green](https://img.shields.io/badge/ansi_green-00ff00)   | ![accessible_tol_success_teal](https://img.shields.io/badge/teal-009988)     | ![accessible_okabe_ito_success_bluish_green](https://img.shields.io/badge/bluish_green-009e73) |
+> | `warning`       | ![ansi_warning_yellow](https://img.shields.io/badge/ansi_yellow-ffff00) | ![accessible_tol_warning_orange](https://img.shields.io/badge/orange-ee7733) | ![accessible_okabe_ito_warning_yellow](https://img.shields.io/badge/yellow-f0e442)             |
+> | `error`       | ![ansi_error_red](https://img.shields.io/badge/ansi_red-ff0000)         | ![accessible_tol_error_red](https://img.shields.io/badge/red-cc3311)         | ![accessible_okabe_ito_error_vermilion](https://img.shields.io/badge/vermilion-d55e00)         |
+> | `info`       | ![ansi_info_cyan](https://img.shields.io/badge/ansi_cyan-00ffff)        | ![accessible_tol_info_blue](https://img.shields.io/badge/blue-0077bb)        | ![accessible_okabe_ito_info_sky_blue](https://img.shields.io/badge/sky_blue-56b4e9)            |

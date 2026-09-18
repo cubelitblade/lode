@@ -21,9 +21,6 @@ provider = "openai_compatible"
 # Changing this value requires re-mining the index.
 # output_dimension = 256
 
-# L2-normalize vectors so cosine similarity becomes a dot product.
-l2_normalize = true
-
 # Texts per embedding request.
 batch_size = 32
 
@@ -101,12 +98,12 @@ sources = [".gitignore"]
 
 [fts]
 # FTS5 tokenizer. Options: unicode61, trigram, simple, jieba.
-# simple and jieba share the same index tokenizer (switching needs no re-mine);
-# any other change requires re-mining.
-strategy = "simple"
+# The Rust CLI currently requires an implemented tokenizer for index creation;
+# use unicode61 explicitly until the native tokenizer is available.
+strategy = "unicode61"
 
 [app.output]
-# Color palette. Options: ansi, accessible_light, accessible_dark.
+# Rust CLI palette. Options: ansi, accessible_tol, accessible_okabe_ito.
 palette = "ansi"
 # Disable color: true = never, false = always, unset = follow NO_COLOR (default).
 # no_color = false

@@ -92,8 +92,36 @@ bare hexadecimal value, or a printed short prefix. Ambiguous prefixes return
 the matching candidates. `--radius` controls how many chunks are included on
 each side of the target.
 
-## Reserved commands
+## `lode config`
 
-`lode assay` and `lode config` are recognised command names but are not
-implemented in the Rust binary yet. They return an execution error until their
-command handlers are added.
+Inspect and edit configuration without opening an index or contacting an
+embedding service:
+
+```bash
+lode config show
+lode config get embedding.model
+lode config get embedding.model --scope user
+lode config path --scope workspace
+lode config set fts.strategy unicode61 --scope workspace
+lode config unset embedding.model --scope user
+```
+
+`set`, `unset`, and `path` default to workspace scope. Workspace edits use the
+highest-precedence existing project file, or `.lode/config.toml` when none
+exists. User edits use the platform user config path. `show` and `get` support
+`compact`, `extended`, `table`, and `json` views; API keys are always redacted.
+Rust applies L2 normalization unconditionally. The old
+`embedding.l2_normalize` TOML key and its `LODE_` environment variable are
+ignored.
+
+The Rust quickstart should set the currently implemented FTS tokenizer
+explicitly before mining:
+
+```bash
+lode config set fts.strategy unicode61 --scope workspace
+lode survey
+lode mine
+lode prospect "your question"
+```
+
+`lode assay` remains reserved and is not implemented in the Rust binary.
