@@ -212,7 +212,7 @@ fn score_candidates(
         BTreeMap::new()
     };
     let lexical_raw = if source_enabled(plan, Source::Lexical) {
-        let expr = crate::fts::match_query(query, &store.meta().tokenizer)?;
+        let expr = crate::fts::match_query(query, store.query_tokenizer())?;
         sparse_to_map(store.sparse_search(&expr, pool)?)
     } else {
         BTreeMap::new()

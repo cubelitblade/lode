@@ -1456,7 +1456,7 @@ fn prospect(
         let error = lode_core::messages::format(text.error, &[("index_path", index_path)]);
         return ui_msg::die(view, "prospect", error_code::NO_INDEX, &error, text.hint);
     }
-    let mut store = match Store::open_existing(&db_path) {
+    let mut store = match Store::open_existing_with_tokenizer(&db_path, &settings.fts.strategy) {
         Ok(s) => s,
         Err(e) => {
             return ui_msg::die(
@@ -1775,7 +1775,7 @@ fn mine(
     }
 
     let result = if has_index {
-        match Store::open_existing(&db_path) {
+        match Store::open_existing_with_tokenizer(&db_path, &tokenizer) {
             Ok(mut store) => match detect_changes(&mut store, workspace, &ignore_files) {
                 Ok(detect) => {
                     let bar = mine_progress_bar(view, no_progress);

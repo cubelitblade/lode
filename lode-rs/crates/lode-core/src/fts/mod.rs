@@ -31,25 +31,89 @@ pub enum MatchExpr {
     },
 }
 
+/// One primary FTS5 term and any tokens emitted at the same position.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexedTerm {
+    /// The primary token emitted by the document tokenizer.
+    pub surface: String,
+    /// Additional tokens emitted with `FTS5_TOKEN_COLOCATED`.
+    pub variants: Vec<String>,
+}
+
+/// Tokenize text through the native document tokenizer and preserve its
+/// colocated-token structure for callers such as future lexical inspection.
+///
+/// # Errors
+///
+/// Returns the native tokenizer or FTS5 callback error if the connection has
+/// not been registered or emits invalid token data.
+pub fn tokenize_preview(
+    conn: &rusqlite::Connection,
+    text: &str,
+) -> crate::Result<Vec<IndexedTerm>> {
+    let tokens = lode_simple_native::tokenize_document(conn, text)?;
+    let mut terms: Vec<IndexedTerm> = Vec::new();
+    for token in tokens {
+        if token.flags & lode_simple_native::TOKEN_COLOCATED != 0 {
+            let Some(previous) = terms.last_mut() else {
+                return Err(crate::Error::Fts(
+                    "native tokenizer emitted a colocated token first".to_string(),
+                ));
+            };
+            previous.variants.push(token.text);
+        } else {
+            terms.push(IndexedTerm {
+                surface: token.text,
+                variants: Vec::new(),
+            });
+        }
+    }
+    Ok(terms)
+}
+
+/// Merge repeated primary terms while retaining first-seen order.
+#[must_use]
+pub fn distinct_terms(terms: &[IndexedTerm]) -> Vec<IndexedTerm> {
+    let mut merged: Vec<IndexedTerm> = Vec::new();
+    for term in terms {
+        if let Some(existing) = merged.iter_mut().find(|item| item.surface == term.surface) {
+            for variant in &term.variants {
+                if !existing.variants.contains(variant) {
+                    existing.variants.push(variant.clone());
+                }
+            }
+        } else {
+            merged.push(term.clone());
+        }
+    }
+    merged
+}
+
 /// Build the MATCH expression for `query` under the tokenizer named by
 /// `strategy`.
 ///
-/// The full strategy registry lands with the lexical step; the two built-in
-/// SQLite tokenizers are complete here.
+/// Native strategies return a helper expression so the raw query remains a
+/// bound SQL parameter. Both strategies use the physical `simple` tokenizer;
+/// `jieba` only changes query construction.
 ///
 /// # Errors
 ///
-/// # Errors
-///
-/// Fails for the native `simple`/`jieba` strategies, which need the
-/// extension library the Rust rewrite does not link yet.
+/// Returns an error when `strategy` is not one of the configured tokenizer
+/// names.
 pub fn match_query(query: &str, strategy: &str) -> crate::Result<MatchExpr> {
     match strategy {
         "unicode61" => Ok(MatchExpr::Prebuilt(unicode61_query(query))),
         "trigram" => Ok(MatchExpr::Prebuilt(trigram_query(query))),
+        "simple" => Ok(MatchExpr::Helper {
+            function: "simple_query",
+            query: query.to_string(),
+        }),
+        "jieba" => Ok(MatchExpr::Helper {
+            function: "jieba_query",
+            query: query.to_string(),
+        }),
         other => Err(crate::Error::Fts(format!(
-            "tokenizer {other:?} needs the native extension, which the Rust \
-             rewrite does not implement yet; set fts.strategy = \"unicode61\""
+            "unknown tokenizer strategy {other:?}"
         ))),
     }
 }
@@ -99,6 +163,7 @@ fn trigram_query(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::Connection;
 
     #[test]
     fn unicode61_splits_on_word_boundaries() {
@@ -129,9 +194,76 @@ mod tests {
     }
 
     #[test]
-    fn native_tokenizer_is_refused_with_hint() {
-        let err = match_query("x", "simple").unwrap_err();
-        assert!(err.to_string().contains("native extension"));
-        assert!(err.to_string().contains("unicode61"));
+    fn native_tokenizers_use_their_query_helpers() {
+        assert_eq!(
+            match_query("x", "simple").unwrap(),
+            MatchExpr::Helper {
+                function: "simple_query",
+                query: "x".to_string(),
+            }
+        );
+        assert_eq!(
+            match_query("矿", "jieba").unwrap(),
+            MatchExpr::Helper {
+                function: "jieba_query",
+                query: "矿".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn distinct_terms_merges_variants_in_first_seen_order() {
+        let terms = vec![
+            IndexedTerm {
+                surface: "知".to_string(),
+                variants: vec!["z".to_string()],
+            },
+            IndexedTerm {
+                surface: "识".to_string(),
+                variants: vec![],
+            },
+            IndexedTerm {
+                surface: "知".to_string(),
+                variants: vec!["zhi".to_string(), "z".to_string()],
+            },
+        ];
+        assert_eq!(
+            distinct_terms(&terms),
+            vec![
+                IndexedTerm {
+                    surface: "知".to_string(),
+                    variants: vec!["z".to_string(), "zhi".to_string()],
+                },
+                IndexedTerm {
+                    surface: "识".to_string(),
+                    variants: vec![],
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn native_preview_preserves_colocated_variants() {
+        let conn = Connection::open_in_memory().unwrap();
+        lode_simple_native::register_connection(&conn, false).unwrap();
+        let terms = tokenize_preview(&conn, "知识").unwrap();
+        assert_eq!(
+            terms,
+            vec![
+                IndexedTerm {
+                    surface: "知".to_string(),
+                    variants: vec!["z".to_string(), "zhi".to_string()],
+                },
+                IndexedTerm {
+                    surface: "识".to_string(),
+                    variants: vec![
+                        "s".to_string(),
+                        "shi".to_string(),
+                        "z".to_string(),
+                        "zhi".to_string(),
+                    ],
+                },
+            ]
+        );
     }
 }

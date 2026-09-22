@@ -38,6 +38,10 @@ pub enum Error {
     /// Errors from FTS5 tokenizer/query helpers.
     #[error("fts error: {0}")]
     Fts(String),
+
+    /// Errors from the statically linked native FTS5 tokenizer.
+    #[error("native tokenizer error: {0}")]
+    NativeTokenizer(#[from] lode_simple_native::Error),
 }
 
 impl From<rusqlite::Error> for Error {

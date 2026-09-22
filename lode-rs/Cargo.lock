@@ -1612,6 +1612,7 @@ version = "0.1.0-alpha.3+snapshot.1"
 dependencies = [
  "blake3",
  "ignore",
+ "lode-simple-native",
  "log",
  "office_oxide",
  "pdf_oxide",
@@ -1638,7 +1639,12 @@ dependencies = [
 name = "lode-simple-native"
 version = "0.1.0-alpha.3+snapshot.1"
 dependencies = [
+ "blake3",
+ "cc",
  "libc",
+ "rusqlite",
+ "tempfile",
+ "thiserror",
 ]
 
 [[package]]

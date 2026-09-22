@@ -40,6 +40,7 @@ pub struct Store {
     path: PathBuf,
     conn: Connection,
     meta: IndexMeta,
+    query_tokenizer: String,
 }
 
 impl Store {
@@ -61,7 +62,7 @@ impl Store {
         tokenizer: &str,
     ) -> crate::Result<Self> {
         if path.is_file() {
-            Self::open_existing(path)
+            Self::open_existing_with_query(path, Some(tokenizer))
         } else {
             Self::create(path, model_id, dimension, tokenizer)
         }
@@ -80,6 +81,7 @@ impl Store {
 
         let conn = Connection::open(path)?;
         configure_connection(&conn)?;
+        register_native_tokenizer(&conn, tokenizer)?;
         schema::create_schema(&conn, dimension, tokenizer)?;
         write_meta(&conn, model_id, dimension, tokenizer)?;
         let meta = read_meta(&conn)?;
@@ -88,6 +90,7 @@ impl Store {
             path: path.to_path_buf(),
             conn,
             meta,
+            query_tokenizer: tokenizer.to_string(),
         })
     }
 
@@ -101,6 +104,24 @@ impl Store {
     /// Fails when the database does not exist, the schema version is
     /// incompatible, or required metadata keys are missing.
     pub fn open_existing(path: &Path) -> crate::Result<Self> {
+        Self::open_existing_with_query(path, None)
+    }
+
+    /// Open an existing index using the requested query tokenizer strategy.
+    ///
+    /// `simple` and `jieba` may switch without rebuilding because they share
+    /// the physical `simple` tokenizer. A change to the physical tokenizer
+    /// returns an incompatibility error and requires an explicit rebuild.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the database is missing, incompatible, or a requested
+    /// native tokenizer cannot be registered.
+    pub fn open_existing_with_tokenizer(path: &Path, tokenizer: &str) -> crate::Result<Self> {
+        Self::open_existing_with_query(path, Some(tokenizer))
+    }
+
+    fn open_existing_with_query(path: &Path, requested: Option<&str>) -> crate::Result<Self> {
         if !path.is_file() {
             return Err(crate::Error::Store(format!(
                 "database does not exist: {}",
@@ -118,11 +139,15 @@ impl Store {
         let conn = Connection::open(path)?;
         configure_connection(&conn)?;
         let meta = read_meta(&conn)?;
+        let query_tokenizer = requested.map_or_else(|| meta.tokenizer.clone(), ToOwned::to_owned);
+        validate_tokenizer_compatibility(&meta.tokenizer, &query_tokenizer)?;
+        register_native_tokenizer(&conn, &query_tokenizer)?;
 
         Ok(Self {
             path: path.to_path_buf(),
             conn,
             meta,
+            query_tokenizer,
         })
     }
 
@@ -165,6 +190,13 @@ impl Store {
     /// The stored index metadata.
     pub fn meta(&self) -> &IndexMeta {
         &self.meta
+    }
+
+    /// The configured query strategy. This may differ from the strategy that
+    /// originally created a native index because `simple` and `jieba` share
+    /// one physical FTS5 tokenizer.
+    pub fn query_tokenizer(&self) -> &str {
+        &self.query_tokenizer
     }
 
     /// All indexed paths with their content metadata, sorted by path.
@@ -446,6 +478,27 @@ fn register_vec_extension() {
     });
 }
 
+fn register_native_tokenizer(conn: &Connection, strategy: &str) -> crate::Result<()> {
+    match strategy {
+        "simple" => lode_simple_native::register_connection(conn, false)?,
+        "jieba" => lode_simple_native::register_connection(conn, true)?,
+        _ => {}
+    }
+    Ok(())
+}
+
+fn validate_tokenizer_compatibility(stored: &str, requested: &str) -> crate::Result<()> {
+    let stored_physical = schema::physical_tokenizer(stored);
+    let requested_physical = schema::physical_tokenizer(requested);
+    if stored_physical.is_some() && stored_physical == requested_physical {
+        return Ok(());
+    }
+    Err(crate::Error::Store(format!(
+        "index tokenizer {stored:?} is incompatible with requested strategy {requested:?}; \
+         run an explicit rebuild when changing the physical tokenizer"
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -623,12 +676,95 @@ mod tests {
     }
 
     #[test]
-    fn open_rejects_native_tokenizer() {
+    fn open_accepts_native_tokenizer() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("index.db");
 
-        let err = Store::open(&db, "test-model", 512, "simple").unwrap_err();
-        assert!(err.to_string().contains("native extension"));
+        let store = Store::open(&db, "test-model", 512, "simple").unwrap();
+        assert_eq!(store.meta().tokenizer, "simple");
+        assert_eq!(store.query_tokenizer(), "simple");
+    }
+
+    #[test]
+    fn native_query_strategies_share_one_physical_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("index.db");
+        let cache = tempfile::tempdir().unwrap();
+        let previous_cache = std::env::var_os("LODE_CACHE_DIR");
+        unsafe { std::env::set_var("LODE_CACHE_DIR", cache.path()) };
+
+        Store::open(&db, "test-model", 512, "simple").unwrap();
+        let mut store = Store::open(&db, "test-model", 512, "jieba").unwrap();
+        assert_eq!(store.query_tokenizer(), "jieba");
+        let physical: String = store
+            .conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE name = 'chunks_fts'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(physical.contains("tokenize='simple'"));
+        let record = make_record("doc.txt", "blake3:jieba-query", 1.0, 10);
+        store
+            .replace_file(
+                &record,
+                "text",
+                &[Chunk {
+                    digest: "blake3:jieba-query-chunk".to_string(),
+                    text: "知识".to_string(),
+                    seq: 0,
+                    heading: String::new(),
+                    page: None,
+                    span: None,
+                }],
+                None,
+            )
+            .unwrap();
+        let expr = crate::fts::match_query("知识", "jieba").unwrap();
+        assert_eq!(store.sparse_search(&expr, 5).unwrap().len(), 1);
+        match previous_cache {
+            Some(path) => unsafe { std::env::set_var("LODE_CACHE_DIR", path) },
+            None => unsafe { std::env::remove_var("LODE_CACHE_DIR") },
+        }
+    }
+
+    #[test]
+    fn changing_between_builtin_and_native_tokenizers_requires_rebuild() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("index.db");
+        Store::open(&db, "test-model", 512, "unicode61").unwrap();
+
+        let error = Store::open(&db, "test-model", 512, "simple").unwrap_err();
+        assert!(error.to_string().contains("incompatible"));
+        assert!(error.to_string().contains("explicit rebuild"));
+    }
+
+    #[test]
+    fn simple_query_matches_embedded_pinyin() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("index.db");
+        let mut store = Store::open(&db, "test-model", 512, "simple").unwrap();
+        let record = make_record("doc.txt", "blake3:native-query", 1.0, 10);
+        store
+            .replace_file(
+                &record,
+                "text",
+                &[Chunk {
+                    digest: "blake3:native-query-chunk".to_string(),
+                    text: "知识".to_string(),
+                    seq: 0,
+                    heading: String::new(),
+                    page: None,
+                    span: None,
+                }],
+                None,
+            )
+            .unwrap();
+
+        let expr = crate::fts::match_query("zhi", "simple").unwrap();
+        let hits = store.sparse_search(&expr, 5).unwrap();
+        assert_eq!(hits.len(), 1);
     }
 
     #[test]

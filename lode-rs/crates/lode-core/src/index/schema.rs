@@ -27,10 +27,18 @@ pub const SCHEMA_VERSION: u32 = 5;
 /// `FtsConfig.strategy` Literal).
 const TOKENIZERS: &[&str] = &["unicode61", "trigram", "simple", "jieba"];
 
-/// Native tokenizers shipped as a shared library; not implemented in the
-/// Rust rewrite yet (Phase 3), so creating a schema with one is an error
-/// with a clear hint instead of SQLite's bare "no such tokenizer".
-const NATIVE_TOKENIZERS: &[&str] = &["simple", "jieba"];
+/// Resolve a configured strategy to the tokenizer name stored in the FTS5
+/// DDL. `jieba` is a query strategy layered over the same simple document
+/// tokenizer, so switching between the two does not rebuild the index.
+#[must_use]
+pub fn physical_tokenizer(strategy: &str) -> Option<&'static str> {
+    match strategy {
+        "simple" | "jieba" => Some("simple"),
+        "unicode61" => Some("unicode61"),
+        "trigram" => Some("trigram"),
+        _ => None,
+    }
+}
 
 /// Create every table, virtual table, index, and trigger on a fresh database.
 ///
@@ -40,9 +48,8 @@ const NATIVE_TOKENIZERS: &[&str] = &["simple", "jieba"];
 ///
 /// # Errors
 ///
-/// Fails when `dimension` is zero, the tokenizer is not on the whitelist,
-/// or a native tokenizer is requested before Phase 3; also propagates DDL
-/// errors from SQLite.
+/// Fails when `dimension` is zero, the tokenizer is not on the whitelist, or
+/// SQLite rejects the DDL.
 pub fn create_schema(
     conn: &Connection,
     dimension: u32,
@@ -53,18 +60,12 @@ pub fn create_schema(
             "dimension must be positive, got {dimension}"
         )));
     }
-    if !TOKENIZERS.contains(&tokenize_clause) {
+    let Some(physical_tokenizer) = physical_tokenizer(tokenize_clause) else {
         return Err(crate::Error::Store(format!(
             "unknown tokenizer {tokenize_clause:?}; choose from {}",
             TOKENIZERS.join(", ")
         )));
-    }
-    if NATIVE_TOKENIZERS.contains(&tokenize_clause) {
-        return Err(crate::Error::Store(format!(
-            "tokenizer {tokenize_clause:?} needs the native extension, which \
-             the Rust rewrite does not implement yet; set fts.strategy = \"unicode61\""
-        )));
-    }
+    };
 
     conn.execute_batch(
         "CREATE TABLE meta (
@@ -117,7 +118,7 @@ pub fn create_schema(
     conn.execute_batch(&format!(
         "CREATE VIRTUAL TABLE chunks_fts USING fts5(
             text,
-            tokenize='{tokenize_clause}',
+            tokenize='{physical_tokenizer}',
             content='chunks',
             content_rowid='id'
         );"
