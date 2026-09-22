@@ -165,9 +165,10 @@ Options:
 >
 > For most typical workspaces, `simple` is recommended as a balanced default, providing good CJK support while retaining general-purpose full-text retrieval capabilities.
 
-For the Rust CLI, `simple` and `jieba` remain accepted configuration values
-for forward compatibility, but the native tokenizer is not available yet.
-Rust indexing examples therefore set `fts.strategy = "unicode61"` explicitly.
+The Rust CLI supports `simple` and `jieba` through the bundled native
+tokenizer. `simple` and `jieba` share the same physical index tokenizer;
+`jieba` changes query construction and does not require re-mining when
+switching from `simple`.
 
 ### `embedding`
 

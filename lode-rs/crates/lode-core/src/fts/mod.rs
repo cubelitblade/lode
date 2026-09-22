@@ -71,6 +71,61 @@ pub fn tokenize_preview(
     Ok(terms)
 }
 
+/// Preview the index-side token stream for one configured FTS strategy.
+///
+/// The preview uses a private in-memory SQLite connection so it observes the
+/// same tokenizer that the index uses without touching the workspace index.
+/// `simple` and `jieba` share the physical native `simple` tokenizer; `jieba`
+/// only changes query construction, so the document token stream is the same
+/// for both strategies.
+///
+/// # Errors
+///
+/// Returns an error when the strategy is unknown, SQLite cannot create the
+/// preview objects, or the native tokenizer reports a failure.
+pub fn preview_index_terms(strategy: &str, text: &str) -> crate::Result<Vec<IndexedTerm>> {
+    match strategy {
+        "simple" | "jieba" => {
+            let conn = rusqlite::Connection::open_in_memory()?;
+            lode_simple_native::register_connection(&conn, false)?;
+            tokenize_preview(&conn, text)
+        }
+        "unicode61" | "trigram" => preview_builtin_terms(strategy, text),
+        other => Err(crate::Error::Fts(format!(
+            "unknown tokenizer strategy {other:?}"
+        ))),
+    }
+}
+
+/// Preview one of SQLite's built-in FTS5 document tokenizers.
+fn preview_builtin_terms(strategy: &str, text: &str) -> crate::Result<Vec<IndexedTerm>> {
+    let conn = rusqlite::Connection::open_in_memory()?;
+    conn.execute_batch(&format!(
+        "CREATE VIRTUAL TABLE preview USING fts5(text, tokenize = '{strategy}');
+         CREATE VIRTUAL TABLE preview_vocab USING fts5vocab(preview, instance);"
+    ))?;
+    conn.execute(
+        "INSERT INTO preview(rowid, text) VALUES (1, ?1)",
+        rusqlite::params![text],
+    )?;
+
+    let mut statement = conn.prepare(
+        "SELECT term
+         FROM preview_vocab
+         WHERE doc = 1 AND col = 'text'
+         ORDER BY offset",
+    )?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+    let mut terms = Vec::new();
+    for row in rows {
+        terms.push(IndexedTerm {
+            surface: row?,
+            variants: Vec::new(),
+        });
+    }
+    Ok(terms)
+}
+
 /// Merge repeated primary terms while retaining first-seen order.
 #[must_use]
 pub fn distinct_terms(terms: &[IndexedTerm]) -> Vec<IndexedTerm> {
@@ -265,5 +320,55 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn builtin_preview_uses_unicode61_tokenizer() {
+        let terms = preview_index_terms("unicode61", "Café, Rocks").unwrap();
+        assert_eq!(
+            terms,
+            vec![
+                IndexedTerm {
+                    surface: "cafe".to_string(),
+                    variants: vec![],
+                },
+                IndexedTerm {
+                    surface: "rocks".to_string(),
+                    variants: vec![],
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn builtin_preview_uses_trigram_tokenizer() {
+        let terms = preview_index_terms("trigram", "矿石探矿").unwrap();
+        assert_eq!(
+            terms,
+            vec![
+                IndexedTerm {
+                    surface: "矿石探".to_string(),
+                    variants: vec![],
+                },
+                IndexedTerm {
+                    surface: "石探矿".to_string(),
+                    variants: vec![],
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn preview_index_terms_uses_the_same_document_stream_for_jieba() {
+        let simple = preview_index_terms("simple", "知识").unwrap();
+        let jieba = preview_index_terms("jieba", "知识").unwrap();
+        assert_eq!(simple, jieba);
+        assert!(simple.iter().all(|term| !term.variants.is_empty()));
+    }
+
+    #[test]
+    fn preview_index_terms_rejects_unknown_strategy() {
+        let error = preview_index_terms("unknown", "text").unwrap_err();
+        assert!(error.to_string().contains("unknown tokenizer strategy"));
     }
 }

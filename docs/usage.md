@@ -92,6 +92,27 @@ bare hexadecimal value, or a printed short prefix. Ambiguous prefixes return
 the matching candidates. `--radius` controls how many chunks are included on
 each side of the target.
 
+## `lode assay how`
+
+Inspect how one indexed chunk was tokenized at index time. The first Rust
+implementation provides structured JSON output and does not contact an
+embedding service:
+
+```bash
+lode --view json assay how DIGEST
+lode --view json analyze how DIGEST
+```
+
+The digest may be a full `blake3:<hex>` value, a bare hexadecimal value, or a
+printed short prefix. The result contains the stored text, all source paths
+and freshness states, the configured strategy and physical tokenizer, the
+occurrence-preserving token stream, and the de-duplicated terms. Native
+`simple` and `jieba` output colocated pinyin forms in `variants`.
+
+`assay how` currently supports only `--view json`. It scans the workspace to
+refresh stale markers, but it does not update chunks, FTS rows, or embeddings;
+run `lode mine` to update the index.
+
 ## `lode config`
 
 Inspect and edit configuration without opening an index or contacting an
@@ -124,4 +145,4 @@ lode mine
 lode prospect "your question"
 ```
 
-`lode assay` remains reserved and is not implemented in the Rust binary.
+`lode assay` prints a concise help message when no subcommand is provided.

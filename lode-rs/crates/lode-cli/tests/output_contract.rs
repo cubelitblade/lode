@@ -209,12 +209,10 @@ fn json_execution_errors_have_stable_shape() {
     assert!(payload["hint"].as_str().unwrap().contains("--workspace"));
     assert!(output.stderr.is_empty());
 
-    let todo = run_lode_view(workspace.path(), config_home.path(), "json", &["assay"]);
-    assert_eq!(todo.status.code(), Some(1));
-    let todo_payload = json_output(&todo);
-    assert_eq!(todo_payload["code"], "not_implemented");
-    assert_eq!(todo_payload["hint"], Value::Null);
-    assert!(todo.stderr.is_empty());
+    let assay = run_lode_view(workspace.path(), config_home.path(), "json", &["assay"]);
+    assert!(assay.status.success());
+    assert!(String::from_utf8_lossy(&assay.stdout).contains("assay <COMMAND>"));
+    assert!(assay.stderr.is_empty());
 }
 
 #[test]

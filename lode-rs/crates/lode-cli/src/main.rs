@@ -43,7 +43,6 @@ const EXIT_PARTIAL_FAILURE: u8 = 3;
 /// Stable machine-readable error identifiers. Keep these independent from
 /// infrastructure error text so JSON consumers can branch safely.
 mod error_code {
-    pub const NOT_IMPLEMENTED: &str = "not_implemented";
     pub const WORKSPACE_MISSING: &str = "workspace_missing";
     pub const WORKSPACE_NOT_DIRECTORY: &str = "workspace_not_directory";
     pub const CONFIG: &str = "config_error";
@@ -64,6 +63,8 @@ mod error_code {
     pub const INVALID_DIGEST: &str = "invalid_digest";
     pub const NOT_FOUND: &str = "not_found";
     pub const AMBIGUOUS: &str = "ambiguous";
+    pub const UNSUPPORTED_VIEW: &str = "unsupported_view";
+    pub const TOKENIZATION: &str = "tokenization_error";
 }
 
 static STDOUT_ERROR: OnceLock<Mutex<Option<io::ErrorKind>>> = OnceLock::new();
@@ -256,11 +257,24 @@ enum Command {
         radius: u32,
     },
     /// Analyze the store: why | how.
-    Assay,
+    #[command(alias = "analyze")]
+    Assay {
+        #[command(subcommand)]
+        command: Option<AssayCommand>,
+    },
     /// Show or edit configuration.
     Config {
         #[command(subcommand)]
         command: Option<ConfigCommand>,
+    },
+}
+
+#[derive(Subcommand)]
+enum AssayCommand {
+    /// Show how one indexed chunk is tokenized.
+    How {
+        /// Chunk digest or hexadecimal prefix.
+        digest: String,
     },
 }
 
@@ -373,7 +387,12 @@ fn dispatch(cli: Cli) -> u8 {
             cli.palette,
             cli.no_color,
         ),
-        Command::Assay => todo_command("assay", cli.view),
+        Command::Assay { command } => match command {
+            Some(AssayCommand::How { digest }) => {
+                assay_how(&cli.workspace, digest, cli.view, cli.palette, cli.no_color)
+            }
+            None => assay_help(),
+        },
         Command::Config { command } => config_command(
             &cli.workspace,
             command.unwrap_or(ConfigCommand::Show),
@@ -747,15 +766,127 @@ fn init_logging(level: LogLevel) {
         .init();
 }
 
-/// Not-yet-implemented command: print a TODO on stderr and exit non-zero.
-fn todo_command(name: &str, view: View) -> u8 {
-    ui_msg::die(
-        view,
-        name,
-        error_code::NOT_IMPLEMENTED,
-        &format!("`{name}` is not implemented yet"),
-        None,
-    )
+/// Print the concise assay help shown when the command has no subcommand.
+fn assay_help() -> u8 {
+    println!("Analyze one indexed chunk.");
+    println!();
+    println!("Usage: lode --view json assay <COMMAND> <DIGEST>");
+    println!();
+    println!("Commands:");
+    println!("  how <DIGEST>  Show the index-side tokenizer output");
+    println!();
+    println!("Examples:");
+    println!("  lode --view json assay how abc123");
+    println!("  lode --view json analyze how blake3:...");
+    println!();
+    println!("Use `lode assay --help` for the full command help.");
+    EXIT_OK
+}
+
+/// Show the index-side tokenizer output for one chunk as structured JSON.
+fn assay_how(
+    workspace: &std::path::Path,
+    input: String,
+    view: View,
+    palette: Option<PaletteArg>,
+    no_color: bool,
+) -> u8 {
+    // Keep unsupported views side-effect free: neither configuration loading,
+    // index opening, nor stale detection should happen for this first slice.
+    if view != View::Json {
+        return ui_msg::die(
+            view,
+            "assay",
+            error_code::UNSUPPORTED_VIEW,
+            "`assay how` currently supports only `--view json`.",
+            Some("Run `lode --view json assay how <digest>`."),
+        );
+    }
+    if let Some(code) = ui_msg::bad_workspace("assay", workspace, view) {
+        return code;
+    }
+
+    let settings = match configure_output(workspace, "assay", view, palette, no_color) {
+        Ok(settings) => settings,
+        Err(code) => return code,
+    };
+    let strategy = settings.fts.strategy.clone();
+    let db_path = workspace.join(INDEX_DB_RELATIVE);
+    if !db_path.is_file() {
+        let text = lode_core::messages::require("no_index");
+        let index_path = db_path.display().to_string();
+        let error = lode_core::messages::format(text.error, &[("index_path", index_path)]);
+        return ui_msg::die(view, "assay", error_code::NO_INDEX, &error, text.hint);
+    }
+
+    let mut store = match Store::open_existing_with_tokenizer(&db_path, &strategy) {
+        Ok(store) => store,
+        Err(error) => {
+            return ui_msg::die(
+                view,
+                "assay",
+                error_code::INDEX_OPEN,
+                &format!("Cannot open the lode index: {error}"),
+                Some("Ensure `.lode/index.db` is intact, or delete it and remine."),
+            );
+        }
+    };
+    let ignore_files = settings
+        .app
+        .ignore
+        .sources
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    if let Err(error) = detect_changes(&mut store, workspace, &ignore_files) {
+        return ui_msg::die(
+            view,
+            "assay",
+            error_code::SCAN,
+            &format!("Could not finish scanning the workspace: {error}"),
+            Some("Fix the underlying error and rerun `lode assay how`."),
+        );
+    }
+
+    let Some(token) = normalize_digest(&input) else {
+        return assay_lookup_error(view, error_code::INVALID_DIGEST, &input, &[]);
+    };
+    let lookup = match store.get_chunk_window(&token, 0) {
+        Ok(lookup) => lookup,
+        Err(error) => {
+            return ui_msg::die(
+                view,
+                "assay",
+                error_code::INDEX_READ,
+                &format!("Could not read the lode index: {error}"),
+                Some("Ensure `.lode/index.db` is intact, or delete it and remine."),
+            );
+        }
+    };
+    let target = match lookup {
+        ChunkLookup::NotFound => {
+            return assay_lookup_error(view, error_code::NOT_FOUND, &input, &[]);
+        }
+        ChunkLookup::Ambiguous(candidates) => {
+            return assay_lookup_error(view, error_code::AMBIGUOUS, &input, &candidates);
+        }
+        ChunkLookup::Found(window) => window.target,
+    };
+
+    let tokens = match lode_core::fts::preview_index_terms(&strategy, &target.text) {
+        Ok(tokens) => tokens,
+        Err(error) => {
+            return ui_msg::die(
+                view,
+                "assay",
+                error_code::TOKENIZATION,
+                &format!("Could not preview the `{strategy}` tokenizer: {error}"),
+                Some("Check the configured FTS strategy and rebuild the index if needed."),
+            );
+        }
+    };
+    emit_assay_how_json(&target, &strategy, &tokens);
+    EXIT_OK
 }
 
 /// Centralised user-facing error text, mirroring the Python `messages.py`
@@ -977,6 +1108,25 @@ fn dig_error_with_text(
     result
 }
 
+fn assay_lookup_error(view: View, code: &str, input: &str, candidates: &[ChunkWithRefs]) -> u8 {
+    let text = lode_core::messages::require(code);
+    let error = lode_core::messages::format(
+        text.error,
+        &[
+            ("digest", input.to_string()),
+            ("count", candidates.len().to_string()),
+        ],
+    );
+    let extra = if code == error_code::AMBIGUOUS {
+        Some(serde_json::json!({
+            "candidates": candidates.iter().map(dig_chunk_json_without_text).collect::<Vec<_>>(),
+        }))
+    } else {
+        None
+    };
+    ui_msg::die_with_extra(view, "assay", code, &error, text.hint, extra)
+}
+
 fn dig_source_line(chunk: &ChunkWithRefs) -> String {
     let primary = chunk.primary();
     let mut source = primary.path.to_native().to_string_lossy().into_owned();
@@ -1022,6 +1172,40 @@ fn emit_dig_json(target: &ChunkWithRefs, window: &[ChunkWithRefs], radius: u32) 
             "radius": radius,
             "chunks": window.iter().map(dig_chunk_json).collect::<Vec<_>>(),
         },
+    });
+    println!("{}", serde_json::to_string_pretty(&payload).unwrap());
+}
+
+fn emit_assay_how_json(
+    target: &ChunkWithRefs,
+    strategy: &str,
+    tokens: &[lode_core::fts::IndexedTerm],
+) {
+    let physical = lode_core::index::schema::physical_tokenizer(strategy).unwrap_or(strategy);
+    let terms = lode_core::fts::distinct_terms(tokens);
+    let payload = serde_json::json!({
+        "digest": target.digest,
+        "paths": target.refs.iter().map(|reference| serde_json::json!({
+            "path": reference.path.as_str(),
+            "state": reference.status.to_string(),
+        })).collect::<Vec<_>>(),
+        "heading": target.heading,
+        "page": target.page,
+        "seq": target.seq,
+        "has_stale": chunk_stale(target),
+        "tokenizer": {
+            "strategy": strategy,
+            "tokenize": physical,
+        },
+        "text": target.text,
+        "tokens": tokens.iter().map(|term| serde_json::json!({
+            "surface": term.surface,
+            "variants": term.variants,
+        })).collect::<Vec<_>>(),
+        "terms": terms.iter().map(|term| serde_json::json!({
+            "surface": term.surface,
+            "variants": term.variants,
+        })).collect::<Vec<_>>(),
     });
     println!("{}", serde_json::to_string_pretty(&payload).unwrap());
 }
