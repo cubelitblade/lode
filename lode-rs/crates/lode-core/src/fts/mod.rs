@@ -40,6 +40,16 @@ pub struct IndexedTerm {
     pub variants: Vec<String>,
 }
 
+/// The lexical query produced for one user query under one configured strategy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueryExplanation {
+    /// The helper used to construct the expression, when the strategy uses one.
+    pub helper: Option<String>,
+    /// The expression passed to SQLite FTS5, or an empty expression when the
+    /// strategy has no searchable fragments for the input.
+    pub match_expression: String,
+}
+
 /// Tokenize text through the native document tokenizer and preserve its
 /// colocated-token structure for callers such as future lexical inspection.
 ///
@@ -173,6 +183,38 @@ pub fn match_query(query: &str, strategy: &str) -> crate::Result<MatchExpr> {
     }
 }
 
+/// Explain the lexical expression that the search path constructs.
+///
+/// Built-in strategies expose the prebuilt expression directly. Native
+/// strategies are evaluated through their registered SQLite helper so this
+/// result cannot drift from the expression used by `sparse_search`.
+///
+/// # Errors
+///
+/// Returns an error when the strategy is unknown, native registration fails,
+/// or a native query helper rejects the input.
+pub fn explain_query(query: &str, strategy: &str) -> crate::Result<QueryExplanation> {
+    let expression = match_query(query, strategy)?;
+    match expression {
+        MatchExpr::Prebuilt(match_expression) => Ok(QueryExplanation {
+            helper: None,
+            match_expression,
+        }),
+        MatchExpr::Helper { function, query } => {
+            let connection = rusqlite::Connection::open_in_memory()?;
+            lode_simple_native::register_connection(&connection, function == "jieba_query")?;
+            let sql = format!("SELECT {function}(?1)");
+            let match_expression = connection.query_row(&sql, rusqlite::params![query], |row| {
+                row.get::<_, Option<String>>(0)
+            })?;
+            Ok(QueryExplanation {
+                helper: Some(function.to_string()),
+                match_expression: match_expression.unwrap_or_default(),
+            })
+        }
+    }
+}
+
 /// Word-ish token runs for the plain (unicode61-style) query.
 ///
 /// Each token is quoted so punctuation in user queries cannot break the
@@ -264,6 +306,56 @@ mod tests {
                 query: "矿".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn explain_query_evaluates_the_simple_helper() {
+        let connection = Connection::open_in_memory().unwrap();
+        lode_simple_native::register_connection(&connection, false).unwrap();
+        let expected: String = connection
+            .query_row(
+                "SELECT simple_query(?1)",
+                rusqlite::params!["知识"],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        let explanation = explain_query("知识", "simple").unwrap();
+        assert_eq!(explanation.helper.as_deref(), Some("simple_query"));
+        assert_eq!(explanation.match_expression, expected);
+    }
+
+    #[test]
+    fn explain_query_evaluates_the_jieba_helper() {
+        crate::run_with_isolated_jieba_cache(
+            "fts::tests::explain_query_evaluates_the_jieba_helper",
+            || {
+                let connection = Connection::open_in_memory().unwrap();
+                lode_simple_native::register_connection(&connection, true).unwrap();
+                let expected: String = connection
+                    .query_row(
+                        "SELECT jieba_query(?1)",
+                        rusqlite::params!["中华人民共和国"],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+
+                let explanation = explain_query("中华人民共和国", "jieba").unwrap();
+                assert_eq!(explanation.helper.as_deref(), Some("jieba_query"));
+                assert_eq!(explanation.match_expression, expected);
+            },
+        );
+    }
+
+    #[test]
+    fn explain_query_preserves_prebuilt_and_empty_expressions() {
+        assert_eq!(
+            explain_query("矿石探矿", "trigram")
+                .unwrap()
+                .match_expression,
+            "\"矿石探\" OR \"石探矿\""
+        );
+        assert_eq!(explain_query("ab", "trigram").unwrap().match_expression, "");
     }
 
     #[test]

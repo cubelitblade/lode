@@ -687,46 +687,43 @@ mod tests {
 
     #[test]
     fn native_query_strategies_share_one_physical_index() {
-        let dir = tempfile::tempdir().unwrap();
-        let db = dir.path().join("index.db");
-        let cache = tempfile::tempdir().unwrap();
-        let previous_cache = std::env::var_os("LODE_CACHE_DIR");
-        unsafe { std::env::set_var("LODE_CACHE_DIR", cache.path()) };
-
-        Store::open(&db, "test-model", 512, "simple").unwrap();
-        let mut store = Store::open(&db, "test-model", 512, "jieba").unwrap();
-        assert_eq!(store.query_tokenizer(), "jieba");
-        let physical: String = store
-            .conn
-            .query_row(
-                "SELECT sql FROM sqlite_master WHERE name = 'chunks_fts'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert!(physical.contains("tokenize='simple'"));
-        let record = make_record("doc.txt", "blake3:jieba-query", 1.0, 10);
-        store
-            .replace_file(
-                &record,
-                "text",
-                &[Chunk {
-                    digest: "blake3:jieba-query-chunk".to_string(),
-                    text: "知识".to_string(),
-                    seq: 0,
-                    heading: String::new(),
-                    page: None,
-                    span: None,
-                }],
-                None,
-            )
-            .unwrap();
-        let expr = crate::fts::match_query("知识", "jieba").unwrap();
-        assert_eq!(store.sparse_search(&expr, 5).unwrap().len(), 1);
-        match previous_cache {
-            Some(path) => unsafe { std::env::set_var("LODE_CACHE_DIR", path) },
-            None => unsafe { std::env::remove_var("LODE_CACHE_DIR") },
-        }
+        crate::run_with_isolated_jieba_cache(
+            "index::store::tests::native_query_strategies_share_one_physical_index",
+            || {
+                let dir = tempfile::tempdir().unwrap();
+                let db = dir.path().join("index.db");
+                Store::open(&db, "test-model", 512, "simple").unwrap();
+                let mut store = Store::open(&db, "test-model", 512, "jieba").unwrap();
+                assert_eq!(store.query_tokenizer(), "jieba");
+                let physical: String = store
+                    .conn
+                    .query_row(
+                        "SELECT sql FROM sqlite_master WHERE name = 'chunks_fts'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert!(physical.contains("tokenize='simple'"));
+                let record = make_record("doc.txt", "blake3:jieba-query", 1.0, 10);
+                store
+                    .replace_file(
+                        &record,
+                        "text",
+                        &[Chunk {
+                            digest: "blake3:jieba-query-chunk".to_string(),
+                            text: "知识".to_string(),
+                            seq: 0,
+                            heading: String::new(),
+                            page: None,
+                            span: None,
+                        }],
+                        None,
+                    )
+                    .unwrap();
+                let expr = crate::fts::match_query("知识", "jieba").unwrap();
+                assert_eq!(store.sparse_search(&expr, 5).unwrap().len(), 1);
+            },
+        );
     }
 
     #[test]
