@@ -168,7 +168,9 @@ Options:
 The Rust CLI supports `simple` and `jieba` through the bundled native
 tokenizer. `simple` and `jieba` share the same physical index tokenizer;
 `jieba` changes query construction and does not require re-mining when
-switching from `simple`.
+switching from `simple`. Use `lode assay how QUERY` to inspect query-side
+construction and `lode debug tokens DIGEST` to inspect the index-side token
+stream.
 
 ### `embedding`
 

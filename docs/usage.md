@@ -94,13 +94,43 @@ each side of the target.
 
 ## `lode assay how`
 
-Inspect how one indexed chunk was tokenized at index time. The first Rust
-implementation provides structured JSON output and does not contact an
-embedding service:
+Explain how one lexical query is constructed under the current workspace
+configuration. This command does not require `.lode/index.db`, scan the
+workspace, or contact an embedding service:
 
 ```bash
-lode --view json assay how DIGEST
-lode --view json analyze how DIGEST
+lode assay how '知识'
+lode --view extended analyze how 'rock and ore'
+lode --view table assay how '矿石探矿'
+lode --view json assay how 'deadbeef'
+```
+
+The input is always query text, even when it looks like a digest. The result
+shows the configured strategy, physical tokenizer, native helper when used,
+and the actual lexical MATCH expression. The explanation describes lexical
+query construction only; it does not report existing index hits or ranking.
+
+`unicode61` quotes word fragments and joins them with `OR`; `trigram` builds
+three-character windows joined with `OR`; `simple` builds native `AND`
+expressions with its pinyin and prefix rules; `jieba` segments the query at
+query time while using the same physical `simple` index tokenizer. A query
+shorter than three characters can therefore produce an empty trigram
+expression without being an execution error.
+
+The JSON result contains `query`, `tokenizer`, `helper`, and
+`match_expression`. The table view has the fixed columns `QUERY`, `STRATEGY`,
+`TOKENIZER`, `HELPER`, and `MATCH`.
+
+## `lode debug tokens`
+
+Inspect how one indexed chunk was tokenized at index time. This is the
+advanced index diagnostic that retains the chunk-oriented views:
+
+```bash
+lode debug tokens DIGEST
+lode --view extended debug tokens DIGEST
+lode --view table debug tokens DIGEST
+lode --view json debug tokens DIGEST
 ```
 
 The digest may be a full `blake3:<hex>` value, a bare hexadecimal value, or a
@@ -109,9 +139,8 @@ and freshness states, the configured strategy and physical tokenizer, the
 occurrence-preserving token stream, and the de-duplicated terms. Native
 `simple` and `jieba` output colocated pinyin forms in `variants`.
 
-`assay how` currently supports only `--view json`. It scans the workspace to
-refresh stale markers, but it does not update chunks, FTS rows, or embeddings;
-run `lode mine` to update the index.
+This diagnostic scans the workspace to refresh stale markers, but it does not
+update chunks, FTS rows, or embeddings; run `lode mine` to update the index.
 
 ## `lode config`
 
