@@ -20,7 +20,9 @@ use lode_core::ingestion::pipeline::{
 use lode_core::ingestion::split::RecursiveSegmentSplitter;
 use lode_core::relpath::WorkspacePath;
 
+mod assay_render;
 mod markdown_render;
+mod query_render;
 mod render;
 
 use render::{Intent, RenderOptions};
@@ -63,8 +65,8 @@ mod error_code {
     pub const INVALID_DIGEST: &str = "invalid_digest";
     pub const NOT_FOUND: &str = "not_found";
     pub const AMBIGUOUS: &str = "ambiguous";
-    pub const UNSUPPORTED_VIEW: &str = "unsupported_view";
     pub const TOKENIZATION: &str = "tokenization_error";
+    pub const QUERY_CONSTRUCTION: &str = "query_construction_error";
 }
 
 static STDOUT_ERROR: OnceLock<Mutex<Option<io::ErrorKind>>> = OnceLock::new();
@@ -262,6 +264,11 @@ enum Command {
         #[command(subcommand)]
         command: Option<AssayCommand>,
     },
+    /// Inspect index-side tokenization for debugging.
+    Debug {
+        #[command(subcommand)]
+        command: Option<DebugCommand>,
+    },
     /// Show or edit configuration.
     Config {
         #[command(subcommand)]
@@ -271,8 +278,17 @@ enum Command {
 
 #[derive(Subcommand)]
 enum AssayCommand {
-    /// Show how one indexed chunk is tokenized.
+    /// Explain how a lexical query is constructed.
     How {
+        /// Query text to explain.
+        query: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum DebugCommand {
+    /// Show how one indexed chunk is tokenized.
+    Tokens {
         /// Chunk digest or hexadecimal prefix.
         digest: String,
     },
@@ -388,10 +404,16 @@ fn dispatch(cli: Cli) -> u8 {
             cli.no_color,
         ),
         Command::Assay { command } => match command {
-            Some(AssayCommand::How { digest }) => {
-                assay_how(&cli.workspace, digest, cli.view, cli.palette, cli.no_color)
+            Some(AssayCommand::How { query }) => {
+                assay_how(&cli.workspace, query, cli.view, cli.palette, cli.no_color)
             }
             None => assay_help(),
+        },
+        Command::Debug { command } => match command {
+            Some(DebugCommand::Tokens { digest }) => {
+                debug_tokens(&cli.workspace, digest, cli.view, cli.palette, cli.no_color)
+            }
+            None => debug_help(),
         },
         Command::Config { command } => config_command(
             &cli.workspace,
@@ -768,40 +790,43 @@ fn init_logging(level: LogLevel) {
 
 /// Print the concise assay help shown when the command has no subcommand.
 fn assay_help() -> u8 {
-    println!("Analyze one indexed chunk.");
+    println!("Explain how one lexical query is constructed.");
     println!();
-    println!("Usage: lode --view json assay <COMMAND> <DIGEST>");
+    println!("Usage: lode [--view compact|extended|table|json] assay <COMMAND> <QUERY>");
     println!();
     println!("Commands:");
-    println!("  how <DIGEST>  Show the index-side tokenizer output");
+    println!("  how <QUERY>  Explain the lexical MATCH construction");
     println!();
     println!("Examples:");
-    println!("  lode --view json assay how abc123");
-    println!("  lode --view json analyze how blake3:...");
+    println!("  lode assay how '知识'");
+    println!("  lode --view extended analyze how 'rock and ore'");
     println!();
     println!("Use `lode assay --help` for the full command help.");
     EXIT_OK
 }
 
-/// Show the index-side tokenizer output for one chunk as structured JSON.
+/// Print the concise debug help shown when the command has no subcommand.
+fn debug_help() -> u8 {
+    println!("Inspect index-side data for debugging.");
+    println!();
+    println!("Usage: lode [--view compact|extended|table|json] debug <COMMAND>");
+    println!();
+    println!("Commands:");
+    println!("  tokens <DIGEST>  Show how one indexed chunk was tokenized");
+    println!();
+    println!("Example:");
+    println!("  lode --view extended debug tokens blake3:...");
+    EXIT_OK
+}
+
+/// Explain how a lexical query is constructed without opening the index.
 fn assay_how(
     workspace: &std::path::Path,
-    input: String,
+    query: String,
     view: View,
     palette: Option<PaletteArg>,
     no_color: bool,
 ) -> u8 {
-    // Keep unsupported views side-effect free: neither configuration loading,
-    // index opening, nor stale detection should happen for this first slice.
-    if view != View::Json {
-        return ui_msg::die(
-            view,
-            "assay",
-            error_code::UNSUPPORTED_VIEW,
-            "`assay how` currently supports only `--view json`.",
-            Some("Run `lode --view json assay how <digest>`."),
-        );
-    }
     if let Some(code) = ui_msg::bad_workspace("assay", workspace, view) {
         return code;
     }
@@ -811,12 +836,87 @@ fn assay_how(
         Err(code) => return code,
     };
     let strategy = settings.fts.strategy.clone();
+    if query.trim().is_empty() {
+        let text = lode_core::messages::require("invalid_query");
+        return ui_msg::die(
+            view,
+            "assay",
+            error_code::INVALID_QUERY,
+            text.error,
+            text.hint,
+        );
+    }
+    let explanation = match lode_core::fts::explain_query(&query, &strategy) {
+        Ok(explanation) => explanation,
+        Err(error) => {
+            return ui_msg::die(
+                view,
+                "assay",
+                error_code::QUERY_CONSTRUCTION,
+                &format!("Could not construct the lexical query: {error}"),
+                Some("Check the configured FTS strategy and query text."),
+            );
+        }
+    };
+    let physical =
+        lode_core::index::schema::physical_tokenizer(&strategy).unwrap_or(strategy.as_str());
+    let helper = explanation.helper.as_deref();
+    match view {
+        View::Compact => query_render::compact(
+            &query,
+            &strategy,
+            physical,
+            helper,
+            &explanation.match_expression,
+        ),
+        View::Extended => query_render::extended(
+            &query,
+            &strategy,
+            physical,
+            helper,
+            &explanation.match_expression,
+        ),
+        View::Table => query_render::table(
+            &query,
+            &strategy,
+            physical,
+            helper,
+            &explanation.match_expression,
+        ),
+        View::Json => query_render::json(
+            &query,
+            &strategy,
+            physical,
+            helper,
+            &explanation.match_expression,
+        ),
+    }
+    EXIT_OK
+}
+
+/// Show the index-side tokenizer output for one chunk as structured JSON.
+fn debug_tokens(
+    workspace: &std::path::Path,
+    input: String,
+    view: View,
+    palette: Option<PaletteArg>,
+    no_color: bool,
+) -> u8 {
+    if let Some(code) = ui_msg::bad_workspace("debug", workspace, view) {
+        return code;
+    }
+
+    let settings = match configure_output(workspace, "debug", view, palette, no_color) {
+        Ok(settings) => settings,
+        Err(code) => return code,
+    };
+    let strategy = settings.fts.strategy.clone();
     let db_path = workspace.join(INDEX_DB_RELATIVE);
     if !db_path.is_file() {
         let text = lode_core::messages::require("no_index");
         let index_path = db_path.display().to_string();
         let error = lode_core::messages::format(text.error, &[("index_path", index_path)]);
-        return ui_msg::die(view, "assay", error_code::NO_INDEX, &error, text.hint);
+        return ui_msg::die(view, "debug", error_code::NO_INDEX, &error, text.hint);
     }
 
     let mut store = match Store::open_existing_with_tokenizer(&db_path, &strategy) {
@@ -824,7 +924,7 @@ fn assay_how(
         Err(error) => {
             return ui_msg::die(
                 view,
-                "assay",
+                "debug",
                 error_code::INDEX_OPEN,
                 &format!("Cannot open the lode index: {error}"),
                 Some("Ensure `.lode/index.db` is intact, or delete it and remine."),
@@ -841,22 +941,22 @@ fn assay_how(
     if let Err(error) = detect_changes(&mut store, workspace, &ignore_files) {
         return ui_msg::die(
             view,
-            "assay",
+            "debug",
             error_code::SCAN,
             &format!("Could not finish scanning the workspace: {error}"),
-            Some("Fix the underlying error and rerun `lode assay how`."),
+            Some("Fix the underlying error and rerun `lode debug tokens`."),
         );
     }
 
     let Some(token) = normalize_digest(&input) else {
-        return assay_lookup_error(view, error_code::INVALID_DIGEST, &input, &[]);
+        return debug_lookup_error(view, error_code::INVALID_DIGEST, &input, &[]);
     };
     let lookup = match store.get_chunk_window(&token, 0) {
         Ok(lookup) => lookup,
         Err(error) => {
             return ui_msg::die(
                 view,
-                "assay",
+                "debug",
                 error_code::INDEX_READ,
                 &format!("Could not read the lode index: {error}"),
                 Some("Ensure `.lode/index.db` is intact, or delete it and remine."),
@@ -865,10 +965,10 @@ fn assay_how(
     };
     let target = match lookup {
         ChunkLookup::NotFound => {
-            return assay_lookup_error(view, error_code::NOT_FOUND, &input, &[]);
+            return debug_lookup_error(view, error_code::NOT_FOUND, &input, &[]);
         }
         ChunkLookup::Ambiguous(candidates) => {
-            return assay_lookup_error(view, error_code::AMBIGUOUS, &input, &candidates);
+            return debug_lookup_error(view, error_code::AMBIGUOUS, &input, &candidates);
         }
         ChunkLookup::Found(window) => window.target,
     };
@@ -878,14 +978,26 @@ fn assay_how(
         Err(error) => {
             return ui_msg::die(
                 view,
-                "assay",
+                "debug",
                 error_code::TOKENIZATION,
                 &format!("Could not preview the `{strategy}` tokenizer: {error}"),
                 Some("Check the configured FTS strategy and rebuild the index if needed."),
             );
         }
     };
-    emit_assay_how_json(&target, &strategy, &tokens);
+    let physical =
+        lode_core::index::schema::physical_tokenizer(&strategy).unwrap_or(strategy.as_str());
+    if view != View::Json && chunk_stale(&target) {
+        write_stderr(format_args!(
+            "Warning: debug is using a stale index snapshot; run `lode mine` to update.\n"
+        ));
+    }
+    match view {
+        View::Compact => assay_render::compact(&target, &strategy, physical, &tokens),
+        View::Extended => assay_render::extended(&target, &strategy, physical, &tokens),
+        View::Table => assay_render::table(&target, &tokens),
+        View::Json => emit_debug_tokens_json(&target, &strategy, &tokens),
+    }
     EXIT_OK
 }
 
@@ -1108,7 +1220,7 @@ fn dig_error_with_text(
     result
 }
 
-fn assay_lookup_error(view: View, code: &str, input: &str, candidates: &[ChunkWithRefs]) -> u8 {
+fn debug_lookup_error(view: View, code: &str, input: &str, candidates: &[ChunkWithRefs]) -> u8 {
     let text = lode_core::messages::require(code);
     let error = lode_core::messages::format(
         text.error,
@@ -1124,7 +1236,17 @@ fn assay_lookup_error(view: View, code: &str, input: &str, candidates: &[ChunkWi
     } else {
         None
     };
-    ui_msg::die_with_extra(view, "assay", code, &error, text.hint, extra)
+    let result = ui_msg::die_with_extra(view, "debug", code, &error, text.hint, extra);
+    if view != View::Json && code == error_code::AMBIGUOUS {
+        for candidate in candidates {
+            eprintln!(
+                "  #{} {}",
+                assay_render::short_digest(&candidate.digest),
+                assay_render::source_line(candidate)
+            );
+        }
+    }
+    result
 }
 
 fn dig_source_line(chunk: &ChunkWithRefs) -> String {
@@ -1176,7 +1298,7 @@ fn emit_dig_json(target: &ChunkWithRefs, window: &[ChunkWithRefs], radius: u32) 
     println!("{}", serde_json::to_string_pretty(&payload).unwrap());
 }
 
-fn emit_assay_how_json(
+fn emit_debug_tokens_json(
     target: &ChunkWithRefs,
     strategy: &str,
     tokens: &[lode_core::fts::IndexedTerm],

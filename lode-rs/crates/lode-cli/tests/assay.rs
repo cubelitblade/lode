@@ -96,7 +96,7 @@ fn fixture(strategy: &str, text: &str) -> Fixture {
                 digest: digest.clone(),
                 text: text.to_string(),
                 seq: 0,
-                heading: "Notes".to_string(),
+                heading: "Notes\twith newline\n".to_string(),
                 page: None,
                 span: None,
             }],
@@ -113,8 +113,27 @@ fn fixture(strategy: &str, text: &str) -> Fixture {
     }
 }
 
+fn settings_fixture(strategy: &str) -> Fixture {
+    let directory = tempfile::tempdir().unwrap();
+    let workspace = directory.path().to_path_buf();
+    let config_home = tempfile::tempdir().unwrap();
+    let cache_home = tempfile::tempdir().unwrap();
+    fs::write(
+        workspace.join("lode.toml"),
+        format!("[fts]\nstrategy = \"{strategy}\"\n"),
+    )
+    .unwrap();
+    Fixture {
+        _directory: directory,
+        workspace,
+        config_home,
+        cache_home,
+        digest: String::new(),
+    }
+}
+
 #[test]
-fn how_json_supports_all_strategies_and_variants() {
+fn debug_tokens_json_supports_all_strategies_and_variants() {
     for (strategy, text, physical, expected_token) in [
         ("unicode61", "Café Rocks", "unicode61", "cafe"),
         ("trigram", "矿石探矿", "trigram", "矿石探"),
@@ -122,7 +141,7 @@ fn how_json_supports_all_strategies_and_variants() {
         ("jieba", "知识", "simple", "知"),
     ] {
         let fixture = fixture(strategy, text);
-        let output = run_lode(&fixture, "json", &["assay", "how", &fixture.digest]);
+        let output = run_lode(&fixture, "json", &["debug", "tokens", &fixture.digest]);
         assert!(
             output.status.success(),
             "{strategy}: stdout={} stderr={}",
@@ -152,33 +171,114 @@ fn how_json_supports_all_strategies_and_variants() {
 }
 
 #[test]
-fn how_json_accepts_bare_digest_and_analyze_alias() {
+fn debug_tokens_json_accepts_bare_digest() {
     let fixture = fixture("unicode61", "hello world");
     let bare = fixture.digest.strip_prefix("blake3:").unwrap();
-    let output = run_lode(&fixture, "json", &["analyze", "how", bare]);
+    let output = run_lode(&fixture, "json", &["debug", "tokens", bare]);
     assert!(output.status.success());
     assert_eq!(json(&output)["digest"], fixture.digest);
 }
 
 #[test]
-fn unsupported_view_fails_before_index_or_stale_changes() {
-    let fixture = fixture("unicode61", "hello");
+fn how_query_does_not_require_an_index() {
+    for (strategy, query) in [
+        ("unicode61", "知识 rocks"),
+        ("trigram", "矿石探矿"),
+        ("simple", "知识"),
+        ("jieba", "中华人民共和国"),
+    ] {
+        let fixture = settings_fixture(strategy);
+        let output = run_lode(&fixture, "json", &["assay", "how", query]);
+        assert!(
+            output.status.success(),
+            "{strategy}: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.stderr.is_empty());
+        let payload = json(&output);
+        assert_eq!(payload["query"], query);
+        assert_eq!(payload["tokenizer"]["strategy"], strategy);
+        assert_eq!(
+            payload["tokenizer"]["tokenize"],
+            if strategy == "jieba" {
+                "simple"
+            } else {
+                strategy
+            }
+        );
+        if strategy == "simple" {
+            assert_eq!(payload["helper"], "simple_query");
+        } else if strategy == "jieba" {
+            assert_eq!(payload["helper"], "jieba_query");
+        } else {
+            assert_eq!(payload["helper"], Value::Null);
+        }
+        if strategy != "trigram" {
+            assert!(!payload["match_expression"].as_str().unwrap().is_empty());
+        }
+    }
+}
+
+#[test]
+fn how_query_alias_and_hex_text_are_queries() {
+    let fixture = settings_fixture("unicode61");
+    let output = run_lode(&fixture, "json", &["analyze", "how", "deadbeef"]);
+    assert!(output.status.success());
+    assert_eq!(json(&output)["query"], "deadbeef");
+}
+
+#[test]
+fn how_query_human_and_table_views_escape_query_text() {
+    let fixture = settings_fixture("simple");
+    let compact = run_lode(&fixture, "compact", &["assay", "how", "a\nb"]);
+    assert!(compact.status.success());
+    let compact_stdout = String::from_utf8_lossy(&compact.stdout);
+    assert!(compact_stdout.contains("a\\nb"));
+    assert!(compact.stderr.is_empty());
+
+    let extended = run_lode(&fixture, "extended", &["assay", "how", "a\nb"]);
+    assert!(extended.status.success());
+    assert!(extended.stderr.is_empty());
+
+    let table = run_lode(&fixture, "table", &["assay", "how", "a\tb"]);
+    assert!(table.status.success());
+    let table_stdout = String::from_utf8_lossy(&table.stdout);
+    let mut rows = table_stdout.lines();
+    assert_eq!(
+        rows.next(),
+        Some("QUERY\tSTRATEGY\tTOKENIZER\tHELPER\tMATCH")
+    );
+    let row = rows.next().expect("query table row");
+    assert_eq!(row.split('\t').count(), 5);
+    assert!(row.starts_with("a\\tb\tsimple\tsimple\tsimple_query"));
+}
+
+#[test]
+fn how_query_reports_empty_trigram_expression_and_invalid_query() {
+    let fixture = settings_fixture("trigram");
+    let short = run_lode(&fixture, "json", &["assay", "how", "ab"]);
+    assert!(short.status.success());
+    assert_eq!(json(&short)["match_expression"], "");
+
+    let empty = run_lode(&fixture, "json", &["assay", "how", "  "]);
+    assert_eq!(empty.status.code(), Some(1));
+    assert_eq!(json(&empty)["code"], "invalid_query");
+    assert!(empty.stderr.is_empty());
+}
+
+#[test]
+fn how_query_does_not_scan_or_change_an_existing_index() {
+    let fixture = fixture("unicode61", "indexed text");
     fs::write(
         fixture.workspace.join("notes.txt"),
         "changed workspace text",
     )
     .unwrap();
 
-    for view in ["compact", "extended", "table"] {
-        let output = run_lode(&fixture, view, &["assay", "how", &fixture.digest]);
-        assert_eq!(output.status.code(), Some(1), "view={view}");
-        assert!(
-            String::from_utf8_lossy(&output.stderr).contains("only `--view json`"),
-            "view={view}: stderr={}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(output.stdout.is_empty(), "view={view}");
-    }
+    let output = run_lode(&fixture, "json", &["assay", "how", "query"]);
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
 
     let store = Store::open_existing(&fixture.workspace.join(".lode/index.db")).unwrap();
     assert_eq!(
@@ -192,10 +292,164 @@ fn unsupported_view_fails_before_index_or_stale_changes() {
 }
 
 #[test]
-fn how_json_reports_stale_snapshot_without_reindexing() {
+fn debug_tokens_human_views_show_terms_and_stale_warning() {
+    let fixture = fixture("unicode61", "one one two");
+    fs::write(
+        fixture.workspace.join("notes.txt"),
+        "changed workspace text",
+    )
+    .unwrap();
+
+    let compact = run_lode(&fixture, "compact", &["debug", "tokens", &fixture.digest]);
+    assert!(compact.status.success());
+    let compact_stdout = String::from_utf8_lossy(&compact.stdout);
+    assert!(compact_stdout.contains("Debug tokens"));
+    assert!(compact_stdout.contains("Terms: 2 distinct · 3 occurrences"));
+    assert!(compact_stdout.contains("one · two"));
+    assert!(compact_stdout.contains("Notes\\twith newline\\n"));
+    assert!(String::from_utf8_lossy(&compact.stderr).contains("stale index snapshot"));
+
+    let extended = run_lode(&fixture, "extended", &["debug", "tokens", &fixture.digest]);
+    assert!(extended.status.success());
+    let extended_stdout = String::from_utf8_lossy(&extended.stdout);
+    assert!(extended_stdout.contains("Text:"));
+    assert!(extended_stdout.contains("one one two"));
+    assert!(extended_stdout.contains("[0] one"));
+    assert!(extended_stdout.contains("[2] two"));
+    assert!(String::from_utf8_lossy(&extended.stderr).contains("stale index snapshot"));
+
+    let table = run_lode(&fixture, "table", &["debug", "tokens", &fixture.digest]);
+    assert!(table.status.success());
+    let table_stdout = String::from_utf8_lossy(&table.stdout);
+    let mut rows = table_stdout.lines();
+    assert_eq!(
+        rows.next(),
+        Some("INDEX\tSURFACE\tVARIANTS\tDIGEST\tPATH\tHEADING\tPAGE\tSTATE")
+    );
+    let first = rows.next().expect("first token row");
+    assert_eq!(first.split('\t').count(), 8);
+    assert!(first.contains("\t[]\t"));
+    assert!(first.contains("Notes\\twith newline\\n"));
+    assert_eq!(rows.count(), 2);
+    assert!(String::from_utf8_lossy(&table.stderr).contains("stale index snapshot"));
+
+    let store = Store::open_existing(&fixture.workspace.join(".lode/index.db")).unwrap();
+    assert_eq!(
+        store
+            .get_file(&WorkspacePath::from_posix("notes.txt"))
+            .unwrap()
+            .unwrap()
+            .status,
+        FileStatus::Stale
+    );
+}
+
+#[test]
+fn debug_tokens_compact_limits_distinct_terms() {
+    let fixture = fixture(
+        "unicode61",
+        "one two three four five six seven eight nine ten eleven twelve thirteen",
+    );
+    let output = run_lode(&fixture, "compact", &["debug", "tokens", &fixture.digest]);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Terms: 13 distinct · 13 occurrences"));
+    assert!(stdout.contains("… 1 more term(s)"));
+    assert!(!stdout.contains("thirteen"));
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn debug_tokens_extended_preserves_occurrences_and_variants() {
+    let fixture = fixture("simple", "知识知识");
+    let output = run_lode(&fixture, "extended", &["debug", "tokens", &fixture.digest]);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Counts: 4 token occurrences · 2 distinct terms"));
+    assert!(stdout.contains("[0] 知(z/zhi)"));
+    assert!(stdout.contains("[2] 知(z/zhi)"));
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn debug_tokens_extended_lists_sources_and_visible_text_controls() {
+    let fixture = fixture("unicode61", "line one\nline\t two\u{0001}");
+    let second = fixture.workspace.join("other.txt");
+    fs::write(&second, "line one\nline\t two\u{0001}").unwrap();
+    let mut store = Store::open_existing(&fixture.workspace.join(".lode/index.db")).unwrap();
+    assert!(
+        store
+            .reference_file(&record_for(&second, &fixture.workspace), "text")
+            .unwrap()
+    );
+    drop(store);
+
+    let output = run_lode(&fixture, "extended", &["debug", "tokens", &fixture.digest]);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("notes.txt (fresh)"));
+    assert!(stdout.contains("other.txt (fresh)"));
+    assert!(stdout.contains("line one\nline\t two\\u{1}"));
+    assert!(output.stderr.is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn debug_tokens_extended_escapes_control_characters_in_source_paths() {
+    let fixture = fixture("unicode61", "path control");
+    let second = fixture.workspace.join("other\nname.txt");
+    fs::write(&second, "path control").unwrap();
+    let mut store = Store::open_existing(&fixture.workspace.join(".lode/index.db")).unwrap();
+    assert!(
+        store
+            .reference_file(&record_for(&second, &fixture.workspace), "text")
+            .unwrap()
+    );
+    drop(store);
+
+    let output = run_lode(&fixture, "extended", &["debug", "tokens", &fixture.digest]);
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("other\\nname.txt (fresh)"));
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn debug_tokens_extended_escapes_control_characters_in_trigram_terms() {
+    let fixture = fixture("trigram", "ab\ncd");
+    let output = run_lode(&fixture, "extended", &["debug", "tokens", &fixture.digest]);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("[0] ab\\n"));
+    assert!(stdout.contains("[1] b\\nc"));
+    assert!(stdout.contains("[2] \\ncd"));
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn debug_tokens_empty_chunk_has_empty_human_and_table_results() {
+    let fixture = fixture("unicode61", "");
+
+    let compact = run_lode(&fixture, "compact", &["debug", "tokens", &fixture.digest]);
+    assert!(compact.status.success());
+    assert!(String::from_utf8_lossy(&compact.stdout).contains("(no indexed terms)"));
+
+    let extended = run_lode(&fixture, "extended", &["debug", "tokens", &fixture.digest]);
+    assert!(extended.status.success());
+    assert!(String::from_utf8_lossy(&extended.stdout).contains("(no indexed terms)"));
+
+    let table = run_lode(&fixture, "table", &["debug", "tokens", &fixture.digest]);
+    assert!(table.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&table.stdout),
+        "INDEX\tSURFACE\tVARIANTS\tDIGEST\tPATH\tHEADING\tPAGE\tSTATE\n"
+    );
+}
+
+#[test]
+fn debug_tokens_json_reports_stale_snapshot_without_reindexing() {
     let fixture = fixture("unicode61", "old indexed text");
     fs::write(fixture.workspace.join("notes.txt"), "new workspace text").unwrap();
-    let output = run_lode(&fixture, "json", &["assay", "how", &fixture.digest]);
+    let output = run_lode(&fixture, "json", &["debug", "tokens", &fixture.digest]);
     assert!(output.status.success());
     let payload = json(&output);
     assert_eq!(payload["text"], "old indexed text");
@@ -214,11 +468,11 @@ fn how_json_reports_stale_snapshot_without_reindexing() {
 }
 
 #[test]
-fn how_json_reports_deleted_source_as_stale_snapshot() {
+fn debug_tokens_json_reports_deleted_source_as_stale_snapshot() {
     let fixture = fixture("unicode61", "deleted source text");
     fs::remove_file(fixture.workspace.join("notes.txt")).unwrap();
 
-    let output = run_lode(&fixture, "json", &["assay", "how", &fixture.digest]);
+    let output = run_lode(&fixture, "json", &["debug", "tokens", &fixture.digest]);
     assert!(output.status.success());
     let payload = json(&output);
     assert_eq!(payload["text"], "deleted source text");
@@ -246,7 +500,7 @@ fn how_json_reports_deleted_source_as_stale_snapshot() {
 }
 
 #[test]
-fn how_json_reports_no_index_and_invalid_digest() {
+fn debug_tokens_json_reports_no_index_and_invalid_digest() {
     let directory = tempfile::tempdir().unwrap();
     let workspace = directory.path().to_path_buf();
     let config_home = tempfile::tempdir().unwrap();
@@ -258,18 +512,18 @@ fn how_json_reports_no_index_and_invalid_digest() {
         cache_home,
         digest: String::new(),
     };
-    let no_index = run_lode(&missing_fixture, "json", &["assay", "how", "dead"]);
+    let no_index = run_lode(&missing_fixture, "json", &["debug", "tokens", "dead"]);
     assert_eq!(no_index.status.code(), Some(1));
     assert_eq!(json(&no_index)["code"], "no_index");
 
     let existing = fixture("unicode61", "hello");
-    let invalid = run_lode(&existing, "json", &["assay", "how", "not-hex"]);
+    let invalid = run_lode(&existing, "json", &["debug", "tokens", "not-hex"]);
     assert_eq!(invalid.status.code(), Some(1));
     assert_eq!(json(&invalid)["code"], "invalid_digest");
 }
 
 #[test]
-fn how_json_reports_ambiguous_prefix_without_chunk_text() {
+fn debug_tokens_json_reports_ambiguous_prefix_without_chunk_text() {
     let fixture = fixture("unicode61", "hello");
     let source = fixture.workspace.join("other.txt");
     fs::write(&source, "second").unwrap();
@@ -291,23 +545,34 @@ fn how_json_reports_ambiguous_prefix_without_chunk_text() {
         .unwrap();
     drop(store);
 
-    let output = run_lode(&fixture, "json", &["assay", "how", "dead"]);
+    let output = run_lode(&fixture, "json", &["debug", "tokens", "dead"]);
     assert_eq!(output.status.code(), Some(1));
     let payload = json(&output);
     assert_eq!(payload["code"], "ambiguous");
     assert_eq!(payload["candidates"].as_array().unwrap().len(), 2);
     assert!(payload["candidates"][0].get("text").is_none());
+
+    for view in ["compact", "extended", "table"] {
+        let output = run_lode(&fixture, view, &["debug", "tokens", "dead"]);
+        assert_eq!(output.status.code(), Some(1), "view={view}");
+        assert!(output.stdout.is_empty(), "view={view}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("dead0001"), "view={view}: {stderr}");
+        assert!(stderr.contains("notes.txt"), "view={view}: {stderr}");
+        assert!(stderr.contains("dead0002"), "view={view}: {stderr}");
+        assert!(stderr.contains("other.txt"), "view={view}: {stderr}");
+    }
 }
 
 #[test]
-fn how_json_rejects_a_physical_tokenizer_mismatch() {
+fn debug_tokens_json_rejects_a_physical_tokenizer_mismatch() {
     let fixture = fixture("unicode61", "hello");
     fs::write(
         fixture.workspace.join("lode.toml"),
         "[fts]\nstrategy = \"trigram\"\n",
     )
     .unwrap();
-    let output = run_lode(&fixture, "json", &["assay", "how", &fixture.digest]);
+    let output = run_lode(&fixture, "json", &["debug", "tokens", &fixture.digest]);
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(json(&output)["code"], "index_open_error");
 }
