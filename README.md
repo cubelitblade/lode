@@ -182,13 +182,20 @@ This returns the complete content associated with the digest.
 
 ### 7. Assay a chunk
 
-To understand how a chunk was scored, or why it was included or excluded from candidates, run:
+To understand how an indexed chunk was scored with the Python CLI, provide its
+digest and query:
 
 ```bash
-lode assay why <digest>
+lode assay why <digest> <query>
+lode assay why <digest> <query> --json
 ```
 
-This provides a detailed report explaining how this chunk was evaluated.
+The report includes target provenance, stale state, per-source scores, the
+normalization and fusion plan, ranking factors, and the final rank. A stale
+target explains the old indexed snapshot; it is not re-extracted by `why`.
+
+The Rust rewrite has a separate view-based CLI. Its compact, extended, table,
+and JSON forms are documented in [Rust CLI usage](docs/usage.md).
 
 ## FAQ
 

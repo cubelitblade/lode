@@ -65,7 +65,8 @@ pub struct SourceExplanation {
     pub raw_score: Option<f64>,
     /// Score after the plan's norm, or `raw_score` when the norm is skipped.
     pub prepared_score: Option<f64>,
-    /// 1-based rank within the source pool by raw score, descending.
+    /// 1-based rank within the source pool by raw score, descending, with
+    /// deterministic rowid order for ties.
     pub pool_rank: Option<usize>,
 }
 

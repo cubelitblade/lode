@@ -15,7 +15,7 @@ use std::path::PathBuf;
 
 use crate::embeddings::base::Embedder;
 use crate::index::explanation::{RetrievalStatus, ScoreExplanation, SourceExplanation};
-use crate::index::ranking::{Fusion, PreparedScores, RetrievalPlan};
+use crate::index::ranking::{Fusion, PreparedScores, RetrievalPlan, ranked_scores};
 use crate::index::records::{DenseMatch, FileStatus, PathRef, Source, SparseMatch};
 
 use super::store::Store;
@@ -374,10 +374,14 @@ fn source_explanation(
 }
 
 /// Rank of `rowid` within a source pool by raw score, descending.
+///
+/// Equal scores use the same stable rowid tie-break as RRF fusion.
 fn pool_rank(scores: &BTreeMap<i64, f64>, rowid: i64) -> Option<usize> {
-    let &own = scores.get(&rowid)?;
-    let above = scores.values().filter(|&&v| v > own).count();
-    Some(above + 1)
+    scores.get(&rowid)?;
+    ranked_scores(scores)
+        .into_iter()
+        .position(|(id, _)| id == rowid)
+        .map(|position| position + 1)
 }
 
 #[cfg(test)]

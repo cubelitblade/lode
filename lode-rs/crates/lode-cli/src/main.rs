@@ -12,7 +12,9 @@ use terminal_size::{Width, terminal_size};
 use lode_core::config::layered::{self, load_settings_for};
 use lode_core::config::schema;
 use lode_core::config::{OutputPalette, Settings, build_embedder};
-use lode_core::index::records::{ChunkLookup, ChunkWithRefs, FileRecord};
+use lode_core::index::explanation::{RetrievalStatus, ScoreExplanation, SourceExplanation};
+use lode_core::index::ranking::{Fusion, Norm};
+use lode_core::index::records::{ChunkLookup, ChunkWithRefs, FileRecord, Source};
 use lode_core::index::store::Store;
 use lode_core::ingestion::pipeline::{
     Change, DetectResult, SyncSummary, classify, detect_changes, sync,
@@ -24,6 +26,7 @@ mod assay_render;
 mod markdown_render;
 mod query_render;
 mod render;
+mod why_render;
 
 use render::{Intent, RenderOptions};
 
@@ -278,6 +281,16 @@ enum Command {
 
 #[derive(Subcommand)]
 enum AssayCommand {
+    /// Explain why one indexed chunk received its retrieval score.
+    Why {
+        /// Chunk digest or hexadecimal prefix.
+        digest: String,
+        /// Query text used for scoring.
+        query: String,
+        /// Maximum number of results used to build each candidate pool.
+        #[arg(long)]
+        top_k: Option<u32>,
+    },
     /// Explain how a lexical query is constructed.
     How {
         /// Query text to explain.
@@ -404,6 +417,19 @@ fn dispatch(cli: Cli) -> u8 {
             cli.no_color,
         ),
         Command::Assay { command } => match command {
+            Some(AssayCommand::Why {
+                digest,
+                query,
+                top_k,
+            }) => assay_why(
+                &cli.workspace,
+                digest,
+                query,
+                top_k,
+                cli.view,
+                cli.palette,
+                cli.no_color,
+            ),
             Some(AssayCommand::How { query }) => {
                 assay_how(&cli.workspace, query, cli.view, cli.palette, cli.no_color)
             }
@@ -790,14 +816,16 @@ fn init_logging(level: LogLevel) {
 
 /// Print the concise assay help shown when the command has no subcommand.
 fn assay_help() -> u8 {
-    println!("Explain how one lexical query is constructed.");
+    println!("Explain query construction or one indexed chunk's score.");
     println!();
-    println!("Usage: lode [--view compact|extended|table|json] assay <COMMAND> <QUERY>");
+    println!("Usage: lode [--view compact|extended|table|json] assay <COMMAND> [<DIGEST>] <QUERY>");
     println!();
     println!("Commands:");
-    println!("  how <QUERY>  Explain the lexical MATCH construction");
+    println!("  why <DIGEST> <QUERY>  Explain one chunk's retrieval score");
+    println!("  how <QUERY>           Explain the lexical MATCH construction");
     println!();
     println!("Examples:");
+    println!("  lode --view json assay why blake3:... '知识'");
     println!("  lode assay how '知识'");
     println!("  lode --view extended analyze how 'rock and ore'");
     println!();
@@ -892,6 +920,316 @@ fn assay_how(
         ),
     }
     EXIT_OK
+}
+
+/// Explain one indexed chunk's retrieval score.
+fn assay_why(
+    workspace: &std::path::Path,
+    input: String,
+    query: String,
+    requested_top_k: Option<u32>,
+    view: View,
+    palette: Option<PaletteArg>,
+    no_color: bool,
+) -> u8 {
+    if let Some(code) = ui_msg::bad_workspace("assay", workspace, view) {
+        return code;
+    }
+
+    let settings = match configure_output(workspace, "assay", view, palette, no_color) {
+        Ok(settings) => settings,
+        Err(code) => return code,
+    };
+    if query.trim().is_empty() {
+        let text = lode_core::messages::require("invalid_query");
+        return ui_msg::die(
+            view,
+            "assay",
+            error_code::INVALID_QUERY,
+            text.error,
+            text.hint,
+        );
+    }
+    let Some(token) = normalize_digest(&input) else {
+        return assay_lookup_error(view, error_code::INVALID_DIGEST, &input, &[]);
+    };
+    let top_k = requested_top_k.unwrap_or(settings.retrieval.top_k);
+    if top_k == 0 {
+        return ui_msg::die(
+            view,
+            "assay",
+            error_code::INVALID_TOP_K,
+            "--top-k must be at least 1.",
+            Some("Set a positive result cap, or drop the flag to use retrieval.top_k."),
+        );
+    }
+
+    let db_path = workspace.join(INDEX_DB_RELATIVE);
+    if !db_path.is_file() {
+        let text = lode_core::messages::require("no_index");
+        let index_path = db_path.display().to_string();
+        let error = lode_core::messages::format(text.error, &[("index_path", index_path)]);
+        return ui_msg::die(view, "assay", error_code::NO_INDEX, &error, text.hint);
+    }
+    let mut store = match Store::open_existing_with_tokenizer(&db_path, &settings.fts.strategy) {
+        Ok(store) => store,
+        Err(error) => {
+            return ui_msg::die(
+                view,
+                "assay",
+                error_code::INDEX_OPEN,
+                &format!("Cannot open the lode index: {error}"),
+                Some("Ensure `.lode/index.db` is intact, or delete it and remine."),
+            );
+        }
+    };
+
+    // Resolve the rowid before scanning so a miss or ambiguity cannot mutate
+    // stale flags. A successful target is refreshed below before it is read.
+    let rowids = match store.find_chunk_rowids(&token) {
+        Ok(rowids) => rowids,
+        Err(error) => {
+            return ui_msg::die(
+                view,
+                "assay",
+                error_code::INDEX_READ,
+                &format!("Could not read the lode index: {error}"),
+                Some("Ensure `.lode/index.db` is intact, or delete it and remine."),
+            );
+        }
+    };
+    if rowids.is_empty() {
+        return assay_lookup_error(view, error_code::NOT_FOUND, &input, &[]);
+    }
+    if rowids.len() > 1 {
+        let candidates = match store.find_chunks_by_digest(&token) {
+            Ok(candidates) => candidates,
+            Err(error) => {
+                return ui_msg::die(
+                    view,
+                    "assay",
+                    error_code::INDEX_READ,
+                    &format!("Could not read the lode index: {error}"),
+                    Some("Ensure `.lode/index.db` is intact, or delete it and remine."),
+                );
+            }
+        };
+        return assay_lookup_error(view, error_code::AMBIGUOUS, &input, &candidates);
+    }
+    let rowid = rowids[0];
+
+    let ignore_files = settings
+        .app
+        .ignore
+        .sources
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    if let Err(error) = detect_changes(&mut store, workspace, &ignore_files) {
+        return ui_msg::die(
+            view,
+            "assay",
+            error_code::SCAN,
+            &format!("Could not finish scanning the workspace: {error}"),
+            Some("Fix the underlying error and rerun `lode assay why`."),
+        );
+    }
+    let embedder = match build_embedder(&settings.embedding) {
+        Ok(embedder) => embedder,
+        Err(error) => {
+            return ui_msg::die(
+                view,
+                "assay",
+                error_code::EMBEDDING,
+                &format!("Could not build the embedding client: {error}"),
+                Some("Check your embedding configuration in lode.toml."),
+            );
+        }
+    };
+    let plan = lode_core::config::build_plan(&settings.retrieval);
+    let explanation =
+        match lode_core::index::search::explain(&store, &*embedder, &query, rowid, &plan, top_k) {
+            Ok(explanation) => explanation,
+            Err(error) => return assay_why_search_error(view, error),
+        };
+    let fusion_explanation = explanation.plan.fusion.clone().explain(
+        &explanation.sources,
+        explanation.combined,
+        explanation.plan.norm,
+    );
+    if view != View::Json && chunk_stale(&explanation.chunk) {
+        why_render::stale_warning();
+    }
+    match view {
+        View::Compact => why_render::compact(&explanation, &query, &fusion_explanation),
+        View::Extended => why_render::extended(&explanation, &query, &fusion_explanation),
+        View::Table => why_render::table(&explanation, &query, &fusion_explanation),
+        View::Json => emit_assay_why_json(&query, &explanation, &fusion_explanation),
+    }
+    EXIT_OK
+}
+
+fn assay_why_search_error(view: View, error: lode_core::Error) -> u8 {
+    let (code, hint) = match error {
+        lode_core::Error::DimensionMismatch { .. } => (
+            error_code::DIMENSION,
+            Some("Run `lode mine --from-scratch` to rebuild the index with the current model."),
+        ),
+        lode_core::Error::Embedding(_) => (
+            error_code::EMBEDDING,
+            Some("Check your embedding service and configuration in lode.toml."),
+        ),
+        lode_core::Error::Config(_) => (
+            error_code::CONFIG,
+            Some("Check the retrieval configuration in lode.toml."),
+        ),
+        _ => (
+            error_code::SEARCH,
+            Some("Fix the underlying error and rerun `lode assay why`."),
+        ),
+    };
+    ui_msg::die(
+        view,
+        "assay",
+        code,
+        &format!("Could not explain the retrieval score: {error}"),
+        hint,
+    )
+}
+
+fn assay_lookup_error(view: View, code: &str, input: &str, candidates: &[ChunkWithRefs]) -> u8 {
+    let text = lode_core::messages::require(code);
+    let error = lode_core::messages::format(
+        text.error,
+        &[
+            ("digest", input.to_string()),
+            ("count", candidates.len().to_string()),
+        ],
+    );
+    let extra = (code == error_code::AMBIGUOUS).then(|| {
+        serde_json::json!({
+            "candidates": candidates
+                .iter()
+                .map(dig_chunk_json_without_text)
+                .collect::<Vec<_>>(),
+        })
+    });
+    let result = ui_msg::die_with_extra(view, "assay", code, &error, text.hint, extra);
+    if view != View::Json && code == error_code::AMBIGUOUS {
+        for candidate in candidates {
+            eprintln!(
+                "  #{} {}",
+                assay_render::short_digest(&candidate.digest),
+                assay_render::source_line(candidate)
+            );
+        }
+    }
+    result
+}
+
+fn emit_assay_why_json(
+    query: &str,
+    explanation: &ScoreExplanation,
+    fusion_explanation: &lode_core::index::explanation::FusionExplanation,
+) {
+    let sources = [Source::Semantic, Source::Lexical]
+        .into_iter()
+        .map(|source| {
+            (
+                source.as_str().to_string(),
+                source_explanation_json(
+                    explanation
+                        .sources
+                        .get(&source)
+                        .expect("explain always returns both retrieval sources"),
+                ),
+            )
+        })
+        .collect::<serde_json::Map<_, _>>();
+    let ranking_factors = fusion_explanation
+        .ranking_factors
+        .iter()
+        .map(|(source, factor)| {
+            (
+                source.as_str().to_string(),
+                serde_json::json!({
+                    "metric": factor.metric,
+                    "value": factor.value,
+                }),
+            )
+        })
+        .collect::<serde_json::Map<_, _>>();
+    let target = &explanation.chunk;
+    let payload = serde_json::json!({
+        "query": query,
+        "top_k": explanation.top_k,
+        "digest": target.digest,
+        "paths": target.refs.iter().map(|reference| serde_json::json!({
+            "path": reference.path.as_str(),
+            "state": reference.status.to_string(),
+        })).collect::<Vec<_>>(),
+        "heading": target.heading,
+        "page": target.page,
+        "seq": target.seq,
+        "has_stale": chunk_stale(target),
+        "sources": sources,
+        "norm": assay_norm_json(explanation.plan.norm),
+        "fusion": assay_fusion_json(&explanation.plan.fusion),
+        "ranking_factors": ranking_factors,
+        "combined": explanation.combined,
+        "rank": explanation.rank,
+        "in_results": explanation.in_results,
+    });
+    println!("{}", serde_json::to_string_pretty(&payload).unwrap());
+}
+
+fn source_explanation_json(source: &SourceExplanation) -> serde_json::Value {
+    serde_json::json!({
+        "status": match source.status {
+            RetrievalStatus::Disabled => "disabled",
+            RetrievalStatus::Empty => "empty",
+            RetrievalStatus::NotRetrieved => "not_retrieved",
+            RetrievalStatus::Matched => "matched",
+        },
+        "pool_size": source.pool_size,
+        "raw_score": source.raw_score,
+        "prepared_score": source.prepared_score,
+        "pool_rank": source.pool_rank,
+    })
+}
+
+fn assay_norm_json(norm: Option<Norm>) -> serde_json::Value {
+    match norm {
+        None => serde_json::json!({
+            "name": null,
+            "params": {},
+        }),
+        Some(Norm::MinMax) => serde_json::json!({
+            "name": "min-max",
+            "params": {},
+        }),
+        Some(Norm::Softmax { temperature }) => serde_json::json!({
+            "name": "softmax",
+            "params": {"temperature": temperature},
+        }),
+    }
+}
+
+fn assay_fusion_json(fusion: &Fusion) -> serde_json::Value {
+    match fusion {
+        Fusion::Linear { weights } => serde_json::json!({
+            "name": "linear",
+            "params": {
+                "weights": weights.iter().map(|(source, weight)| {
+                    (source.as_str().to_string(), serde_json::json!(*weight))
+                }).collect::<serde_json::Map<_, _>>(),
+            },
+        }),
+        Fusion::Rrf { k } => serde_json::json!({
+            "name": "rrf",
+            "params": {"k": k},
+        }),
+    }
 }
 
 /// Show the index-side tokenizer output for one chunk as structured JSON.

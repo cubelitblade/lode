@@ -24,6 +24,21 @@ use super::records::Source;
 /// Per-source score maps before fusion, keyed by source then chunk rowid.
 pub type PreparedScores = BTreeMap<Source, BTreeMap<i64, f64>>;
 
+/// Return scores in the deterministic order used for positional ranking.
+///
+/// `BTreeMap` iteration provides rowid order for equal scores. RRF fusion and
+/// per-source explanations must share this tie-break so their ranks agree.
+pub(crate) fn ranked_scores(scores: &BTreeMap<i64, f64>) -> Vec<(i64, f64)> {
+    let mut ranked: Vec<(i64, f64)> = scores
+        .iter()
+        .map(|(&rowid, &score)| (rowid, score))
+        .collect();
+    // `total_cmp` is a total order, so no NaN ambiguity and no panic path
+    // (unlike `partial_cmp().expect(...)`).
+    ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
+    ranked
+}
+
 /// Per-source score transform, applied before fusion.
 ///
 /// The transform must be monotonic so it never changes the source's internal
@@ -146,13 +161,10 @@ impl Fusion {
             }
             Self::Rrf { k } => {
                 for scores in prepared.values() {
-                    let mut ranked: Vec<(&i64, &f64)> = scores.iter().collect();
-                    // `total_cmp` is a total order, so no NaN ambiguity and
-                    // no panic path (unlike `partial_cmp().expect(...)`).
-                    ranked.sort_by(|a, b| b.1.total_cmp(a.1));
+                    let ranked = ranked_scores(scores);
                     for (position, (rowid, _)) in ranked.into_iter().enumerate() {
                         let position = u64::try_from(position + 1).unwrap_or(u64::MAX);
-                        *combined.entry(*rowid).or_default() += 1.0 / rank_as_f64(k + position);
+                        *combined.entry(rowid).or_default() += 1.0 / rank_as_f64(k + position);
                     }
                 }
             }
@@ -241,7 +253,7 @@ fn linear_explain(
             },
         );
         symbolic_parts.push(format!("{name} × {weight}"));
-        value_parts.push(format!("{prepared:.4} × {weight}"));
+        value_parts.push(format!("{} × {weight}", format_formula_value(prepared)));
     }
 
     let formula = FormulaComponents {
@@ -255,6 +267,14 @@ fn linear_explain(
         ranking_factors,
         evidence,
         formula,
+    }
+}
+
+fn format_formula_value(value: f64) -> String {
+    if value != 0.0 && value.abs() < 0.00005 {
+        format!("{value:.4e}")
+    } else {
+        format!("{value:.4}")
     }
 }
 
@@ -430,6 +450,15 @@ mod tests {
         assert!((result[&1] - 1.0 / 11.0).abs() < 1e-12);
     }
 
+    #[test]
+    fn rrf_fusion_uses_stable_positions_for_ties() {
+        let fusion = Fusion::Rrf { k: 10 };
+        let result = fusion.fuse(&prepared([(Source::Semantic, vec![(1, 1.0), (2, 1.0)])]));
+
+        assert!((result[&1] - 1.0 / 11.0).abs() < 1e-12);
+        assert!((result[&2] - 1.0 / 12.0).abs() < 1e-12);
+    }
+
     fn matched(raw: f64, prepared: f64, pool_rank: usize) -> SourceExplanation {
         SourceExplanation {
             status: RetrievalStatus::Matched,
@@ -493,6 +522,19 @@ mod tests {
         assert_eq!(expl.formula.value_terms, "1.0000 × 0.7 + 0.5000 × 0.3");
         assert_close(expl.formula.result, 0.85);
         assert_eq!(expl.formula.missing_note, None);
+    }
+
+    #[test]
+    fn linear_explain_formula_preserves_small_nonzero_values() {
+        let mut sources = sources();
+        sources.insert(Source::Semantic, matched(0.9, 0.000_006, 1));
+        let expl = linear_fusion().explain(
+            &sources,
+            0.000_004_2,
+            Some(Norm::Softmax { temperature: 1.0 }),
+        );
+
+        assert_eq!(expl.formula.value_terms, "6.0000e-6 × 0.7 + 0.5000 × 0.3");
     }
 
     #[test]

@@ -37,6 +37,15 @@ Neither view adds terminal styling. Human views use terminal capability
 detection and do not emit ANSI sequences when output is redirected or when
 `TERM=dumb`.
 
+Successful commands exit `0`; execution errors exit `1`, and Clap argument
+errors exit `2` (`mine` uses `3` for a completed run with per-file failures).
+For JSON execution errors, stdout contains one `{code,message,hint}` object and
+stderr remains quiet unless logging was explicitly enabled. `assay why` uses
+stable codes including `invalid_query`, `invalid_digest`, `invalid_top_k`,
+`no_index`, `not_found`, `ambiguous`, `config_error`, `embedding_error`,
+`dimension_error`, `index_open_error`, `index_read_error`, `scan_error`, and
+`search_error`.
+
 ## `lode survey`
 
 Detect workspace changes and report files that are new, changed, removed, or
@@ -120,6 +129,53 @@ expression without being an execution error.
 The JSON result contains `query`, `tokenizer`, `helper`, and
 `match_expression`. The table view has the fixed columns `QUERY`, `STRATEGY`,
 `TOKENIZER`, `HELPER`, and `MATCH`.
+
+## `lode assay why`
+
+Explain how one indexed chunk received its hybrid retrieval score. This
+command supports all four Rust output views:
+
+```bash
+lode assay why DIGEST QUERY
+lode --view extended assay why DIGEST QUERY
+lode --view table assay why DIGEST QUERY
+lode --view json assay why DIGEST QUERY [--top-k <number>]
+lode --view json analyze why DIGEST QUERY [--top-k <number>]
+```
+
+`compact` gives the query, representative target, final score and rank, one
+line per retrieval source, and the fusion method. `extended` adds all target
+paths, source pool sizes and scores, normalization and fusion parameters, and
+the core fusion explanation. It does not print the indexed chunk text.
+
+`table` writes exactly two TSV records, one for `semantic` and one for
+`lexical`, after this fixed header:
+
+```text
+QUERY TOP_K DIGEST PATH HEADING PAGE SEQ STATE COMBINED RANK IN_RESULTS SOURCE STATUS POOL_SIZE RAW_SCORE PREPARED_SCORE POOL_RANK FACTOR_METRIC FACTOR_VALUE NORM NORM_PARAMS FUSION FUSION_PARAMS
+```
+
+The displayed header uses spaces for readability; the actual fields are
+tab-separated. Missing values are empty fields, booleans are `true` or
+`false`, and parameters are compact JSON objects. Query, heading, and path
+fields use the normal TSV escaping rules.
+
+The digest may be a full `blake3:<hex>` value, a bare hexadecimal value, or a
+printed prefix. The command resolves exactly one indexed chunk, refreshes its
+file freshness markers, and then scores the old indexed snapshot. A stale
+result therefore reports `has_stale: true` but does not extract the changed
+file or update its FTS rows or document vector; the query embedding may still
+contact the configured embedding service.
+
+The successful JSON object contains `query`, `top_k`, target provenance,
+`has_stale`, per-source status and scores, the configured `norm` and `fusion`,
+matched-source `ranking_factors`, and the final `combined`, `rank`, and
+`in_results` values. `rank` is the target's rank across the complete candidate
+pool, so it can exceed `top_k`; a target with no positive score has a null rank
+and is not an execution error. A matched source's pool rank follows the same positional
+tie-break used by RRF fusion. Human and table views warn on stderr when the
+target is stale; JSON keeps stderr quiet. The explanation covers source scores,
+normalization, and fusion only; it does not provide per-word FTS contribution.
 
 ## `lode debug tokens`
 
