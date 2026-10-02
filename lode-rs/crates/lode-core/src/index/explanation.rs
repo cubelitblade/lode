@@ -185,6 +185,45 @@ pub struct ScoreExplanation {
     pub top_k: u32,
 }
 
+/// Full MATCH status, independent of candidate-pool membership.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LexicalDetailsStatus {
+    /// The retrieval plan disables lexical queries.
+    Disabled,
+    /// The evaluated lexical expression is empty.
+    EmptyQuery,
+    /// The target does not satisfy the full expression.
+    NotMatched,
+    /// The target satisfies the full expression.
+    Matched,
+}
+
+/// Opt-in lexical diagnostics, separate from fusion scores.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LexicalDetails {
+    /// Status of the full MATCH.
+    pub status: LexicalDetailsStatus,
+    /// Whether the target's BM25 participated in candidate scoring.
+    pub in_candidate_pool: bool,
+    /// Query tokenizer strategy.
+    pub strategy: String,
+    /// Physical FTS tokenizer.
+    pub tokenize: String,
+    /// Actual expression; absent when lexical retrieval is disabled.
+    pub match_expression: Option<String>,
+    /// Raw BM25 diagnostics; present only for a full match.
+    pub matched: Option<crate::fts::explanation::FtsMatchDetails>,
+}
+
+/// Score explanation and diagnostics from one index read snapshot.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScoreExplanationWithFts {
+    /// Existing score and ranking contract.
+    pub explanation: ScoreExplanation,
+    /// Explicitly requested lexical diagnostics.
+    pub lexical_details: LexicalDetails,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

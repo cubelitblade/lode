@@ -175,7 +175,50 @@ pool, so it can exceed `top_k`; a target with no positive score has a null rank
 and is not an execution error. A matched source's pool rank follows the same positional
 tie-break used by RRF fusion. Human and table views warn on stderr when the
 target is stale; JSON keeps stderr quiet. The explanation covers source scores,
-normalization, and fusion only; it does not provide per-word FTS contribution.
+normalization, and fusion. To include FTS phrase matches and signed contributions
+to the raw BM25 score, explicitly request `--fts-details`:
+
+```bash
+lode --view json assay why DIGEST QUERY --fts-details
+lode --view json analyze why DIGEST QUERY --fts-details --top-k 10
+```
+
+This option currently requires JSON. Compact, table, and extended views reject
+it with `unsupported_view` before opening the index, refreshing freshness
+markers, or calling the embedding service. Without the option, all four views
+and the existing JSON fields remain unchanged.
+
+The additional `lexical_details` object contains:
+
+- `status`: `disabled`, `empty_query`, `not_matched`, or `matched`.
+- `in_candidate_pool` and the actual `match_expression`.
+- `tokenizer: {strategy, tokenize}`, distinguishing the query strategy from
+  the physical tokenizer (`jieba` uses physical `simple`).
+- `bm25`, `corpus_rows`, `document_length`, and `average_length`.
+- `phrases`, each with `index`, `query_tokens`, `document_frequency`,
+  `idf`, `weighted_frequency`, `bm25_contribution`, and `hits`.
+  Hits contain `column`, `token_offset`, and `document_tokens`.
+
+A phrase is an FTS5 scoring unit containing one or more tokenizer tokens; it
+does not necessarily correspond to a natural-language word. Repeated phrases
+and zero-contribution OR branches are retained. Contributions use SQLite's
+signed BM25 convention and sum to `bm25` within
+`1e-12 + 1e-12 * abs(bm25)`. They do not attribute normalized or fused
+scores, including RRF. Offsets count indexed tokens, rather than original-text
+bytes; unavailable document tokens (such as prefix matches) are JSON null.
+
+Full MATCH status is separate from candidate-pool membership. A matched target
+outside the lexical pool gets diagnostics, while `sources.lexical.raw_score`
+remains null and its existing fusion factors and rank remain unchanged. For
+`disabled`, `empty_query`, and `not_matched`, statistics are null and
+`phrases` is empty. Disabled queries have a null expression; empty lexical
+queries have an empty expression and skip MATCH.
+
+Candidates, the target, and diagnostics share one SQLite read snapshot after
+freshness detection. The option makes no additional query-embedding request.
+Explicit diagnostic failures return `fts_explanation_error` with exit status
+1 and a single JSON error object on stdout, with no partial result and quiet
+stderr.
 
 ## `lode debug tokens`
 

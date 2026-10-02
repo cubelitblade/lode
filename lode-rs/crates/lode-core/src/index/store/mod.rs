@@ -23,6 +23,7 @@ mod chunks;
 mod fts;
 mod meta;
 mod query;
+mod snapshot;
 
 use self::chunks::{ensure_content, gc_content_if_orphaned, insert_chunks, size_to_i64};
 use self::meta::{IndexMeta, configure_connection, read_meta, write_meta};

@@ -832,3 +832,6 @@ fn why_json_reports_ambiguous_digest_candidates() {
     assert!(stderr.contains("other.txt"));
     assert!(stderr.contains("dead0002"));
 }
+
+#[path = "assay_why/fts_details.rs"]
+mod fts_details;

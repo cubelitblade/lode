@@ -107,10 +107,7 @@ impl RowDetails {
         if self.rowid != target_rowid {
             return Err(FtsExplanationError::InvalidData("target rowid mismatch"));
         }
-        if !bm25.is_finite()
-            || !sum.is_finite()
-            || (sum - bm25).abs() > ABSOLUTE_TOLERANCE + RELATIVE_TOLERANCE * bm25.abs()
-        {
+        if !bm25_agrees(sum, bm25) {
             return Err(FtsExplanationError::InvalidData(
                 "phrase contributions disagree with native BM25",
             ));
@@ -125,4 +122,10 @@ impl RowDetails {
             phrases: self.phrases,
         })
     }
+}
+
+pub(crate) fn bm25_agrees(value: f64, bm25: f64) -> bool {
+    value.is_finite()
+        && bm25.is_finite()
+        && (value - bm25).abs() <= ABSOLUTE_TOLERANCE + RELATIVE_TOLERANCE * bm25.abs()
 }

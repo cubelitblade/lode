@@ -24,3 +24,5 @@ termimad = "0.35.4"
 
 [dev-dependencies]
 tempfile = "3"
+# Reuse the core SQLite dependency to exercise real diagnostic failures.
+rusqlite = "0.32"

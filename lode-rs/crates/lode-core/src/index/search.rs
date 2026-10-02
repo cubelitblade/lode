@@ -20,6 +20,9 @@ use crate::index::records::{DenseMatch, FileStatus, PathRef, Source, SparseMatch
 
 use super::store::Store;
 
+mod fts;
+pub use fts::explain_with_fts;
+
 /// Retrieve a larger candidate pool than `top_k` from each source so the fused
 /// ranking can still reach the best combined result.
 const CANDIDATE_MULTIPLIER: usize = 4;
@@ -181,6 +184,17 @@ fn score_candidates(
     plan: &RetrievalPlan,
     top_k: u32,
 ) -> crate::Result<Candidates> {
+    score_candidates_for_query(store, embedder, query, plan, top_k, None)
+}
+
+fn score_candidates_for_query(
+    store: &Store,
+    embedder: &dyn Embedder,
+    query: &str,
+    plan: &RetrievalPlan,
+    top_k: u32,
+    lexical_expression: Option<&str>,
+) -> crate::Result<Candidates> {
     if top_k == 0 || query.trim().is_empty() {
         return Ok(Candidates {
             semantic_raw: BTreeMap::new(),
@@ -212,8 +226,16 @@ fn score_candidates(
         BTreeMap::new()
     };
     let lexical_raw = if source_enabled(plan, Source::Lexical) {
-        let expr = crate::fts::match_query(query, store.query_tokenizer())?;
-        sparse_to_map(store.sparse_search(&expr, pool)?)
+        match lexical_expression {
+            Some("") => BTreeMap::new(),
+            Some(expression) => sparse_to_map(
+                store.sparse_search(&crate::fts::MatchExpr::Prebuilt(expression.into()), pool)?,
+            ),
+            None => {
+                let expr = crate::fts::match_query(query, store.query_tokenizer())?;
+                sparse_to_map(store.sparse_search(&expr, pool)?)
+            }
+        }
     } else {
         BTreeMap::new()
     };
@@ -296,6 +318,22 @@ pub fn explain(
         return Err(crate::Error::Store(format!("no chunk with rowid {rowid}")));
     };
 
+    Ok(explanation_from_candidates(
+        chunk,
+        &candidates,
+        rowid,
+        plan,
+        top_k,
+    ))
+}
+
+fn explanation_from_candidates(
+    chunk: crate::index::records::ChunkWithRefs,
+    candidates: &Candidates,
+    rowid: i64,
+    plan: &RetrievalPlan,
+    top_k: u32,
+) -> ScoreExplanation {
     let mut sources = BTreeMap::new();
     sources.insert(
         Source::Semantic,
@@ -332,7 +370,7 @@ pub fn explain(
         .map(|pos| pos + 1);
     let in_results = rank.is_some_and(|rank| rank <= top_k as usize);
 
-    Ok(ScoreExplanation {
+    ScoreExplanation {
         chunk,
         sources,
         combined,
@@ -340,7 +378,7 @@ pub fn explain(
         in_results,
         plan: plan.clone(),
         top_k,
-    })
+    }
 }
 
 /// Assemble one source's explanation, deriving its retrieval status.

@@ -30,12 +30,11 @@ impl Store {
             .map_err(Into::into)
     }
 
-    fn explain_fts_inner(
+    pub(crate) fn resolve_fts_query(
         &self,
         expr: &MatchExpr,
-        target_rowid: i64,
-    ) -> Result<FtsExplanation, FtsExplanationError> {
-        let match_expression = match expr {
+    ) -> Result<String, FtsExplanationError> {
+        Ok(match expr {
             MatchExpr::Prebuilt(expression) => expression.clone(),
             MatchExpr::Helper { function, query } => {
                 let sql = match *function {
@@ -47,7 +46,15 @@ impl Store {
                     .query_row(sql, [query], |row| row.get::<_, Option<String>>(0))?
                     .unwrap_or_default()
             }
-        };
+        })
+    }
+
+    fn explain_fts_inner(
+        &self,
+        expr: &MatchExpr,
+        target_rowid: i64,
+    ) -> Result<FtsExplanation, FtsExplanationError> {
+        let match_expression = self.resolve_fts_query(expr)?;
         let matched = if match_expression.is_empty() {
             None
         } else {

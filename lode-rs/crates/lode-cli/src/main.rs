@@ -23,6 +23,7 @@ use lode_core::ingestion::split::RecursiveSegmentSplitter;
 use lode_core::relpath::WorkspacePath;
 
 mod assay_render;
+mod lexical_json;
 mod markdown_render;
 mod query_render;
 mod render;
@@ -62,6 +63,8 @@ mod error_code {
     pub const INDEX_CREATE: &str = "index_create_error";
     pub const INDEX_READ: &str = "index_read_error";
     pub const SEARCH: &str = "search_error";
+    pub const UNSUPPORTED_VIEW: &str = "unsupported_view";
+    pub const FTS_EXPLANATION: &str = "fts_explanation_error";
     pub const INVALID_TOP_K: &str = "invalid_top_k";
     pub const INVALID_QUERY: &str = "invalid_query";
     pub const NO_INDEX: &str = "no_index";
@@ -287,15 +290,24 @@ enum AssayCommand {
         digest: String,
         /// Query text used for scoring.
         query: String,
-        /// Maximum number of results used to build each candidate pool.
-        #[arg(long)]
-        top_k: Option<u32>,
+        #[command(flatten)]
+        options: AssayWhyOptions,
     },
     /// Explain how a lexical query is constructed.
     How {
         /// Query text to explain.
         query: String,
     },
+}
+
+#[derive(clap::Args)]
+struct AssayWhyOptions {
+    /// Maximum number of results used to build each candidate pool.
+    #[arg(long)]
+    top_k: Option<u32>,
+    /// Include FTS phrase matches and raw BM25 contributions (JSON only).
+    #[arg(long)]
+    fts_details: bool,
 }
 
 #[derive(Subcommand)]
@@ -420,12 +432,12 @@ fn dispatch(cli: Cli) -> u8 {
             Some(AssayCommand::Why {
                 digest,
                 query,
-                top_k,
+                options,
             }) => assay_why(
                 &cli.workspace,
                 digest,
                 query,
-                top_k,
+                options,
                 cli.view,
                 cli.palette,
                 cli.no_color,
@@ -927,11 +939,20 @@ fn assay_why(
     workspace: &std::path::Path,
     input: String,
     query: String,
-    requested_top_k: Option<u32>,
+    options: AssayWhyOptions,
     view: View,
     palette: Option<PaletteArg>,
     no_color: bool,
 ) -> u8 {
+    if options.fts_details && view != View::Json {
+        return ui_msg::die(
+            view,
+            "assay",
+            error_code::UNSUPPORTED_VIEW,
+            "--fts-details currently requires the JSON view.",
+            Some("Use lode --view json assay why DIGEST QUERY --fts-details."),
+        );
+    }
     if let Some(code) = ui_msg::bad_workspace("assay", workspace, view) {
         return code;
     }
@@ -953,7 +974,7 @@ fn assay_why(
     let Some(token) = normalize_digest(&input) else {
         return assay_lookup_error(view, error_code::INVALID_DIGEST, &input, &[]);
     };
-    let top_k = requested_top_k.unwrap_or(settings.retrieval.top_k);
+    let top_k = options.top_k.unwrap_or(settings.retrieval.top_k);
     if top_k == 0 {
         return ui_msg::die(
             view,
@@ -1047,11 +1068,17 @@ fn assay_why(
         }
     };
     let plan = lode_core::config::build_plan(&settings.retrieval);
-    let explanation =
-        match lode_core::index::search::explain(&store, &*embedder, &query, rowid, &plan, top_k) {
-            Ok(explanation) => explanation,
-            Err(error) => return assay_why_search_error(view, error),
-        };
+    let result = if options.fts_details {
+        lode_core::index::search::explain_with_fts(&store, &*embedder, &query, rowid, &plan, top_k)
+            .map(|result| (result.explanation, Some(result.lexical_details)))
+    } else {
+        lode_core::index::search::explain(&store, &*embedder, &query, rowid, &plan, top_k)
+            .map(|explanation| (explanation, None))
+    };
+    let (explanation, lexical_details) = match result {
+        Ok(result) => result,
+        Err(error) => return assay_why_search_error(view, error),
+    };
     let fusion_explanation = explanation.plan.fusion.clone().explain(
         &explanation.sources,
         explanation.combined,
@@ -1064,7 +1091,12 @@ fn assay_why(
         View::Compact => why_render::compact(&explanation, &query, &fusion_explanation),
         View::Extended => why_render::extended(&explanation, &query, &fusion_explanation),
         View::Table => why_render::table(&explanation, &query, &fusion_explanation),
-        View::Json => emit_assay_why_json(&query, &explanation, &fusion_explanation),
+        View::Json => emit_assay_why_json(
+            &query,
+            &explanation,
+            &fusion_explanation,
+            lexical_details.as_ref(),
+        ),
     }
     EXIT_OK
 }
@@ -1082,6 +1114,10 @@ fn assay_why_search_error(view: View, error: lode_core::Error) -> u8 {
         lode_core::Error::Config(_) => (
             error_code::CONFIG,
             Some("Check the retrieval configuration in lode.toml."),
+        ),
+        lode_core::Error::FtsExplanation(_) => (
+            error_code::FTS_EXPLANATION,
+            Some("Check the underlying FTS error and rerun lode assay why --fts-details."),
         ),
         _ => (
             error_code::SEARCH,
@@ -1131,6 +1167,7 @@ fn emit_assay_why_json(
     query: &str,
     explanation: &ScoreExplanation,
     fusion_explanation: &lode_core::index::explanation::FusionExplanation,
+    lexical_details: Option<&lode_core::index::explanation::LexicalDetails>,
 ) {
     let sources = [Source::Semantic, Source::Lexical]
         .into_iter()
@@ -1160,7 +1197,7 @@ fn emit_assay_why_json(
         })
         .collect::<serde_json::Map<_, _>>();
     let target = &explanation.chunk;
-    let payload = serde_json::json!({
+    let mut payload = serde_json::json!({
         "query": query,
         "top_k": explanation.top_k,
         "digest": target.digest,
@@ -1180,6 +1217,9 @@ fn emit_assay_why_json(
         "rank": explanation.rank,
         "in_results": explanation.in_results,
     });
+    if let Some(details) = lexical_details {
+        payload["lexical_details"] = lexical_json::details(details);
+    }
     println!("{}", serde_json::to_string_pretty(&payload).unwrap());
 }
 

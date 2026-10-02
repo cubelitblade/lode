@@ -1599,6 +1599,7 @@ dependencies = [
  "indicatif",
  "lode-core",
  "log",
+ "rusqlite",
  "serde_json",
  "tempfile",
  "termimad",
