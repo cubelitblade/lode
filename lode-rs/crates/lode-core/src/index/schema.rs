@@ -115,14 +115,7 @@ pub fn create_schema(
         );"
     ))?;
 
-    conn.execute_batch(&format!(
-        "CREATE VIRTUAL TABLE chunks_fts USING fts5(
-            text,
-            tokenize='{physical_tokenizer}',
-            content='chunks',
-            content_rowid='id'
-        );"
-    ))?;
+    conn.execute_batch(&fts_table_sql(physical_tokenizer))?;
 
     conn.execute_batch(
         "CREATE TRIGGER chunks_ai AFTER INSERT ON chunks BEGIN
@@ -138,4 +131,17 @@ pub fn create_schema(
     )?;
 
     Ok(())
+}
+
+/// The fixed FTS table definition also verifies DOCUMENT-tokenizer parameters
+/// before original-text mapping. Unknown configurations withhold ranges.
+pub(crate) fn fts_table_sql(physical_tokenizer: &str) -> String {
+    format!(
+        "CREATE VIRTUAL TABLE chunks_fts USING fts5(
+            text,
+            tokenize='{physical_tokenizer}',
+            content='chunks',
+            content_rowid='id'
+        );"
+    )
 }

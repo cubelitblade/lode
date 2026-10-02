@@ -9,7 +9,10 @@ use std::ptr;
 
 use rusqlite::{Connection, ffi};
 
-use super::explanation::{FtsHit, FtsPhrase, RowDetails};
+use super::explanation::{FtsHit, FtsHitMapping, FtsPhrase, RowDetails};
+
+mod document;
+pub(crate) use document::builtin_document_tokens;
 
 // Keep these aligned with the bundled SQLite fts5Bm25Function.
 const K1: f64 = 1.2;
@@ -74,6 +77,19 @@ fn register_function(
     name: &CStr,
     callback: ffi::fts5_extension_function,
 ) -> rusqlite::Result<()> {
+    with_registration_api(connection, |api| unsafe {
+        let create = required((*api).xCreateFunction, "missing FTS5 xCreateFunction")?;
+        check(
+            create(api, name.as_ptr(), ptr::null_mut(), callback, None),
+            "xCreateFunction failed",
+        )
+    })
+}
+
+fn with_registration_api<T>(
+    connection: &Connection,
+    use_api: impl FnOnce(*mut ffi::fts5_api) -> SqlResult<T>,
+) -> rusqlite::Result<T> {
     // The owned connection stays live; the prepared statement retains the
     // stack output pointer only until it is finalized before this call returns.
     unsafe {
@@ -112,11 +128,7 @@ fn register_function(
                     "FTS5 registration API version 2 is required",
                 ));
             }
-            let create = required((*api).xCreateFunction, "missing FTS5 xCreateFunction")?;
-            check(
-                create(api, name.as_ptr(), ptr::null_mut(), callback, None),
-                "xCreateFunction failed",
-            )
+            use_api(api)
         })();
         // Preserve SQLite's message before finalization can change it.
         let message = CStr::from_ptr(ffi::sqlite3_errmsg(db))
@@ -386,6 +398,7 @@ unsafe fn collect(
                 column,
                 token_offset,
                 document_tokens,
+                mapping: FtsHitMapping::default(),
             });
         }
         for phrase in &mut phrases {

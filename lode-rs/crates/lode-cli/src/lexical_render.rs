@@ -2,7 +2,9 @@
 
 //! Human-readable FTS diagnostics, using the same typed data as JSON.
 
-use lode_core::fts::explanation::{FtsMatchDetails, FtsPhrase};
+use lode_core::fts::explanation::{
+    FtsHitMapping, FtsMappingUnavailable, FtsMatchDetails, FtsPhrase,
+};
 use lode_core::index::explanation::{LexicalDetails, LexicalDetailsStatus};
 
 use crate::render::{Intent, RenderOptions};
@@ -148,6 +150,45 @@ fn render_phrase(phrase: &FtsPhrase, print: &mut impl FnMut(Intent, &str)) {
                 unknown,
             ),
         );
+        match &hit.mapping {
+            FtsHitMapping::Mapped(span) => print(
+                Intent::Muted,
+                &format!(
+                    "      source mapping: mapped · UTF-8 bytes [{}, {}) · surface={}",
+                    span.start_byte,
+                    span.end_byte,
+                    visible_json(&serde_json::json!(&span.surface)),
+                ),
+            ),
+            FtsHitMapping::Unavailable(reason) => print(
+                Intent::Muted,
+                &format!(
+                    "      source mapping: unavailable · {}",
+                    mapping_reason(*reason)
+                ),
+            ),
+        }
+    }
+}
+
+fn mapping_reason(reason: FtsMappingUnavailable) -> &'static str {
+    match reason {
+        FtsMappingUnavailable::NotRequested => "original-text mapping was not requested",
+        FtsMappingUnavailable::TokenizerConfiguration => {
+            "the tokenizer configuration could not be verified"
+        }
+        FtsMappingUnavailable::TokenizationFailed => "DOCUMENT tokenization failed",
+        FtsMappingUnavailable::InvalidTokenStream => {
+            "DOCUMENT token positions or UTF-8 ranges are invalid"
+        }
+        FtsMappingUnavailable::TokenCountMismatch => {
+            "DOCUMENT token count differs from the indexed length"
+        }
+        FtsMappingUnavailable::UnsupportedColumn => "this column has no chunk-text mapping",
+        FtsMappingUnavailable::HitOutsideDocument => "the hit is outside the DOCUMENT token stream",
+        FtsMappingUnavailable::DocumentTokenMismatch => {
+            "indexed tokens differ from DOCUMENT tokens at the hit"
+        }
     }
 }
 

@@ -158,3 +158,43 @@ fn pool_out_and_skipped_statuses_explain_participation_without_invented_statisti
         assert!(!text.contains("raw BM25 (display rounded):"));
     }
 }
+
+#[test]
+fn mapped_surfaces_use_byte_ranges_visible_controls_and_keep_unknown_tokens() {
+    use lode_core::fts::explanation::{FtsHitMapping, FtsSourceSpan};
+    let mut details = matched_details();
+    let matched = details.matched.as_mut().unwrap();
+    let hit = &mut matched.phrases[3].hits[0];
+    assert_eq!(hit.document_tokens, vec![None]);
+    hit.mapping = FtsHitMapping::Mapped(FtsSourceSpan {
+        start_byte: 0,
+        end_byte: 5,
+        surface: "alpha".into(),
+    });
+    let text = output(&details).join("\n");
+    assert!(text.contains("unknown document token"));
+    assert!(text.contains("source mapping: mapped"));
+    assert!(text.contains("UTF-8 bytes [0, 5)"));
+    assert!(text.contains("surface=\"alpha\""));
+    details.matched.as_mut().unwrap().phrases[3].hits[0].mapping =
+        FtsHitMapping::Mapped(FtsSourceSpan {
+            start_byte: 0,
+            end_byte: 4,
+            surface: "a\n\u{1b}b".into(),
+        });
+    let lines = output(&details);
+    assert!(lines.iter().all(|line| !line.chars().any(char::is_control)));
+}
+
+#[test]
+fn unavailable_mapping_has_a_reason_and_preserves_the_bm25_explanation() {
+    use lode_core::fts::explanation::{FtsHitMapping, FtsMappingUnavailable};
+    let mut details = matched_details();
+    details.matched.as_mut().unwrap().phrases[0].hits[0].mapping =
+        FtsHitMapping::Unavailable(FtsMappingUnavailable::TokenizerConfiguration);
+    let text = output(&details).join("\n");
+    assert!(text.contains("source mapping: unavailable"));
+    assert!(text.contains("tokenizer configuration could not be verified"));
+    assert!(text.contains("raw BM25 (display rounded):"));
+    assert!(text.contains("phrase #0:"));
+}

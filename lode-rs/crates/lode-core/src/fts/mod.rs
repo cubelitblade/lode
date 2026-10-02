@@ -13,6 +13,7 @@
 
 pub(crate) mod auxiliary;
 pub mod explanation;
+pub(crate) mod mapping;
 
 /// A FTS5 MATCH expression for one query, in one of the two supported forms.
 ///

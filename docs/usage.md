@@ -195,7 +195,8 @@ fusion explanation. It shows the actual MATCH expression, query strategy and
 physical tokenizer, full MATCH status, candidate-pool membership, raw BM25 and
 corpus statistics. Each phrase retains its index, query tokens, hit count,
 document frequency, IDF, weighted frequency, and signed BM25 contribution;
-each occurrence shows its column, token offset, and document tokens.
+each occurrence shows its column, token offset, document tokens, and original
+UTF-8 byte range and surface, or an explicit reason why mapping is unavailable.
 Multi-token phrases stay together, repeated phrases remain separate, and
 zero-contribution branches remain visible. Missing document tokens are shown
 as `null` with an explicit `unknown document token` label.
@@ -205,7 +206,7 @@ target outside the lexical candidate pool is explicitly marked as having a
 BM25 score that did not participate in fusion. Disabled, empty, and nonmatching
 queries explain why no statistics are displayed. Numeric values use the usual
 four-decimal display rounding and scientific notation for small nonzero values;
-these displays are not intended for exact summation. MATCH and token control
+these displays are not intended for exact summation. MATCH, token, and surface control
 characters are rendered visibly.
 
 The additional `lexical_details` object contains:
@@ -217,15 +218,38 @@ The additional `lexical_details` object contains:
 - `bm25`, `corpus_rows`, `document_length`, and `average_length`.
 - `phrases`, each with `index`, `query_tokens`, `document_frequency`,
   `idf`, `weighted_frequency`, `bm25_contribution`, and `hits`.
-  Hits contain `column`, `token_offset`, and `document_tokens`.
+  Hits contain `column`, `token_offset`, `document_tokens`,
+  `mapping_status`, `mapping_reason`, `start_byte`, `end_byte`, and `surface`.
 
 A phrase is an FTS5 scoring unit containing one or more tokenizer tokens; it
 does not necessarily correspond to a natural-language word. Repeated phrases
 and zero-contribution OR branches are retained. Contributions use SQLite's
 signed BM25 convention and sum to `bm25` within
 `1e-12 + 1e-12 * abs(bm25)`. They do not attribute normalized or fused
-scores, including RRF. Offsets count indexed tokens, rather than original-text
-bytes; unavailable document tokens (such as prefix matches) are JSON null.
+scores, including RRF. `token_offset` counts indexed token positions;
+unavailable document tokens (such as prefix matches) remain JSON null.
+
+Mapped hits have `mapping_status: "mapped"` and a null `mapping_reason`.
+The zero-based `start_byte` is inclusive and `end_byte` exclusive: slicing the
+indexed chunk's UTF-8 text at those boundaries gives exactly `surface`.
+These are chunk-text offsets, including for PDF/DOCX, and do not locate bytes
+in the original file. Stale results refer to the older indexed text.
+Multi-token phrases cover their complete range; colocated pinyin variants
+share a range and trigram ranges can overlap. Prefix surfaces come from the
+actual document range even when their normalized document tokens are unknown.
+
+Mapping uses the verified physical tokenizer and its DOCUMENT token stream in
+the same read snapshot. Unknown table definitions or tokenizer parameters,
+tokenization errors, invalid streams, or inconsistent positions withhold the
+range instead of guessing. Such hits retain their score and token diagnostics,
+with `mapping_status: "unavailable"`, a reason code, and null `start_byte`,
+`end_byte`, and `surface`. Reason codes are `tokenizer_configuration`,
+`tokenization_failed`, `invalid_token_stream`, `token_count_mismatch`,
+`unsupported_column`, `hit_outside_document`, and `document_token_mismatch`.
+The native tokenizer currently cannot map text containing an embedded NUL;
+this produces `tokenization_failed`. Mapping unavailability is a successful
+diagnostic result; a failure to obtain scoring diagnostics still returns the
+execution error described below.
 
 Full MATCH status is separate from candidate-pool membership. A matched target
 outside the lexical pool gets diagnostics, while `sources.lexical.raw_score`

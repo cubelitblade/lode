@@ -153,6 +153,10 @@ fn wal_writer_during_embedding_cannot_mix_target_candidates_or_statistics() {
     let plan = plan(0.6, 0.4);
     let baseline =
         explain_with_fts(&store, &FakeEmbedder::default(), "alpha", 1, &plan, 2).unwrap();
+    assert!(baseline.lexical_details.matched.as_ref().unwrap().phrases.iter()
+        .flat_map(|phrase| &phrase.hits).all(|hit| matches!(
+            &hit.mapping, crate::fts::explanation::FtsHitMapping::Mapped(span) if span.surface == "alpha"
+        )));
     let path = dir.path().join("index.db");
     let embedder = DuringEmbedding {
         inner: FakeEmbedder::default(),

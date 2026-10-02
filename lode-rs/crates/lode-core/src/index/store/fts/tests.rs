@@ -23,7 +23,7 @@ const DOCUMENTS: &[&str] = &[
     "alpha far far far far beta common",
 ];
 
-fn fixture(strategy: &str) -> (TempDir, Store) {
+pub(super) fn fixture(strategy: &str) -> (TempDir, Store) {
     let directory = tempfile::tempdir().unwrap();
     let mut store = Store::open(&directory.path().join("index.db"), "test", 4, strategy).unwrap();
     let record = FileRecord {

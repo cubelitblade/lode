@@ -838,3 +838,6 @@ mod fts_details;
 
 #[path = "assay_why/fts_extended.rs"]
 mod fts_extended;
+
+#[path = "assay_why/fts_spans.rs"]
+mod fts_spans;

@@ -80,6 +80,73 @@ pub struct FtsHit {
     pub token_offset: i32,
     /// Normalized document tokens. SQLite 3.46 cannot supply prefix tokens.
     pub document_tokens: Vec<Option<String>>,
+    /// Original indexed-text range. Auxiliary transport never serializes it.
+    #[serde(skip)]
+    pub mapping: FtsHitMapping,
+}
+
+/// Original-text mapping kept separate from normalized scoring tokens.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FtsHitMapping {
+    /// A validated UTF-8 range in the indexed chunk text.
+    Mapped(FtsSourceSpan),
+    /// No range is claimed when mapping cannot be established.
+    Unavailable(FtsMappingUnavailable),
+}
+
+impl Default for FtsHitMapping {
+    fn default() -> Self {
+        Self::Unavailable(FtsMappingUnavailable::NotRequested)
+    }
+}
+
+/// Inclusive start and exclusive end in the indexed chunk's UTF-8 bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FtsSourceSpan {
+    /// Inclusive UTF-8 byte offset.
+    pub start_byte: usize,
+    /// Exclusive UTF-8 byte offset.
+    pub end_byte: usize,
+    /// Exact indexed-text slice; not the normalized document token.
+    pub surface: String,
+}
+
+/// Reasons for withholding an original-text range without altering BM25.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FtsMappingUnavailable {
+    /// The caller requested raw diagnostics without original-text mapping.
+    NotRequested,
+    /// The actual table configuration could not be verified.
+    TokenizerConfiguration,
+    /// DOCUMENT tokenization failed.
+    TokenizationFailed,
+    /// Token flags, ranges or colocated positions were invalid.
+    InvalidTokenStream,
+    /// DOCUMENT positions differ from the indexed document length.
+    TokenCountMismatch,
+    /// The current chunk mapping supports the text column only.
+    UnsupportedColumn,
+    /// A hit extends beyond the actual DOCUMENT position stream.
+    HitOutsideDocument,
+    /// Known indexed tokens disagree with the DOCUMENT tokens at the hit.
+    DocumentTokenMismatch,
+}
+
+impl FtsMappingUnavailable {
+    /// Stable diagnostic reason for withholding an original-text range.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::NotRequested => "not_requested",
+            Self::TokenizerConfiguration => "tokenizer_configuration",
+            Self::TokenizationFailed => "tokenization_failed",
+            Self::InvalidTokenStream => "invalid_token_stream",
+            Self::TokenCountMismatch => "token_count_mismatch",
+            Self::UnsupportedColumn => "unsupported_column",
+            Self::HitOutsideDocument => "hit_outside_document",
+            Self::DocumentTokenMismatch => "document_token_mismatch",
+        }
+    }
 }
 
 /// Private transport between the auxiliary callback and the Store boundary.

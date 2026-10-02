@@ -6,7 +6,9 @@
 use rusqlite::OptionalExtension;
 
 use crate::fts::MatchExpr;
-use crate::fts::explanation::{FtsExplanation, FtsExplanationError, RowDetails};
+use crate::fts::explanation::{
+    FtsExplanation, FtsExplanationError, FtsMappingUnavailable, FtsMatchDetails, RowDetails,
+};
 
 use super::Store;
 
@@ -49,6 +51,46 @@ impl Store {
         })
     }
 
+    pub(crate) fn map_fts_hits(&self, details: &mut FtsMatchDetails, text: &str) {
+        let tokens = self.document_tokens(text);
+        crate::fts::mapping::apply(details, text, tokens);
+    }
+
+    fn document_tokens(
+        &self,
+        text: &str,
+    ) -> Result<Vec<lode_simple_native::Token>, FtsMappingUnavailable> {
+        let physical = crate::index::schema::physical_tokenizer(self.query_tokenizer())
+            .ok_or(FtsMappingUnavailable::TokenizerConfiguration)?;
+        let sql: String = self
+            .conn
+            .query_row(
+                "SELECT sql FROM sqlite_schema WHERE name = 'chunks_fts' AND type = 'table'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|_| FtsMappingUnavailable::TokenizerConfiguration)?;
+        if !crate::fts::mapping::same_definition(
+            &sql,
+            &crate::index::schema::fts_table_sql(physical),
+        ) {
+            return Err(FtsMappingUnavailable::TokenizerConfiguration);
+        }
+        match physical {
+            "unicode61" => {
+                crate::fts::auxiliary::builtin_document_tokens(&self.conn, c"unicode61", text)
+                    .map_err(|_| FtsMappingUnavailable::TokenizationFailed)
+            }
+            "trigram" => {
+                crate::fts::auxiliary::builtin_document_tokens(&self.conn, c"trigram", text)
+                    .map_err(|_| FtsMappingUnavailable::TokenizationFailed)
+            }
+            "simple" => lode_simple_native::tokenize_document(&self.conn, text)
+                .map_err(|_| FtsMappingUnavailable::TokenizationFailed),
+            _ => Err(FtsMappingUnavailable::TokenizerConfiguration),
+        }
+    }
+
     fn explain_fts_inner(
         &self,
         expr: &MatchExpr,
@@ -87,3 +129,6 @@ impl Store {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod mapping_tests;

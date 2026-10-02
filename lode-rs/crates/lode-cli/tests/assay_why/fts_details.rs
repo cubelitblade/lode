@@ -96,7 +96,11 @@ fn requested_details_preserve_default_json_and_prospect_scores_for_aliases_and_d
         );
         assert_eq!(
             phrases[0]["hits"][0],
-            serde_json::json!({"column":0, "token_offset":0, "document_tokens":["alpha"]})
+            serde_json::json!({
+                "column":0, "token_offset":0, "document_tokens":["alpha"],
+                "mapping_status":"mapped", "mapping_reason":null,
+                "start_byte":0, "end_byte":5, "surface":"alpha",
+            })
         );
         assert_eq!(phrases[0]["hits"][1]["token_offset"], 2);
         assert!(details.get("rowid").is_none());

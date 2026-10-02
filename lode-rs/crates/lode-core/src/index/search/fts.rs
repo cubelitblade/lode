@@ -48,7 +48,7 @@ pub fn explain_with_fts(
             score_candidates_for_query(store, embedder, query, plan, top_k, expression.as_deref())?;
         let in_candidate_pool = candidates.lexical_raw.contains_key(&rowid);
         let explanation = explanation_from_candidates(chunk, &candidates, rowid, plan, top_k);
-        let matched = match &expression {
+        let mut matched = match &expression {
             Some(expression) => {
                 store
                     .explain_fts(&MatchExpr::Prebuilt(expression.clone()), rowid)?
@@ -57,6 +57,9 @@ pub fn explain_with_fts(
             None => None,
         };
         validate_pool_score(explanation.sources.get(&Source::Lexical), matched.as_ref())?;
+        if let Some(matched) = &mut matched {
+            store.map_fts_hits(matched, &explanation.chunk.text);
+        }
         let status = match expression.as_deref() {
             None => LexicalDetailsStatus::Disabled,
             Some("") => LexicalDetailsStatus::EmptyQuery,
