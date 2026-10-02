@@ -56,3 +56,6 @@ fn hit_json(hit: &FtsHit) -> serde_json::Value {
         "surface": span.map(|span| &span.surface),
     })
 }
+
+#[cfg(test)]
+mod performance;

@@ -264,6 +264,11 @@ Explicit diagnostic failures return `fts_explanation_error` with exit status
 1. JSON emits a single error object on stdout with quiet stderr; extended
 emits the error on stderr with empty stdout. Neither returns a partial result.
 
+Production-interface timing boundaries, reproduction commands and native-platform
+validation status are documented in [FTS explanation performance](fts-explanation-performance.md).
+The detail option executes on demand; its corpus phrase statistics can add cost
+that grows with query length and document frequency.
+
 ## `lode debug tokens`
 
 Inspect how one indexed chunk was tokenized at index time. This is the

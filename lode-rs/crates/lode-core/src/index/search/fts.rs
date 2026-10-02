@@ -100,3 +100,6 @@ fn validate_pool_score(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod performance;
