@@ -39,6 +39,10 @@ pub enum Error {
     #[error("fts error: {0}")]
     Fts(String),
 
+    /// Errors from explicitly requested FTS score diagnostics.
+    #[error("fts explanation error: {0}")]
+    FtsExplanation(#[from] crate::fts::explanation::FtsExplanationError),
+
     /// Errors from the statically linked native FTS5 tokenizer.
     #[error("native tokenizer error: {0}")]
     NativeTokenizer(#[from] lode_simple_native::Error),

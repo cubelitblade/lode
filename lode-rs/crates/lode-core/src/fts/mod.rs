@@ -11,6 +11,9 @@
 //! store can stay a pure SQL boundary while callers build the expression
 //! per the configured strategy.
 
+pub(crate) mod auxiliary;
+pub mod explanation;
+
 /// A FTS5 MATCH expression for one query, in one of the two supported forms.
 ///
 /// Python keys the branch off `strategy.uses_helper`; this closed enum is the

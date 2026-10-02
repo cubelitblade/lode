@@ -20,6 +20,7 @@ use crate::ingestion::types::Chunk;
 use crate::relpath::WorkspacePath;
 
 mod chunks;
+mod fts;
 mod meta;
 mod query;
 
