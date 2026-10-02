@@ -835,3 +835,6 @@ fn why_json_reports_ambiguous_digest_candidates() {
 
 #[path = "assay_why/fts_details.rs"]
 mod fts_details;
+
+#[path = "assay_why/fts_extended.rs"]
+mod fts_extended;

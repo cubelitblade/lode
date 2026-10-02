@@ -24,6 +24,7 @@ use lode_core::relpath::WorkspacePath;
 
 mod assay_render;
 mod lexical_json;
+mod lexical_render;
 mod markdown_render;
 mod query_render;
 mod render;
@@ -305,7 +306,7 @@ struct AssayWhyOptions {
     /// Maximum number of results used to build each candidate pool.
     #[arg(long)]
     top_k: Option<u32>,
-    /// Include FTS phrase matches and raw BM25 contributions (JSON only).
+    /// Include FTS phrase matches and raw BM25 contributions (JSON or extended).
     #[arg(long)]
     fts_details: bool,
 }
@@ -944,13 +945,13 @@ fn assay_why(
     palette: Option<PaletteArg>,
     no_color: bool,
 ) -> u8 {
-    if options.fts_details && view != View::Json {
+    if options.fts_details && !matches!(view, View::Json | View::Extended) {
         return ui_msg::die(
             view,
             "assay",
             error_code::UNSUPPORTED_VIEW,
-            "--fts-details currently requires the JSON view.",
-            Some("Use lode --view json assay why DIGEST QUERY --fts-details."),
+            "--fts-details requires the JSON or extended view.",
+            Some("Use --view json or --view extended with assay why --fts-details."),
         );
     }
     if let Some(code) = ui_msg::bad_workspace("assay", workspace, view) {
@@ -1089,7 +1090,12 @@ fn assay_why(
     }
     match view {
         View::Compact => why_render::compact(&explanation, &query, &fusion_explanation),
-        View::Extended => why_render::extended(&explanation, &query, &fusion_explanation),
+        View::Extended => {
+            why_render::extended(&explanation, &query, &fusion_explanation);
+            if let Some(details) = &lexical_details {
+                lexical_render::extended(details);
+            }
+        }
         View::Table => why_render::table(&explanation, &query, &fusion_explanation),
         View::Json => emit_assay_why_json(
             &query,

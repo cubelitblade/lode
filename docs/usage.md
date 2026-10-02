@@ -181,12 +181,32 @@ to the raw BM25 score, explicitly request `--fts-details`:
 ```bash
 lode --view json assay why DIGEST QUERY --fts-details
 lode --view json analyze why DIGEST QUERY --fts-details --top-k 10
+lode --view extended assay why DIGEST QUERY --fts-details
+lode --view extended analyze why DIGEST QUERY --fts-details --top-k 10
 ```
 
-This option currently requires JSON. Compact, table, and extended views reject
+This option supports JSON and extended views. Compact and table views reject
 it with `unsupported_view` before opening the index, refreshing freshness
 markers, or calling the embedding service. Without the option, all four views
 and the existing JSON fields remain unchanged.
+
+Extended output appends an independent FTS details section after the existing
+fusion explanation. It shows the actual MATCH expression, query strategy and
+physical tokenizer, full MATCH status, candidate-pool membership, raw BM25 and
+corpus statistics. Each phrase retains its index, query tokens, hit count,
+document frequency, IDF, weighted frequency, and signed BM25 contribution;
+each occurrence shows its column, token offset, and document tokens.
+Multi-token phrases stay together, repeated phrases remain separate, and
+zero-contribution branches remain visible. Missing document tokens are shown
+as `null` with an explicit `unknown document token` label.
+
+The section explains that phrase contributions concern raw BM25. A matched
+target outside the lexical candidate pool is explicitly marked as having a
+BM25 score that did not participate in fusion. Disabled, empty, and nonmatching
+queries explain why no statistics are displayed. Numeric values use the usual
+four-decimal display rounding and scientific notation for small nonzero values;
+these displays are not intended for exact summation. MATCH and token control
+characters are rendered visibly.
 
 The additional `lexical_details` object contains:
 
@@ -217,8 +237,8 @@ queries have an empty expression and skip MATCH.
 Candidates, the target, and diagnostics share one SQLite read snapshot after
 freshness detection. The option makes no additional query-embedding request.
 Explicit diagnostic failures return `fts_explanation_error` with exit status
-1 and a single JSON error object on stdout, with no partial result and quiet
-stderr.
+1. JSON emits a single error object on stdout with quiet stderr; extended
+emits the error on stderr with empty stdout. Neither returns a partial result.
 
 ## `lode debug tokens`
 

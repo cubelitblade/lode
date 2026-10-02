@@ -438,7 +438,7 @@ fn final_rank(explanation: &ScoreExplanation) -> String {
     }
 }
 
-fn format_score(value: Option<f64>) -> String {
+pub(super) fn format_score(value: Option<f64>) -> String {
     let Some(value) = value else {
         return "—".to_owned();
     };
@@ -510,7 +510,7 @@ fn fusion_params(fusion: &Fusion) -> String {
     crate::assay_fusion_json(fusion)["params"].to_string()
 }
 
-fn metadata_controls(text: &str) -> String {
+pub(super) fn metadata_controls(text: &str) -> String {
     text.chars()
         .map(|character| match character {
             '\n' => r"\n".to_owned(),

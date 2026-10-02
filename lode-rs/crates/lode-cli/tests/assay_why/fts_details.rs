@@ -2,7 +2,7 @@
 
 use super::*;
 
-fn lexical_config(strategy: &str) -> String {
+pub(super) fn lexical_config(strategy: &str) -> String {
     format!(
         "{}[retrieval.fusion.linear]\nsemantic_factor = 0.0\nlexical_factor = 1.0\n",
         config("http://127.0.0.1:1").replace("unicode61", strategy)
@@ -340,7 +340,7 @@ fn stale_multiple_references_and_unrelated_changes_preserve_indexed_data() {
 fn unsupported_views_fail_before_open_scan_or_embedding() {
     let fixture = fixture(&config("http://127.0.0.1:1"), "alpha");
     fs::write(fixture.workspace.join("notes.txt"), "changed").unwrap();
-    for view in ["compact", "table", "extended"] {
+    for view in ["compact", "table"] {
         let output = run_lode(
             &fixture,
             view,
@@ -359,7 +359,7 @@ fn unsupported_views_fail_before_open_scan_or_embedding() {
         "compact",
         &["assay", "why", &fixture.digest, "alpha", "--fts-details"],
     );
-    assert!(String::from_utf8_lossy(&output.stderr).contains("--fts-details currently requires"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--fts-details requires"));
 }
 
 #[test]
