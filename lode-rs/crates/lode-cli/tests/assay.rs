@@ -221,6 +221,63 @@ fn how_query_does_not_require_an_index() {
 }
 
 #[test]
+fn how_trigram_expression_executes_like_sparse_search() {
+    for query in [
+        "alpha \" beta",
+        "a\"b",
+        "a\"\"b",
+        "\"\"\"",
+        "a*b",
+        "a:b",
+        "a\nb",
+        "a\tb",
+        "a\rb",
+        "a\u{1f}b",
+        "矿\"a",
+        "ab矿",
+        "ab",
+        "矿石",
+    ] {
+        let fixture = fixture("trigram", query);
+        let output = run_lode(&fixture, "json", &["assay", "how", query]);
+        assert!(output.status.success(), "{query:?}: {output:?}");
+        assert!(output.stderr.is_empty());
+        let payload = json(&output);
+        assert_eq!(payload["query"], query);
+        let expression = payload["match_expression"].as_str().unwrap();
+        let generated = lode_core::fts::match_query(query, "trigram").unwrap();
+        assert_eq!(
+            generated,
+            lode_core::fts::MatchExpr::Prebuilt(expression.to_string())
+        );
+        if query.chars().count() < 3 {
+            assert!(expression.is_empty(), "{query:?}");
+            continue;
+        }
+
+        let store = Store::open(
+            &fixture.workspace.join(".lode/index.db"),
+            "test-model",
+            4,
+            "trigram",
+        )
+        .unwrap();
+        let hits = store.sparse_search(&generated, 5).unwrap();
+        let displayed_hits = store
+            .sparse_search(
+                &lode_core::fts::MatchExpr::Prebuilt(expression.to_string()),
+                5,
+            )
+            .unwrap();
+        assert_eq!(hits.len(), 1, "{query:?}");
+        assert_eq!(hits[0].rowid, 1, "{query:?}");
+        assert_eq!(displayed_hits.len(), 1, "{query:?}");
+        assert_eq!(displayed_hits[0].rowid, hits[0].rowid);
+        assert_eq!(displayed_hits[0].score, hits[0].score);
+    }
+}
+
+#[test]
 fn how_query_alias_and_hex_text_are_queries() {
     let fixture = settings_fixture("unicode61");
     let output = run_lode(&fixture, "json", &["analyze", "how", "deadbeef"]);

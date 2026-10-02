@@ -252,7 +252,8 @@ fn trigram_query(text: &str) -> String {
         .collect::<Vec<char>>()
         .windows(3)
         .map(|window| window.iter().collect::<String>())
-        .map(|gram| format!("\"{gram}\""))
+        // FTS5 quoted strings represent a literal double quote by doubling it.
+        .map(|gram| format!("\"{}\"", gram.replace('"', "\"\"")))
         .collect::<Vec<_>>()
         .join(" OR ")
 }
@@ -286,8 +287,47 @@ mod tests {
 
     #[test]
     fn trigram_short_input_yields_empty() {
-        let expr = match_query("ab", "trigram").unwrap();
-        assert_eq!(expr, MatchExpr::Prebuilt(String::new()));
+        for query in ["", "a", "ab", "矿", "矿石", "\""] {
+            let expr = match_query(query, "trigram").unwrap();
+            assert_eq!(expr, MatchExpr::Prebuilt(String::new()), "{query:?}");
+        }
+    }
+
+    #[test]
+    fn trigram_quotes_match_literal_text() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch("CREATE VIRTUAL TABLE documents USING fts5(text, tokenize='trigram');")
+            .unwrap();
+        for (rowid, text) in [(1, "a\"b"), (2, "a b"), (3, "abc")] {
+            connection
+                .execute(
+                    "INSERT INTO documents(rowid, text) VALUES (?1, ?2)",
+                    rusqlite::params![rowid, text],
+                )
+                .unwrap();
+        }
+
+        let expression = explain_query("a\"b", "trigram").unwrap().match_expression;
+        let mut statement = connection
+            .prepare("SELECT rowid FROM documents WHERE documents MATCH ?1")
+            .unwrap();
+        let hits = statement
+            .query_map([expression], |row| row.get::<_, i64>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(hits, vec![1]);
+    }
+
+    #[test]
+    fn trigram_escaping_preserves_repeated_windows_and_order() {
+        assert_eq!(
+            explain_query("a\"a\"a", "trigram")
+                .unwrap()
+                .match_expression,
+            r#""a""a" OR """a""" OR "a""a""#
+        );
     }
 
     #[test]
