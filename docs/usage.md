@@ -160,6 +160,16 @@ tab-separated. Missing values are empty fields, booleans are `true` or
 `false`, and parameters are compact JSON objects. Query, heading, and path
 fields use the normal TSV escaping rules.
 
+Rust ranks semantic cosine scores descending and original SQLite BM25 scores
+ascending; equal scores use chunk rowid order. Lexical normalization preserves
+the BM25 direction: min-max produces values in [-1, 0], and softmax produces
+negative probabilities. Linear fusion uses the opposite of the prepared
+lexical score times its weight, so a stronger lexical match contributes more.
+The extended formula labels this term as `(-lexical) × weight`. RRF skips
+normalization and ranks original lexical BM25 ascending. Raw BM25 and FTS phrase
+contributions keep their original SQLite signs. This scoring correction needs
+no index rebuild; it can change candidate membership and result scores.
+
 The digest may be a full `blake3:<hex>` value, a bare hexadecimal value, or a
 printed prefix. The command resolves exactly one indexed chunk, refreshes its
 file freshness markers, and then scores the old indexed snapshot. A stale

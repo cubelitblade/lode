@@ -271,7 +271,7 @@ fn prepare(plan: &RetrievalPlan, raw: PreparedScores) -> PreparedScores {
     };
     raw.into_iter()
         .map(|(source, scores)| {
-            let normalized = norm.normalize(&scores);
+            let normalized = norm.normalize_source(source, &scores);
             (source, normalized)
         })
         .collect()
@@ -407,20 +407,23 @@ fn source_explanation(
         pool_size: raw.len(),
         raw_score: Some(raw_score),
         prepared_score: prepared,
-        pool_rank: pool_rank(raw, rowid),
+        pool_rank: pool_rank(source, raw, rowid),
     }
 }
 
-/// Rank of `rowid` within a source pool by raw score, descending.
+/// Rank within a source pool: cosine descending, signed BM25 ascending.
 ///
 /// Equal scores use the same stable rowid tie-break as RRF fusion.
-fn pool_rank(scores: &BTreeMap<i64, f64>, rowid: i64) -> Option<usize> {
+fn pool_rank(source: Source, scores: &BTreeMap<i64, f64>, rowid: i64) -> Option<usize> {
     scores.get(&rowid)?;
-    ranked_scores(scores)
+    ranked_scores(source, scores)
         .into_iter()
         .position(|(id, _)| id == rowid)
         .map(|position| position + 1)
 }
+
+#[cfg(test)]
+mod bm25_tests;
 
 #[cfg(test)]
 mod tests {

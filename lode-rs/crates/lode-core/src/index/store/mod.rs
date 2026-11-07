@@ -1578,8 +1578,8 @@ mod tests {
         let expr = MatchExpr::Prebuilt("\"ore\" OR \"vein\"".to_string());
         let hits = store.sparse_search(&expr, 5).unwrap();
         assert!(!hits.is_empty());
-        // Best-first: descending score (BM25 is negative).
-        assert!(hits[0].score >= hits[hits.len() - 1].score);
+        // Best-first: ascending raw SQLite BM25.
+        assert!(hits[0].score <= hits[hits.len() - 1].score);
         // The matching chunk is rowid 1 (first chunk of the content).
         assert_eq!(hits[0].rowid, 1);
 

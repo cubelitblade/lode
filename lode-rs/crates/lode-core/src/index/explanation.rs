@@ -63,9 +63,10 @@ pub struct SourceExplanation {
     pub pool_size: usize,
     /// Un-normalized score (cosine for semantic, BM25 for lexical).
     pub raw_score: Option<f64>,
-    /// Score after the plan's norm, or `raw_score` when the norm is skipped.
+    /// Score after the plan's norm, or `raw_score` when skipped.
+    /// Lexical normalization preserves the negative BM25 direction.
     pub prepared_score: Option<f64>,
-    /// 1-based rank within the source pool by raw score, descending, with
+    /// 1-based rank: cosine descending, signed BM25 ascending, with
     /// deterministic rowid order for ties.
     pub pool_rank: Option<usize>,
 }
@@ -118,7 +119,7 @@ pub struct EvidenceBlock {
     pub normalization: Option<String>,
     /// Fusion weight of the source (linear only).
     pub weight: Option<f64>,
-    /// `prepared_score * weight` (linear only).
+    /// Weighted relevance: semantic `prepared_score` or its lexical opposite.
     pub contribution: Option<f64>,
 }
 

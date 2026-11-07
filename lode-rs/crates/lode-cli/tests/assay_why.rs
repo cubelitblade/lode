@@ -841,3 +841,6 @@ mod fts_extended;
 
 #[path = "assay_why/fts_spans.rs"]
 mod fts_spans;
+
+#[path = "assay_why/bm25.rs"]
+mod bm25;

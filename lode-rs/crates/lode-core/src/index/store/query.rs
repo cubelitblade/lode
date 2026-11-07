@@ -80,10 +80,10 @@ impl Store {
 
     /// k best FTS5 matches for the MATCH expression `expr`, best first.
     ///
-    /// SQLite BM25 scores are negative and closer to zero means better, so
-    /// best-first is descending score. Mirrors Python's `Store.sparse_search`
-    /// with the strategy branch lifted into [`MatchExpr`]: `Prebuilt` binds
-    /// the expression as a parameter, `Helper` interpolates the helper
+    /// SQLite BM25 scores are negative and smaller means better, so
+    /// best-first is ascending score with rowid order for ties.
+    /// [`MatchExpr::Prebuilt`] binds the expression as a parameter;
+    /// [`MatchExpr::Helper`] interpolates the helper
     /// function call into the SQL text and binds the raw query.
     ///
     /// # Errors
@@ -97,12 +97,12 @@ impl Store {
             MatchExpr::Prebuilt(_) => self.conn.prepare(
                 "SELECT rowid, bm25(chunks_fts) FROM chunks_fts \
                  WHERE chunks_fts MATCH ?1 \
-                 ORDER BY bm25(chunks_fts) DESC LIMIT ?2",
+                 ORDER BY bm25(chunks_fts) ASC, rowid ASC LIMIT ?2",
             )?,
             MatchExpr::Helper { function, .. } => self.conn.prepare(&format!(
                 "SELECT rowid, bm25(chunks_fts) FROM chunks_fts \
                  WHERE chunks_fts MATCH {function}(?) \
-                 ORDER BY bm25(chunks_fts) DESC LIMIT ?2"
+                 ORDER BY bm25(chunks_fts) ASC, rowid ASC LIMIT ?2"
             ))?,
         };
         let query_params: Vec<&dyn rusqlite::ToSql> = match expr {

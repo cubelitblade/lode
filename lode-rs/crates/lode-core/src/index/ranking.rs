@@ -2,8 +2,8 @@
 
 //! Pluggable ranking operators: per-source `Norm` + cross-source `Fusion`.
 //!
-//! Mirrors `src/lode/index/ranking.py`. Python defines `Norm`/`Fusion` as
-//! protocols (runtime duck typing); here they are closed enums selected by
+//! Python defines `Norm`/`Fusion` as protocols (runtime duck typing);
+//! here they are closed enums selected by
 //! config, so match sites stay exhaustive and no dynamic dispatch is needed.
 //!
 //! Score maps are keyed by chunk rowid and use `BTreeMap` for deterministic
@@ -21,21 +21,25 @@ use super::explanation::{
 };
 use super::records::Source;
 
-/// Per-source score maps before fusion, keyed by source then chunk rowid.
+/// Per-source scores before fusion: cosine descending, signed BM25 ascending.
+/// Normalization preserves each source's direction; lexical values remain non-positive.
 pub type PreparedScores = BTreeMap<Source, BTreeMap<i64, f64>>;
 
 /// Return scores in the deterministic order used for positional ranking.
 ///
 /// `BTreeMap` iteration provides rowid order for equal scores. RRF fusion and
 /// per-source explanations must share this tie-break so their ranks agree.
-pub(crate) fn ranked_scores(scores: &BTreeMap<i64, f64>) -> Vec<(i64, f64)> {
+pub(crate) fn ranked_scores(source: Source, scores: &BTreeMap<i64, f64>) -> Vec<(i64, f64)> {
     let mut ranked: Vec<(i64, f64)> = scores
         .iter()
         .map(|(&rowid, &score)| (rowid, score))
         .collect();
     // `total_cmp` is a total order, so no NaN ambiguity and no panic path
     // (unlike `partial_cmp().expect(...)`).
-    ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
+    ranked.sort_by(|a, b| match source {
+        Source::Semantic => b.1.total_cmp(&a.1),
+        Source::Lexical => a.1.total_cmp(&b.1),
+    });
     ranked
 }
 
@@ -45,7 +49,8 @@ pub(crate) fn ranked_scores(scores: &BTreeMap<i64, f64>) -> Vec<(i64, f64)> {
 /// ranking (RRF relies on this to skip normalization safely).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum Norm {
-    /// Min-max normalize to [0, 1]; a single value maps to 1.0.
+    /// Min-max normalize semantic scores to [0, 1], lexical scores to [-1, 0].
+    /// A non-empty pool of equal scores maps to 1.0 (semantic) or -1.0 (lexical).
     MinMax,
     /// Softmax over scores scaled by `temperature`; higher flattens toward
     /// uniform, lower sharpens toward the top score.
@@ -66,18 +71,26 @@ impl Norm {
         }
     }
 
-    /// Normalize one source's raw scores to a comparable domain.
+    /// Normalize higher-is-better scores to [0, 1].
     #[must_use]
     pub fn normalize(self, scores: &BTreeMap<i64, f64>) -> BTreeMap<i64, f64> {
+        self.normalize_source(Source::Semantic, scores)
+    }
+
+    pub(crate) fn normalize_source(
+        self,
+        source: Source,
+        scores: &BTreeMap<i64, f64>,
+    ) -> BTreeMap<i64, f64> {
         match self {
-            Self::MinMax => minmax_normalize(scores),
-            Self::Softmax { temperature } => softmax_normalize(scores, temperature),
+            Self::MinMax => minmax_normalize(source, scores),
+            Self::Softmax { temperature } => softmax_normalize(source, scores, temperature),
         }
     }
 }
 
-/// Min-max normalize to [0, 1]; a single value maps to 1.0.
-fn minmax_normalize(scores: &BTreeMap<i64, f64>) -> BTreeMap<i64, f64> {
+/// Preserve source direction: semantic [0, 1], lexical [-1, 0].
+fn minmax_normalize(source: Source, scores: &BTreeMap<i64, f64>) -> BTreeMap<i64, f64> {
     let Some(&lo) = scores.values().next() else {
         return BTreeMap::new();
     };
@@ -86,11 +99,20 @@ fn minmax_normalize(scores: &BTreeMap<i64, f64>) -> BTreeMap<i64, f64> {
         .fold((lo, lo), |(lo, hi), &v| (lo.min(v), hi.max(v)));
     let span = hi - lo;
     if span == 0.0 {
-        return scores.keys().map(|&rowid| (rowid, 1.0)).collect();
+        return scores
+            .keys()
+            .map(|&rowid| (rowid, contribution_score(source, 1.0)))
+            .collect();
     }
     scores
         .iter()
-        .map(|(&rowid, &score)| (rowid, (score - lo) / span))
+        .map(|(&rowid, &score)| {
+            let normalized = match source {
+                Source::Semantic => (score - lo) / span,
+                Source::Lexical => (score - hi) / span,
+            };
+            (rowid, normalized)
+        })
         .collect()
 }
 
@@ -98,11 +120,17 @@ fn minmax_normalize(scores: &BTreeMap<i64, f64>) -> BTreeMap<i64, f64> {
 ///
 /// The transform is monotonic in each score, so it preserves the source's
 /// internal ranking.
-fn softmax_normalize(scores: &BTreeMap<i64, f64>, temperature: f64) -> BTreeMap<i64, f64> {
+fn softmax_normalize(
+    source: Source,
+    scores: &BTreeMap<i64, f64>,
+    temperature: f64,
+) -> BTreeMap<i64, f64> {
     if scores.is_empty() {
         return BTreeMap::new();
     }
-    let scaled = scores.values().map(|&score| score / temperature);
+    let scaled = scores
+        .values()
+        .map(|&score| contribution_score(source, score) / temperature);
     // Subtract the max before exp to keep the sum finite for large inputs.
     let max_scaled = scaled.clone().fold(f64::NEG_INFINITY, f64::max);
     let exps: Vec<f64> = scaled.map(|value| (value - max_scaled).exp()).collect();
@@ -110,14 +138,21 @@ fn softmax_normalize(scores: &BTreeMap<i64, f64>, temperature: f64) -> BTreeMap<
     scores
         .keys()
         .zip(exps)
-        .map(|(&rowid, exp)| (rowid, exp / total))
+        .map(|(&rowid, exp)| (rowid, contribution_score(source, exp / total)))
         .collect()
+}
+
+fn contribution_score(source: Source, score: f64) -> f64 {
+    match source {
+        Source::Semantic => score,
+        Source::Lexical => -score,
+    }
 }
 
 /// Cross-source merge of prepared per-source scores into one combined score.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Fusion {
-    /// Weighted sum of per-source scores: `sum(w_s * prepared[s][rowid])`.
+    /// Weighted sum of relevance: semantic scores and the opposite of lexical scores.
     #[serde(rename = "linear")]
     Linear {
         /// Fusion weight per source; missing sources weigh zero.
@@ -125,7 +160,7 @@ pub enum Fusion {
     },
     /// Reciprocal rank fusion: `sum(1 / (k + rank_s(rowid)))`.
     ///
-    /// Ranks are derived from the prepared scores (descending). Because
+    /// Ranks use semantic scores descending and lexical scores ascending. Because
     /// min-max and softmax are monotonic, the rank is identical whether
     /// computed on raw or normalized scores — which is why RRF can skip
     /// normalization entirely.
@@ -155,13 +190,14 @@ impl Fusion {
                 for (source, scores) in prepared {
                     let weight = weights.get(source).copied().unwrap_or(0.0);
                     for (&rowid, &score) in scores {
-                        *combined.entry(rowid).or_default() += weight * score;
+                        *combined.entry(rowid).or_default() +=
+                            weight * contribution_score(*source, score);
                     }
                 }
             }
             Self::Rrf { k } => {
-                for scores in prepared.values() {
-                    let ranked = ranked_scores(scores);
+                for (source, scores) in prepared {
+                    let ranked = ranked_scores(*source, scores);
                     for (position, (rowid, _)) in ranked.into_iter().enumerate() {
                         let position = u64::try_from(position + 1).unwrap_or(u64::MAX);
                         *combined.entry(rowid).or_default() += 1.0 / rank_as_f64(k + position);
@@ -233,7 +269,7 @@ fn linear_explain(
         }
         let weight = weights.get(name).copied().unwrap_or(0.0);
         let prepared = source.prepared_score.unwrap_or(0.0);
-        let contribution = prepared * weight;
+        let contribution = contribution_score(*name, prepared) * weight;
         ranking_factors.insert(
             *name,
             RankingFactor {
@@ -252,8 +288,15 @@ fn linear_explain(
                 contribution: Some(contribution),
             },
         );
-        symbolic_parts.push(format!("{name} × {weight}"));
-        value_parts.push(format!("{} × {weight}", format_formula_value(prepared)));
+        let term = match name {
+            Source::Semantic => name.to_string(),
+            Source::Lexical => format!("(-{name})"),
+        };
+        symbolic_parts.push(format!("{term} × {weight}"));
+        value_parts.push(format!(
+            "{} × {weight}",
+            format_formula_value(contribution_score(*name, prepared))
+        ));
     }
 
     let formula = FormulaComponents {
@@ -398,13 +441,38 @@ mod tests {
     }
 
     #[test]
+    fn bm25_normalization_preserves_direction_and_handles_flat_or_empty_scores() {
+        for norm in [Norm::MinMax, Norm::Softmax { temperature: 1.0 }] {
+            assert!(
+                norm.normalize_source(Source::Lexical, &BTreeMap::new())
+                    .is_empty()
+            );
+            assert_eq!(
+                norm.normalize_source(Source::Lexical, &scores([(1, -5.0)])),
+                scores([(1, -1.0)])
+            );
+            let flat = norm.normalize_source(Source::Lexical, &scores([(1, -5.0), (2, -5.0)]));
+            assert_close(flat[&1], flat[&2]);
+            assert!(flat[&1] < 0.0);
+            let ordered = norm.normalize_source(Source::Lexical, &scores([(1, -10.0), (2, -1.0)]));
+            assert!(ordered[&1] < ordered[&2]);
+            assert!(ordered.values().all(|score| (-1.0..=0.0).contains(score)));
+            let fusion = Fusion::Linear {
+                weights: weights([(Source::Lexical, 1.0)]),
+            };
+            let combined = fusion.fuse(&[(Source::Lexical, ordered)].into());
+            assert!(combined[&1] > combined[&2]);
+        }
+    }
+
+    #[test]
     fn linear_fusion_weighted_sum() {
         let fusion = Fusion::Linear {
             weights: weights([(Source::Semantic, 0.7), (Source::Lexical, 0.3)]),
         };
         let result = fusion.fuse(&prepared([
             (Source::Semantic, vec![(1, 1.0), (2, 0.5)]),
-            (Source::Lexical, vec![(2, 1.0), (3, 0.5)]),
+            (Source::Lexical, vec![(2, -1.0), (3, -0.5)]),
         ]));
         assert!((result[&1] - 0.7).abs() < 1e-12);
         assert!((result[&2] - (0.7 * 0.5 + 0.3)).abs() < 1e-12);
@@ -422,7 +490,7 @@ mod tests {
         };
         let result = fusion.fuse(&prepared([
             (Source::Semantic, vec![]),
-            (Source::Lexical, vec![(1, 5.0)]),
+            (Source::Lexical, vec![(1, -5.0)]),
         ]));
         assert_close(result[&1], 0.0);
     }
@@ -432,7 +500,7 @@ mod tests {
         let fusion = Fusion::Rrf { k: 60 };
         let result = fusion.fuse(&prepared([
             (Source::Semantic, vec![(1, 10.0), (2, 5.0)]),
-            (Source::Lexical, vec![(2, 9.0), (3, 1.0)]),
+            (Source::Lexical, vec![(2, -9.0), (3, -1.0)]),
         ]));
         // semantic ranks: 1 -> pos1, 2 -> pos2; lexical ranks: 2 -> pos1, 3 -> pos2.
         assert!((result[&1] - 1.0 / 61.0).abs() < 1e-12);
@@ -472,7 +540,7 @@ mod tests {
     fn sources() -> BTreeMap<Source, SourceExplanation> {
         [
             (Source::Semantic, matched(0.9, 1.0, 1)),
-            (Source::Lexical, matched(-5.0, 0.5, 3)),
+            (Source::Lexical, matched(-5.0, -0.5, 3)),
         ]
         .into_iter()
         .collect()
@@ -517,7 +585,7 @@ mod tests {
         assert_eq!(expl.formula.method_label, "Linear");
         assert_eq!(
             expl.formula.symbolic_terms,
-            "semantic × 0.7 + lexical × 0.3"
+            "semantic × 0.7 + (-lexical) × 0.3"
         );
         assert_eq!(expl.formula.value_terms, "1.0000 × 0.7 + 0.5000 × 0.3");
         assert_close(expl.formula.result, 0.85);

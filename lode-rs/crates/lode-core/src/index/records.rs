@@ -202,13 +202,13 @@ pub struct DenseMatch {
 
 /// One BM25 hit: chunk rowid with its score, ordered best first.
 ///
-/// SQLite BM25 scores are negative and closer to zero means better, so
-/// best-first is descending score.
+/// SQLite BM25 scores are negative and smaller means better, so
+/// best-first is ascending score.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SparseMatch {
     /// SQLite rowid of the chunk.
     pub rowid: i64,
-    /// BM25 score (higher = better).
+    /// Raw SQLite BM25 score (lower = better).
     pub score: f64,
 }
 
@@ -295,10 +295,10 @@ mod tests {
                 score: -3.0,
             },
         ];
-        // BM25: higher (closer to zero) is better → descending.
-        matches.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
-        assert_eq!(matches[0].rowid, 2);
+        // SQLite BM25: lower is better.
+        matches.sort_by(|a, b| a.score.partial_cmp(&b.score).unwrap());
+        assert_eq!(matches[0].rowid, 1);
         assert_eq!(matches[1].rowid, 3);
-        assert_eq!(matches[2].rowid, 1);
+        assert_eq!(matches[2].rowid, 2);
     }
 }

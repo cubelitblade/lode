@@ -5,6 +5,10 @@ mapping functions. The historical feasibility probe remains in
 [fts-bm25-evaluation.md](fts-bm25-evaluation.md); its auxiliary timing is a
 different boundary and is not the current production performance result.
 
+The recorded measurements predate the Rust BM25 ordering and contribution
+correction. Rerun the commands below to measure the corrected candidate pools
+and scoring behavior; the historical timings remain unchanged.
+
 ## Reproduce
 
 From lode-rs, use the repository stable toolchain and an absolute output path
