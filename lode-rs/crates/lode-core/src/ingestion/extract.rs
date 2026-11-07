@@ -221,7 +221,14 @@ fn run_content_text(content: &[RunContent]) -> Vec<String> {
             RunContent::Text(text) => vec![text.clone()],
             RunContent::Break(_) => vec!["\n".to_owned()],
             RunContent::Tab => vec!["\t".to_owned()],
-            RunContent::Drawing(_) => Vec::new(),
+            // Annotation markers and unresolved parts are not title text.
+            RunContent::Drawing(_)
+            | RunContent::FootnoteRef(_, _)
+            | RunContent::EndnoteRef(_, _)
+            | RunContent::CommentRef(_)
+            | RunContent::CommentRangeStart(_)
+            | RunContent::DeferredPart(_) => Vec::new(),
+            RunContent::FormField(field) => field.display_text.iter().cloned().collect(),
             RunContent::TextBox(blocks) => blocks
                 .iter()
                 .filter_map(|block| match block {
@@ -284,6 +291,7 @@ fn promote_docx_title(ir: &mut office_oxide::DocumentIR, title: Option<&str>) {
                 content: paragraph.content,
                 frame_position: paragraph.frame_position,
                 alignment: paragraph.alignment,
+                ..Default::default()
             });
     } else if let office_oxide::ir::Element::Heading(heading) =
         &mut ir.sections[title_section].elements[title_element]
@@ -549,12 +557,53 @@ mod tests {
         let segments = extract_document(bytes.get_ref(), ".docx").unwrap().unwrap();
         assert_eq!(segments.len(), 2);
         assert_eq!(segments[0].heading, "Report");
-        assert_eq!(segments[0].text, "# **Report**\n\nOverview\n\n");
+        assert_eq!(segments[0].text, "# Report\n\nOverview\n\n");
         assert_eq!(segments[1].heading, "Report / Details");
         assert_eq!(
             segments[1].text,
-            "## **Details**\n\nBody\n\n| Name | Value |\n| --- | --- |\n| A | 1 |"
+            "## Details\n\nBody\n\n| Name | Value |\n| --- | --- |\n| A | 1 |"
         );
+    }
+
+    #[test]
+    fn extracts_docx_title_above_ordinary_headings() {
+        use office_oxide::docx::write::{DocxWriter, IrParaProps, Run};
+
+        let mut writer = DocxWriter::new();
+        writer
+            .add_ir_paragraph(
+                &[Run::new("Report")],
+                Some(IrParaProps {
+                    style: Some("Title".to_owned()),
+                    ..Default::default()
+                }),
+            )
+            .add_heading("Details", 1)
+            .add_paragraph("Body");
+        let mut bytes = Cursor::new(Vec::new());
+        writer.write_to(&mut bytes).unwrap();
+
+        let segments = extract_document(bytes.get_ref(), ".docx").unwrap().unwrap();
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].heading, "Report");
+        assert_eq!(segments[1].heading, "Report / Details");
+        assert!(segments[1].text.contains("Body"));
+    }
+
+    #[test]
+    fn docx_title_text_keeps_field_display_text_without_annotation_ids() {
+        let content = [
+            RunContent::Text("Report ".to_owned()),
+            RunContent::FootnoteRef(7, false),
+            RunContent::EndnoteRef(8, false),
+            RunContent::CommentRangeStart(9),
+            RunContent::CommentRef(9),
+            RunContent::FormField(office_oxide::docx::FormField {
+                display_text: Some("2026".to_owned()),
+                ..Default::default()
+            }),
+        ];
+        assert_eq!(run_content_text(&content).concat(), "Report 2026");
     }
 
     #[test]
